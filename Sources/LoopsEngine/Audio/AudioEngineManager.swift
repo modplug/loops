@@ -30,6 +30,11 @@ public final class AudioEngineManager: @unchecked Sendable {
     /// Throws `LoopsError.engineStartFailed` on failure.
     public func start() throws {
         guard !isRunning else { return }
+        guard deviceManager.defaultOutputDeviceID() != nil else {
+            throw LoopsError.engineStartFailed(
+                underlying: "No audio output device available"
+            )
+        }
         do {
             try engine.start()
             isRunning = true
@@ -91,12 +96,18 @@ public final class AudioEngineManager: @unchecked Sendable {
 
     /// Returns the current audio format of the engine's output.
     public func outputFormat() -> AVAudioFormat {
-        engine.outputNode.outputFormat(forBus: 0)
+        guard isRunning else {
+            return AVAudioFormat(standardFormatWithSampleRate: currentSampleRate, channels: 2)!
+        }
+        return engine.outputNode.outputFormat(forBus: 0)
     }
 
     /// Returns the current audio format of the engine's input.
     public func inputFormat() -> AVAudioFormat {
-        engine.inputNode.inputFormat(forBus: 0)
+        guard isRunning else {
+            return AVAudioFormat(standardFormatWithSampleRate: currentSampleRate, channels: 1)!
+        }
+        return engine.inputNode.inputFormat(forBus: 0)
     }
 
     /// Checks if a given sample rate is supported by the current output device.

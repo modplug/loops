@@ -6,6 +6,14 @@ import Foundation
 @Suite("AudioEngineManager Tests")
 struct AudioEngineManagerTests {
 
+    /// Helper: skips if no audio output device (CI runners may lack audio hardware).
+    private func requireAudioHardware() throws {
+        try #require(
+            DeviceManager().defaultOutputDeviceID() != nil,
+            "No audio output device available"
+        )
+    }
+
     @Test("Engine can be created")
     func engineCreation() {
         let manager = AudioEngineManager()
@@ -14,6 +22,7 @@ struct AudioEngineManagerTests {
 
     @Test("Engine starts and stops cleanly")
     func engineStartStop() throws {
+        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         #expect(manager.isRunning)
@@ -25,6 +34,7 @@ struct AudioEngineManagerTests {
 
     @Test("Engine restarts cleanly")
     func engineRestart() throws {
+        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         #expect(manager.isRunning)
@@ -38,6 +48,7 @@ struct AudioEngineManagerTests {
 
     @Test("Engine start is idempotent")
     func engineStartIdempotent() throws {
+        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         try manager.start() // second start should be a no-op
@@ -54,6 +65,7 @@ struct AudioEngineManagerTests {
 
     @Test("Engine reports output format")
     func engineOutputFormat() throws {
+        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         let format = manager.outputFormat()
@@ -89,6 +101,7 @@ struct AudioEngineManagerTests {
 
     @Test("Buffer size validation")
     func bufferSizeValidation() throws {
+        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         // Valid buffer size should not throw
@@ -100,6 +113,7 @@ struct AudioEngineManagerTests {
 
     @Test("Apply settings does not crash")
     func applySettings() throws {
+        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         let settings = AudioDeviceSettings(bufferSize: 512)
