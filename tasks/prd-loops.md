@@ -361,3 +361,718 @@ For UI stories, also include:
 - What's the maximum realistic track count before performance degrades with AVAudioEngine?
 - Should v2 include a "rehearsal mode" where you can practice individual sections in a loop?
 - Should we support AAF/OMF export for moving projects to other DAWs?
+
+---
+
+# Technical Architecture
+
+This section provides the binding technical specification that all implementing agents MUST follow. It defines the exact module structure, data models, engine architecture, view hierarchy, and design constraints.
+
+## 1. SPM Module Structure
+
+### Package.swift
+
+```swift
+// swift-tools-version: 5.10
+
+import PackageDescription
+
+let package = Package(
+    name: "Loops",
+    platforms: [
+        .macOS(.v14)
+    ],
+    products: [
+        .library(name: "LoopsCore", targets: ["LoopsCore"]),
+        .library(name: "LoopsEngine", targets: ["LoopsEngine"]),
+        .library(name: "LoopsApp", targets: ["LoopsApp"]),
+    ],
+    targets: [
+        .target(
+            name: "LoopsCore",
+            dependencies: [],
+            path: "Sources/LoopsCore"
+        ),
+        .testTarget(
+            name: "LoopsCoreTests",
+            dependencies: ["LoopsCore"],
+            path: "Tests/LoopsCoreTests"
+        ),
+        .target(
+            name: "LoopsEngine",
+            dependencies: ["LoopsCore"],
+            path: "Sources/LoopsEngine"
+        ),
+        .testTarget(
+            name: "LoopsEngineTests",
+            dependencies: ["LoopsEngine"],
+            path: "Tests/LoopsEngineTests"
+        ),
+        .target(
+            name: "LoopsApp",
+            dependencies: ["LoopsCore", "LoopsEngine"],
+            path: "Sources/LoopsApp"
+        ),
+        .testTarget(
+            name: "LoopsAppTests",
+            dependencies: ["LoopsApp"],
+            path: "Tests/LoopsAppTests"
+        ),
+    ]
+)
+```
+
+### Module Responsibilities
+
+**LoopsCore** — Zero UI or audio dependencies. Only imports Foundation.
+- All data model structs (Project, Song, Track, Container, SourceRecording, etc.)
+- Codable conformances and serialization helpers
+- Enums shared across the app (TrackKind, BoundaryMode, TransitionMode, etc.)
+- Generic typed ID type, time/position types, protocol definitions
+- Utility extensions on Foundation types
+
+**LoopsEngine** — Imports AVFoundation, CoreMIDI, AudioToolbox, CoreAudio. Depends on LoopsCore.
+- AudioEngineManager (AVAudioEngine lifecycle, device routing)
+- TrackNode (per-track node subgraph)
+- TransportManager (playback state machine, metronome)
+- RecordingManager (tap installation, CAF writing)
+- AudioUnitHosting (AU discovery, instantiation, parameter persistence)
+- BusRouter (send/bus routing logic)
+- MIDIManager (CoreMIDI client, port, event dispatch)
+- MIDILearnController (learn mode state machine)
+- DeviceManager (input/output device enumeration and selection)
+- ProjectPersistence (reading/writing .loops bundles to disk)
+- WaveformGenerator (audio file analysis for display data)
+- OfflineRenderer (bounce/export)
+
+**LoopsApp** — Imports SwiftUI. Depends on LoopsCore and LoopsEngine.
+- App entry point (LoopsApp.swift with @main)
+- Window and scene management
+- All SwiftUI views (timeline, mixer, inspector, sidebar, transport bar, setlist, settings)
+- View models annotated with @Observable and @MainActor
+- Commands (menu bar items)
+- Drag and drop handlers
+- Custom SwiftUI shapes and drawing (waveform rendering, grid drawing)
+
+### Dependency Graph
+
+```
+LoopsApp  -->  LoopsEngine  -->  LoopsCore
+   |                                ^
+   +--------------------------------+
+```
+
+## 2. Directory Structure
+
+```
+loops/
+  Package.swift
+  .gitignore
+  tasks/
+    prd-loops.md
+  LoopsApp/                          # Xcode app target (thin shell)
+    LoopsApp.xcodeproj/
+    LoopsApp/
+      LoopsAppMain.swift             # @main entry point
+      Info.plist
+      LoopsApp.entitlements          # Audio input, sandbox exceptions
+      Assets.xcassets/
+  Sources/
+    LoopsCore/
+      Models/
+        Project.swift
+        Song.swift
+        Track.swift                  # Track struct + TrackKind enum
+        Container.swift
+        SourceRecording.swift
+        LoopSettings.swift           # LoopSettings struct + BoundaryMode
+        Setlist.swift
+        SetlistEntry.swift           # SetlistEntry struct + TransitionMode
+        MIDIMapping.swift            # MIDIMapping struct + MappableControl
+        AudioDeviceSettings.swift
+        InsertEffect.swift           # InsertEffect struct (AU parameter state)
+        SendLevel.swift
+        TimeSignature.swift
+        Tempo.swift
+      Position/
+        BarBeatPosition.swift
+        SamplePosition.swift
+        PositionConverter.swift
+      Identifiers/
+        TypedID.swift                # Generic ID<Phantom> type
+      Errors/
+        LoopsError.swift
+    LoopsEngine/
+      Audio/
+        AudioEngineManager.swift
+        DeviceManager.swift
+        TrackNode.swift
+        BusRouter.swift
+        InsertChainManager.swift
+        MasterMixer.swift
+        MetronomeGenerator.swift
+      Recording/
+        RecordingManager.swift
+        CAFWriter.swift
+        WaveformGenerator.swift
+      Playback/
+        TransportManager.swift
+        PlaybackScheduler.swift
+        LoopPlaybackController.swift
+      AudioUnit/
+        AudioUnitDiscovery.swift
+        AudioUnitHost.swift
+      MIDI/
+        MIDIManager.swift
+        MIDILearnController.swift
+        MIDIDispatcher.swift
+        FootPedalPresets.swift
+      Persistence/
+        ProjectPersistence.swift
+        ProjectBundle.swift
+        AutoSaveManager.swift
+      Export/
+        OfflineRenderer.swift
+    LoopsApp/
+      App/
+        LoopsAppEntry.swift          # SwiftUI App struct, WindowGroup, commands
+        AppState.swift               # Top-level @Observable app state
+      ViewModels/
+        ProjectViewModel.swift
+        TimelineViewModel.swift
+        TransportViewModel.swift
+        MixerViewModel.swift
+        InspectorViewModel.swift
+        SetlistViewModel.swift
+        SettingsViewModel.swift
+      Views/
+        MainWindow/
+          MainContentView.swift      # HSplitView: sidebar + center + inspector
+          ToolbarView.swift          # Transport bar, BPM, time sig
+        Sidebar/
+          SidebarView.swift
+          SongListView.swift
+          SetlistListView.swift
+          SetlistEditorView.swift
+        Timeline/
+          TimelineView.swift
+          RulerView.swift
+          TrackLaneView.swift
+          ContainerView.swift
+          PlayheadView.swift
+          WaveformView.swift
+          GridOverlayView.swift
+          TrackHeaderView.swift
+        Mixer/
+          MixerStripView.swift
+          FaderView.swift
+          PanKnobView.swift
+          LevelMeterView.swift
+          SendKnobView.swift
+        Inspector/
+          InspectorView.swift
+          ContainerInspector.swift
+          TrackInspector.swift
+          InsertChainView.swift
+          AudioUnitPickerView.swift
+        Setlist/
+          PerformView.swift
+          PerformProgressView.swift
+        Settings/
+          SettingsView.swift
+          AudioDeviceView.swift
+          MIDIMappingView.swift
+          FootPedalPresetView.swift
+        Shared/
+          AudioUnitWindowController.swift
+  Tests/
+    LoopsCoreTests/
+      ModelSerializationTests.swift
+      BarBeatPositionTests.swift
+      LoopSettingsTests.swift
+    LoopsEngineTests/
+      AudioEngineManagerTests.swift
+      TransportManagerTests.swift
+      RecordingManagerTests.swift
+      MIDIDispatcherTests.swift
+      ProjectPersistenceTests.swift
+    LoopsAppTests/
+      TimelineViewModelTests.swift
+      ProjectViewModelTests.swift
+```
+
+## 3. Data Model
+
+All models are value types (structs) conforming to `Codable`, `Equatable`, and `Sendable`. Reference types are reserved for engine managers and view models only.
+
+### Generic Typed ID
+
+```swift
+// Sources/LoopsCore/Identifiers/TypedID.swift
+import Foundation
+
+/// Phantom-typed identifier to prevent mixing up IDs from different model types.
+struct ID<Phantom>: Hashable, Codable, Sendable {
+    let rawValue: UUID
+
+    init() { self.rawValue = UUID() }
+    init(rawValue: UUID) { self.rawValue = rawValue }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.rawValue = try container.decode(UUID.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+```
+
+### Project
+
+```swift
+struct Project: Codable, Equatable, Sendable {
+    var id: ID<Project>
+    var name: String
+    var songs: [Song]
+    var setlists: [Setlist]
+    var sourceRecordings: [ID<SourceRecording>: SourceRecording]
+    var midiMappings: [MIDIMapping]
+    var audioDeviceSettings: AudioDeviceSettings
+    var schemaVersion: Int
+
+    init(
+        id: ID<Project> = ID(), name: String = "Untitled Project",
+        songs: [Song] = [], setlists: [Setlist] = [],
+        sourceRecordings: [ID<SourceRecording>: SourceRecording] = [:],
+        midiMappings: [MIDIMapping] = [],
+        audioDeviceSettings: AudioDeviceSettings = AudioDeviceSettings(),
+        schemaVersion: Int = 1
+    ) { /* assign all */ }
+}
+```
+
+### Song
+
+```swift
+struct Song: Codable, Equatable, Sendable, Identifiable {
+    var id: ID<Song>
+    var name: String
+    var tempo: Tempo
+    var timeSignature: TimeSignature
+    var tracks: [Track]
+}
+```
+
+### Track and TrackKind
+
+```swift
+enum TrackKind: String, Codable, Sendable, CaseIterable {
+    case audio, midi, bus, backing
+}
+
+struct Track: Codable, Equatable, Sendable, Identifiable {
+    var id: ID<Track>
+    var name: String
+    var kind: TrackKind
+    var volume: Float          // Linear gain 0.0...2.0 (0 = -inf, 1.0 = 0dB, 2.0 ~ +6dB)
+    var pan: Float             // -1.0 (full left) to +1.0 (full right)
+    var isMuted: Bool
+    var isSoloed: Bool
+    var containers: [Container]
+    var insertEffects: [InsertEffect]
+    var sendLevels: [SendLevel]
+    var instrumentComponent: AudioComponentInfo?  // For MIDI tracks only
+    var orderIndex: Int
+}
+
+/// Codable representation of AudioComponentDescription for AU identification
+struct AudioComponentInfo: Codable, Equatable, Sendable {
+    var componentType: UInt32
+    var componentSubType: UInt32
+    var componentManufacturer: UInt32
+}
+```
+
+### Container
+
+```swift
+struct Container: Codable, Equatable, Sendable, Identifiable {
+    var id: ID<Container>
+    var name: String
+    var startBar: Int          // 1-based
+    var lengthBars: Int
+    var sourceRecordingID: ID<SourceRecording>?
+    var linkGroupID: ID<LinkGroup>?  // All containers with same linkGroupID share a recording
+    var loopSettings: LoopSettings
+    var isRecordArmed: Bool
+    var volumeOverride: Float?
+    var panOverride: Float?
+
+    var endBar: Int { startBar + lengthBars }
+}
+
+enum LinkGroup {}  // Phantom type for link group identification
+```
+
+### SourceRecording
+
+```swift
+struct SourceRecording: Codable, Equatable, Sendable, Identifiable {
+    var id: ID<SourceRecording>
+    var filename: String       // Relative to project bundle's audio/ directory
+    var sampleRate: Double
+    var sampleCount: Int64
+    var waveformPeaks: [Float]?
+
+    var durationSeconds: Double { Double(sampleCount) / sampleRate }
+}
+```
+
+### LoopSettings and BoundaryMode
+
+```swift
+enum BoundaryMode: String, Codable, Sendable, CaseIterable {
+    case hardCut, crossfade, overdub
+}
+
+enum LoopCount: Codable, Equatable, Sendable {
+    case count(Int)
+    case fill
+}
+
+struct LoopSettings: Codable, Equatable, Sendable {
+    var loopCount: LoopCount
+    var boundaryMode: BoundaryMode
+    var crossfadeDurationMs: Double  // Only used when boundaryMode == .crossfade
+}
+```
+
+### Setlist and SetlistEntry
+
+```swift
+struct Setlist: Codable, Equatable, Sendable, Identifiable {
+    var id: ID<Setlist>
+    var name: String
+    var entries: [SetlistEntry]
+}
+
+enum TransitionMode: Codable, Equatable, Sendable {
+    case seamless
+    case gap(durationSeconds: Double)
+    case manualAdvance
+}
+
+struct SetlistEntry: Codable, Equatable, Sendable, Identifiable {
+    var id: ID<SetlistEntry>
+    var songID: ID<Song>
+    var transitionToNext: TransitionMode
+}
+```
+
+### MIDIMapping
+
+```swift
+enum MappableControl: String, Codable, Sendable, CaseIterable {
+    case playPause, stop, recordArm, nextSong, previousSong, metronomeToggle
+}
+
+enum MIDITrigger: Codable, Equatable, Sendable {
+    case controlChange(channel: UInt8, controller: UInt8)
+    case noteOn(channel: UInt8, note: UInt8)
+}
+
+struct MIDIMapping: Codable, Equatable, Sendable, Identifiable {
+    var id: ID<MIDIMapping>
+    var control: MappableControl
+    var trigger: MIDITrigger
+    var sourceDeviceName: String?
+}
+```
+
+### InsertEffect and SendLevel
+
+```swift
+struct InsertEffect: Codable, Equatable, Sendable, Identifiable {
+    var id: ID<InsertEffect>
+    var component: AudioComponentInfo
+    var displayName: String
+    var isBypassed: Bool
+    var presetData: Data?      // Full AU state dictionary serialized
+    var orderIndex: Int
+}
+
+struct SendLevel: Codable, Equatable, Sendable {
+    var busTrackID: ID<Track>
+    var level: Float           // 0.0 (silent) to 1.0 (unity)
+    var isPreFader: Bool
+}
+```
+
+### Supporting Types
+
+```swift
+struct TimeSignature: Codable, Equatable, Sendable {
+    var beatsPerBar: Int       // Numerator (e.g. 4)
+    var beatUnit: Int          // Denominator (e.g. 4 = quarter note)
+}
+
+struct Tempo: Codable, Equatable, Sendable {
+    var bpm: Double            // Clamped to 20.0...300.0
+    var beatDurationSeconds: Double { 60.0 / bpm }
+}
+
+struct BarBeatPosition: Codable, Equatable, Comparable, Sendable {
+    var bar: Int               // 1-based
+    var beat: Int              // 1-based within the bar
+    var subBeatFraction: Double // 0.0..<1.0
+}
+
+struct SamplePosition: Codable, Equatable, Comparable, Sendable {
+    var sampleOffset: Int64
+}
+
+protocol PositionConverter: Sendable {
+    func samplePosition(for barBeat: BarBeatPosition, sampleRate: Double) -> SamplePosition
+    func barBeatPosition(for sample: SamplePosition, sampleRate: Double) -> BarBeatPosition
+    func sampleCount(forBars bars: Int, sampleRate: Double) -> Int64
+}
+
+struct AudioDeviceSettings: Codable, Equatable, Sendable {
+    var inputDeviceUID: String?
+    var outputDeviceUID: String?
+    var bufferSize: Int        // 64, 128, 256, 512, or 1024
+}
+
+enum LoopsError: Error, Sendable {
+    case engineStartFailed(underlying: String)
+    case deviceNotFound(uid: String)
+    case unsupportedSampleRate(Double)
+    case tapInstallationFailed(String)
+    case recordingWriteFailed(String)
+    case audioFileCreationFailed(path: String)
+    case projectLoadFailed(path: String, reason: String)
+    case projectSaveFailed(path: String, reason: String)
+    case schemaVersionMismatch(expected: Int, found: Int)
+    case audioUnitLoadFailed(component: String)
+    case audioUnitPresetRestoreFailed(String)
+    case midiClientCreationFailed(status: Int32)
+    case midiPortCreationFailed(status: Int32)
+    case containerOverlap(trackID: String, bar: Int)
+    case songNotFound(ID<Song>)
+    case trackNotFound(ID<Track>)
+}
+```
+
+## 4. AVAudioEngine Node Graph
+
+### Topology Overview
+
+```
+                        +-----------+
+                        | mainMixer |-----> engine.outputNode
+                        +-----------+
+                           ^   ^   ^
+                           |   |   |
+        +------------------+   |   +------------------+
+        |                      |                      |
+  [Track 1 Mixer]       [Track 2 Mixer]        [Bus 1 Mixer]
+        ^                      ^                      ^
+        |                      |                      |
+  [Insert Chain]         [Insert Chain]         [Insert Chain]
+   AU1 -> AU2             AU1                    AU1 -> AU2
+        ^                      ^
+        |                      |
+  [PlayerNode]           [PlayerNode]
+```
+
+### Per-Track Node Subgraph (TrackNode class)
+
+**Audio Track:**
+```
+AVAudioPlayerNode → [AU Effect 1] → [AU Effect 2] → ... → AVAudioMixerNode (track mixer)
+                                                                  |
+                                                                  ├→ mainMixerNode (direct out)
+                                                                  └→ sendMixer → busMixerNode (via send level)
+```
+
+**MIDI Track:**
+```
+AVAudioUnitMIDIInstrument → [AU Effect 1] → ... → AVAudioMixerNode (track mixer) → mainMixerNode
+```
+
+**Bus Track:**
+```
+AVAudioMixerNode (bus input, receives sends) → [AU Effect 1] → ... → AVAudioMixerNode (bus output) → mainMixerNode
+```
+
+**Backing Track:**
+```
+AVAudioPlayerNode → [AU Effect 1] → ... → AVAudioMixerNode (track mixer) → mainMixerNode
+```
+
+### Dynamic Node Management
+
+- **Adding a track:** Create nodes, `engine.attach()` each, `engine.connect()` in chain order. Can be done while engine is running.
+- **Removing a track:** `engine.disconnectNodeOutput()` then `engine.detach()` each node, working backward from mainMixer.
+- **Insert chain changes:** Disconnect segment, insert/remove AU node, reconnect. Engine stays running.
+- **Loading an AU plugin:** Query `AVAudioUnitComponentManager.shared()`, call `AVAudioUnit.instantiate(with:options:)`, attach, reconnect chain, restore preset via `auAudioUnit.fullState`.
+
+### Metronome
+
+`AVAudioSourceNode` generating click samples programmatically on the render callback. Connects directly to `mainMixerNode`. Toggled via volume (0.0 = off).
+
+## 5. View Architecture
+
+### Observable Pattern
+
+All view models use `@Observable` macro (NOT `ObservableObject`). Target is macOS 14+.
+
+```swift
+@Observable
+@MainActor
+final class AppState {
+    var project: Project
+    var currentSongID: ID<Song>?
+    var selectedTrackID: ID<Track>?
+    var selectedContainerID: ID<Container>?
+    var isPerformMode: Bool = false
+
+    let engine: AudioEngineManager
+    let transport: TransportManager
+    let midiManager: MIDIManager
+    let persistence: ProjectPersistence
+}
+```
+
+### View Hierarchy
+
+```
+LoopsRootView (@State var appState: AppState)
+  ├── ToolbarView (play, stop, record arm, BPM, time sig, metronome)
+  └── HSplitView
+        ├── SidebarView (collapsible)
+        │     ├── Picker (Songs / Setlists tab)
+        │     ├── SongListView
+        │     └── SetlistListView / SetlistEditorView
+        └── HSplitView
+              ├── VStack (center: timeline)
+              │     ├── RulerView
+              │     └── ScrollView(.horizontal, .vertical)
+              │           └── ZStack
+              │                 ├── GridOverlayView
+              │                 ├── ForEach track → TrackHeaderView + TrackLaneView
+              │                 │     └── ForEach container → ContainerView → WaveformView
+              │                 └── PlayheadView
+              └── InspectorView (collapsible)
+                    ├── ContainerInspector (when container selected)
+                    └── TrackInspector (when track selected)
+                          ├── MixerStripView
+                          ├── InsertChainView
+                          └── SendLevelsView
+```
+
+### AU Plugin UI Hosting
+
+Audio Unit UIs are NSView-based. Hosted in floating `NSPanel` windows via `NSViewRepresentable`. Opened separately from the main SwiftUI hierarchy.
+
+## 6. Auto-Recording Flow
+
+Step-by-step sequence when auto-record fires:
+
+1. **Transport tick detects container entry** — `TransportManager` tracks playhead position, converts to `BarBeatPosition`, checks if any record-armed container spans current bar.
+2. **RecordingManager begins recording** — Generates UUID filename, creates `AVAudioFile` for CAF writing in `projectBundle/audio/`, installs tap on `engine.inputNode`, tap closure writes buffers to file.
+3. **Waveform data streams to UI** — Every N buffers in tap closure, compute peak amplitude. Dispatch to MainActor via `Task { @MainActor in }`. TimelineViewModel appends peaks for live display.
+4. **Transport tick detects container exit** — When playhead passes container's `endBar`, notifies RecordingManager to stop.
+5. **RecordingManager stops recording** — Removes tap, closes file, computes final waveform peaks via WaveformGenerator, returns `SourceRecording` value.
+6. **Model update** — ProjectViewModel adds `SourceRecording` to `project.sourceRecordings`, sets container's `sourceRecordingID`. If linked, updates all linked containers. Pushes undo action.
+7. **Persistence** — AutoSaveManager detects mutation, schedules debounced save (2s). CAF is already on disk; only `project.json` updates.
+
+### Thread Safety
+
+- Tap closure runs on real-time I/O thread. NO memory allocation, NO locks, NO actor awaits.
+- `RecordingManager` is a Swift `actor` to serialize start/stop calls.
+- Model mutations happen exclusively on `@MainActor`.
+- Use `OSAllocatedUnfairLock` for small atomic state between threads. Lock-free ring buffers for level metering.
+
+## 7. Persistence Architecture
+
+### .loops Bundle Structure
+
+```
+MyProject.loops/
+  project.json            # All metadata (Project struct serialized)
+  audio/                  # All audio files
+    a1b2c3d4-....caf     # UUID-named source recordings
+```
+
+### UTType Declaration
+
+In Info.plist: `com.loops.project` conforming to `com.apple.package` + `public.data`, extension `.loops`.
+
+### Save Strategy
+
+- **Auto-save:** `AutoSaveManager` observes mutations, 2-second debounce timer, atomic write (temp file + rename).
+- **Manual save:** Cmd+S triggers immediate save.
+- **Audio files:** Written at recording time, not during save. Only `project.json` updates on save.
+- **Orphan cleanup:** Unused CAF files cleaned on explicit "compact project" action only.
+
+## 8. MIDI Architecture
+
+### CoreMIDI Setup
+
+`MIDIManager` creates a `MIDIClientRef` and `MIDIInputPortRef` using `MIDIInputPortCreateWithProtocol` (MIDI 1.0). Connects to all available sources. Handles device add/remove notifications.
+
+### Event Dispatch
+
+`MIDIDispatcher` receives events on CoreMIDI callback thread:
+1. Parse event to determine CC or NoteOn
+2. Create `MIDITrigger` value
+3. If in learn mode → call `onMIDILearnEvent` callback
+4. Otherwise → look up in mappings table (protected by `OSAllocatedUnfairLock`), call `onControlTriggered`
+5. If unmapped and MIDI track instrument exists → route to AU instrument
+
+### MIDI Learn Flow
+
+1. User clicks "MIDI Learn" next to a control → `MIDILearnController.startLearning(for: .playPause)`
+2. User presses MIDI button → dispatcher fires callback with `MIDITrigger`
+3. `MIDILearnController` exits learn mode, creates `MIDIMapping`
+4. Mapping added to `project.midiMappings`, dispatcher table updated atomically
+
+### Foot Pedal Presets
+
+```swift
+enum FootPedalPreset: String, CaseIterable, Sendable {
+    case generic2Button = "Generic 2-Button Pedal"
+    case generic4Button = "Generic 4-Button Pedal"
+    // Each case provides pre-configured MIDIMapping arrays
+}
+```
+
+## 9. Key Design Decisions (Binding Constraints)
+
+These rules are mandatory for ALL implementing agents:
+
+1. **@Observable, not ObservableObject** — macOS 14+ target. Use `@Observable` macro. Never use `ObservableObject`, `@Published`, or `@StateObject`. Use `@State` at the root.
+
+2. **Value types for models, reference types for managers** — All LoopsCore models are `struct`s. Classes/actors only for engine managers and view models.
+
+3. **@MainActor for all UI state** — Every view model is `@MainActor`. All Project mutations happen on MainActor. `RecordingManager` is a Swift `actor`.
+
+4. **Lock-free on the audio thread** — Real-time callbacks must NEVER allocate memory, acquire locks, call actor `await`, or use ObjC methods that autorelease.
+
+5. **Typed errors** — All throwing functions throw `LoopsError`. No `try!` or `fatalError()` in production code. `try?` only when failure is genuinely ignorable.
+
+6. **No `any` types** — Per project rules. Use generics with protocol constraints instead.
+
+7. **Module boundaries** — LoopsCore: only Foundation. LoopsEngine: AVFoundation, CoreMIDI, AudioToolbox, CoreAudio + LoopsCore. LoopsApp: SwiftUI, AppKit + LoopsCore + LoopsEngine. Cross-module types must be `public`.
+
+8. **Audio files: CAF internally, WAV/AIFF for export** — Filenames are UUID strings in the `audio/` subdirectory.
+
+9. **1-based musical positions** — Bar 1 is the first bar. Sample positions are 0-based Int64. Container positions are always integer bars.
+
+10. **Undo via UndoManager** — Each mutating action registers undo closure capturing previous state. Per-session only.
+
+11. **Naming conventions** — Swift files: PascalCase. Directories: PascalCase. Audio files: UUID-based. JSON keys: camelCase (default Codable).
