@@ -20,13 +20,25 @@ jobs:
 
       - name: Build
         run: |
-          set -o pipefail
-          swift build 2>&1 | tee build-output.txt
+          swift build 2>&1 | tee build-output.txt || BUILD_FAILED=1
+          if [ "$BUILD_FAILED" = "1" ]; then
+            echo "## Build Failed" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -100 build-output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
 
       - name: Run tests
         run: |
-          set -o pipefail
-          swift test 2>&1 | tee test-output.txt
+          swift test 2>&1 | tee test-output.txt || TEST_FAILED=1
+          if [ "$TEST_FAILED" = "1" ]; then
+            echo "## Tests Failed" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -100 test-output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
 
       - name: Upload build logs
         if: always()
