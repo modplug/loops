@@ -24,15 +24,19 @@ public final class ProjectViewModel {
         let snapshot = project
         let wasUnsaved = hasUnsavedChanges
         undoManager?.registerUndo(withTarget: self) { target in
-            let redoSnapshot = target.project
-            let redoUnsaved = target.hasUnsavedChanges
-            target.project = snapshot
-            target.hasUnsavedChanges = wasUnsaved
-            target.undoManager?.registerUndo(withTarget: target) { target2 in
-                target2.project = redoSnapshot
-                target2.hasUnsavedChanges = redoUnsaved
+            MainActor.assumeIsolated {
+                let redoSnapshot = target.project
+                let redoUnsaved = target.hasUnsavedChanges
+                target.project = snapshot
+                target.hasUnsavedChanges = wasUnsaved
+                target.undoManager?.registerUndo(withTarget: target) { target2 in
+                    MainActor.assumeIsolated {
+                        target2.project = redoSnapshot
+                        target2.hasUnsavedChanges = redoUnsaved
+                    }
+                }
+                target.undoManager?.setActionName(actionName)
             }
-            target.undoManager?.setActionName(actionName)
         }
         undoManager?.setActionName(actionName)
     }
