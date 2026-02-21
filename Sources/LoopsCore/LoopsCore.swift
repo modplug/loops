@@ -2,7 +2,5 @@
 /// This module has zero UI or audio dependencies. Only imports Foundation.
 import Foundation
 
-/// Namespace for the LoopsCore module.
-public enum LoopsCore {
-    public static let version = "0.1.0"
-}
+/// Module version constant.
+public let loopsCoreVersion = "0.1.0"

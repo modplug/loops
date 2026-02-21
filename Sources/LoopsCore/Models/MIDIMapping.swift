@@ -4,7 +4,7 @@ public enum MappableControl: String, Codable, Sendable, CaseIterable {
     case playPause, stop, recordArm, nextSong, previousSong, metronomeToggle
 }
 
-public enum MIDITrigger: Codable, Equatable, Sendable {
+public enum MIDITrigger: Codable, Equatable, Hashable, Sendable {
     case controlChange(channel: UInt8, controller: UInt8)
     case noteOn(channel: UInt8, note: UInt8)
 }

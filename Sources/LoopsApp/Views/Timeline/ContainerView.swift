@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import LoopsCore
 
 /// Renders a single container as a colored rectangle on the track lane.
@@ -82,7 +83,13 @@ public struct ContainerView: View {
                 .fill(Color.clear)
                 .frame(width: 6)
                 .contentShape(Rectangle())
-                .cursor(.resizeLeftRight)
+                .onHover { hovering in
+                    if hovering {
+                        NSCursor.resizeLeftRight.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
                 .gesture(leftResizeGesture)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -91,7 +98,13 @@ public struct ContainerView: View {
                 .fill(Color.clear)
                 .frame(width: 6)
                 .contentShape(Rectangle())
-                .cursor(.resizeLeftRight)
+                .onHover { hovering in
+                    if hovering {
+                        NSCursor.resizeLeftRight.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
                 .gesture(rightResizeGesture)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }

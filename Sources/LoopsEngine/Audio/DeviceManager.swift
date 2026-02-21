@@ -85,7 +85,7 @@ public final class DeviceManager: Sendable {
             &size,
             &deviceID
         )
-        return status == noErr && deviceID != kAudioObjectUnknown ? deviceID : nil
+        return status == noErr && deviceID != 0 ? deviceID : nil
     }
 
     /// Returns the system default output device ID.
@@ -104,7 +104,7 @@ public final class DeviceManager: Sendable {
             &size,
             &deviceID
         )
-        return status == noErr && deviceID != kAudioObjectUnknown ? deviceID : nil
+        return status == noErr && deviceID != 0 ? deviceID : nil
     }
 
     /// Looks up a device by its UID string.
@@ -136,7 +136,7 @@ public final class DeviceManager: Sendable {
     }
 
     private func deviceName(for deviceID: AudioDeviceID) -> String? {
-        var name = "" as CFString
+        var name: CFString = "" as CFString
         var size = UInt32(MemoryLayout<CFString>.size)
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioObjectPropertyName,
@@ -148,7 +148,7 @@ public final class DeviceManager: Sendable {
     }
 
     private func deviceUID(for deviceID: AudioDeviceID) -> String? {
-        var uid = "" as CFString
+        var uid: CFString = "" as CFString
         var size = UInt32(MemoryLayout<CFString>.size)
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceUID,
@@ -169,14 +169,20 @@ public final class DeviceManager: Sendable {
         let status = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size)
         guard status == noErr, size > 0 else { return 0 }
 
-        let bufferListPointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: 1)
-        defer { bufferListPointer.deallocate() }
+        // Allocate raw memory with proper size for the variable-length AudioBufferList
+        let rawPointer = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { rawPointer.deallocate() }
 
+        let bufferListPointer = rawPointer.bindMemory(to: AudioBufferList.self, capacity: 1)
         let result = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, bufferListPointer)
         guard result == noErr else { return 0 }
 
         let bufferList = UnsafeMutableAudioBufferListPointer(bufferListPointer)
-        return bufferList.reduce(0) { $0 + Int($1.mNumberChannels) }
+        var totalChannels = 0
+        for buffer in bufferList {
+            totalChannels += Int(buffer.mNumberChannels)
+        }
+        return totalChannels
     }
 
     private func supportedSampleRates(for deviceID: AudioDeviceID) -> [Double] {
@@ -200,7 +206,6 @@ public final class DeviceManager: Sendable {
             if range.mMinimum == range.mMaximum {
                 rates.insert(range.mMinimum)
             } else {
-                // Common sample rates within the range
                 for rate in [44100.0, 48000.0, 88200.0, 96000.0] {
                     if rate >= range.mMinimum && rate <= range.mMaximum {
                         rates.insert(rate)

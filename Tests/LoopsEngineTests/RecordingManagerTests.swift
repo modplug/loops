@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AVFoundation
 @testable import LoopsEngine
 @testable import LoopsCore
 

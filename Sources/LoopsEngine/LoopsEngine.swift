@@ -7,7 +7,5 @@ import AudioToolbox
 import CoreAudio
 import LoopsCore
 
-/// Namespace for the LoopsEngine module.
-public enum LoopsEngine {
-    public static let version = LoopsCore.version
-}
+/// Module version constant.
+public let loopsEngineVersion = LoopsCore.loopsCoreVersion

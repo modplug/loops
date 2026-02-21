@@ -1,9 +1,10 @@
 import Foundation
 import AVFoundation
+import AudioToolbox
 import LoopsCore
 
 /// Writes audio buffers to a CAF file in PCM Float32 format.
-public final class CAFWriter {
+public final class CAFWriter: @unchecked Sendable {
     private var audioFile: AVAudioFile?
     public private(set) var sampleCount: Int64 = 0
     public let fileURL: URL
