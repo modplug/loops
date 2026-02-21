@@ -123,3 +123,42 @@ public struct ProjectCommands: Commands {
         alert.runModal()
     }
 }
+
+/// Edit menu commands for undo/redo.
+public struct EditCommands: Commands {
+    @Bindable var viewModel: ProjectViewModel
+
+    public init(viewModel: ProjectViewModel) {
+        self.viewModel = viewModel
+    }
+
+    public var body: some Commands {
+        CommandGroup(replacing: .undoRedo) {
+            Button(undoTitle) {
+                viewModel.undoManager?.undo()
+            }
+            .keyboardShortcut("z")
+            .disabled(!(viewModel.undoManager?.canUndo ?? false))
+
+            Button(redoTitle) {
+                viewModel.undoManager?.redo()
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(!(viewModel.undoManager?.canRedo ?? false))
+        }
+    }
+
+    private var undoTitle: String {
+        if let actionName = viewModel.undoManager?.undoActionName, !actionName.isEmpty {
+            return "Undo \(actionName)"
+        }
+        return "Undo"
+    }
+
+    private var redoTitle: String {
+        if let actionName = viewModel.undoManager?.redoActionName, !actionName.isEmpty {
+            return "Redo \(actionName)"
+        }
+        return "Redo"
+    }
+}

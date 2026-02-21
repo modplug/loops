@@ -23,6 +23,7 @@ struct LoopsMainApp: App {
         .defaultSize(width: 1200, height: 700)
         .commands {
             ProjectCommands(viewModel: viewModel)
+            EditCommands(viewModel: viewModel)
         }
 
         Settings {

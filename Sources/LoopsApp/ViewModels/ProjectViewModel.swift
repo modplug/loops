@@ -9,11 +9,31 @@ public final class ProjectViewModel {
     public var project: Project
     public var projectURL: URL?
     public var hasUnsavedChanges: Bool = false
+    public var undoManager: UndoManager?
 
     private let persistence = ProjectPersistence()
 
     public init(project: Project = Project()) {
         self.project = project
+        self.undoManager = UndoManager()
+    }
+
+    /// Registers an undo action that snapshots and restores the full project state.
+    private func registerUndo(actionName: String) {
+        let snapshot = project
+        let wasUnsaved = hasUnsavedChanges
+        undoManager?.registerUndo(withTarget: self) { target in
+            let redoSnapshot = target.project
+            let redoUnsaved = target.hasUnsavedChanges
+            target.project = snapshot
+            target.hasUnsavedChanges = wasUnsaved
+            target.undoManager?.registerUndo(withTarget: target) { target2 in
+                target2.project = redoSnapshot
+                target2.hasUnsavedChanges = redoUnsaved
+            }
+            target.undoManager?.setActionName(actionName)
+        }
+        undoManager?.setActionName(actionName)
     }
 
     /// Creates a new empty project with a default song.
@@ -23,6 +43,7 @@ public final class ProjectViewModel {
         currentSongID = defaultSong.id
         projectURL = nil
         hasUnsavedChanges = false
+        undoManager?.removeAllActions()
     }
 
     /// Saves the project to the current URL, or prompts for a location.
@@ -49,6 +70,7 @@ public final class ProjectViewModel {
         currentSongID = project.songs.first?.id
         projectURL = url
         hasUnsavedChanges = false
+        undoManager?.removeAllActions()
     }
 
     // MARK: - Song Access
@@ -91,6 +113,7 @@ public final class ProjectViewModel {
 
     /// Adds a new song with default settings.
     public func addSong() {
+        registerUndo(actionName: "Add Song")
         let existingCount = project.songs.count
         let song = Song(name: "Song \(existingCount + 1)")
         project.songs.append(song)
@@ -103,6 +126,7 @@ public final class ProjectViewModel {
         guard project.songs.count > 1 else { return }
         guard let index = project.songs.firstIndex(where: { $0.id == id }) else { return }
 
+        registerUndo(actionName: "Remove Song")
         let wasSelected = currentSongID == id
         project.songs.remove(at: index)
 
@@ -118,6 +142,7 @@ public final class ProjectViewModel {
     /// Renames a song.
     public func renameSong(id: ID<Song>, newName: String) {
         guard let index = project.songs.firstIndex(where: { $0.id == id }) else { return }
+        registerUndo(actionName: "Rename Song")
         project.songs[index].name = newName
         hasUnsavedChanges = true
     }
@@ -125,6 +150,7 @@ public final class ProjectViewModel {
     /// Duplicates a song and selects the copy.
     public func duplicateSong(id: ID<Song>) {
         guard let index = project.songs.firstIndex(where: { $0.id == id }) else { return }
+        registerUndo(actionName: "Duplicate Song")
         let original = project.songs[index]
         let copy = Song(
             name: original.name + " Copy",
@@ -165,6 +191,7 @@ public final class ProjectViewModel {
     /// Adds a new track to the current song with auto-generated name.
     public func addTrack(kind: TrackKind) {
         guard !project.songs.isEmpty else { return }
+        registerUndo(actionName: "Add Track")
         let existingCount = project.songs[currentSongIndex].tracks
             .filter { $0.kind == kind }.count
         let name = "\(kind.displayName) \(existingCount + 1)"
@@ -177,6 +204,7 @@ public final class ProjectViewModel {
     /// Removes a track from the current song by ID.
     public func removeTrack(id: ID<Track>) {
         guard !project.songs.isEmpty else { return }
+        registerUndo(actionName: "Remove Track")
         project.songs[currentSongIndex].tracks.removeAll { $0.id == id }
         reindexTracks()
         hasUnsavedChanges = true
@@ -186,6 +214,7 @@ public final class ProjectViewModel {
     public func renameTrack(id: ID<Track>, newName: String) {
         guard !project.songs.isEmpty else { return }
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == id }) else { return }
+        registerUndo(actionName: "Rename Track")
         project.songs[currentSongIndex].tracks[index].name = newName
         hasUnsavedChanges = true
     }
@@ -193,6 +222,7 @@ public final class ProjectViewModel {
     /// Moves a track from one index to another (reordering).
     public func moveTrack(from source: IndexSet, to destination: Int) {
         guard !project.songs.isEmpty else { return }
+        registerUndo(actionName: "Reorder Tracks")
         project.songs[currentSongIndex].tracks.move(fromOffsets: source, toOffset: destination)
         reindexTracks()
         hasUnsavedChanges = true
@@ -202,6 +232,7 @@ public final class ProjectViewModel {
     public func toggleMute(trackID: ID<Track>) {
         guard !project.songs.isEmpty else { return }
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Toggle Mute")
         project.songs[currentSongIndex].tracks[index].isMuted.toggle()
         hasUnsavedChanges = true
     }
@@ -210,7 +241,26 @@ public final class ProjectViewModel {
     public func toggleSolo(trackID: ID<Track>) {
         guard !project.songs.isEmpty else { return }
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Toggle Solo")
         project.songs[currentSongIndex].tracks[index].isSoloed.toggle()
+        hasUnsavedChanges = true
+    }
+
+    /// Sets the volume on a track.
+    public func setTrackVolume(trackID: ID<Track>, volume: Float) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Adjust Volume")
+        project.songs[currentSongIndex].tracks[index].volume = max(0, min(volume, 2.0))
+        hasUnsavedChanges = true
+    }
+
+    /// Sets the pan on a track.
+    public func setTrackPan(trackID: ID<Track>, pan: Float) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Adjust Pan")
+        project.songs[currentSongIndex].tracks[index].pan = max(-1.0, min(pan, 1.0))
         hasUnsavedChanges = true
     }
 
@@ -230,6 +280,7 @@ public final class ProjectViewModel {
     public func addContainer(trackID: ID<Track>, startBar: Int, lengthBars: Int) -> Bool {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
+        registerUndo(actionName: "Add Container")
 
         let newContainer = Container(
             name: "Container",
@@ -251,6 +302,7 @@ public final class ProjectViewModel {
     public func removeContainer(trackID: ID<Track>, containerID: ID<Container>) {
         guard !project.songs.isEmpty else { return }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Remove Container")
         project.songs[currentSongIndex].tracks[trackIndex].containers.removeAll { $0.id == containerID }
         if selectedContainerID == containerID {
             selectedContainerID = nil
@@ -263,6 +315,7 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
+        registerUndo(actionName: "Move Container")
 
         let clampedStart = max(newStartBar, 1)
         var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
@@ -282,6 +335,7 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
+        registerUndo(actionName: "Resize Container")
 
         var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
         if let start = newStartBar { proposed.startBar = max(start, 1) }
@@ -306,6 +360,7 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return }
+        registerUndo(actionName: "Toggle Record Arm")
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].isRecordArmed.toggle()
         hasUnsavedChanges = true
     }
@@ -316,6 +371,7 @@ public final class ProjectViewModel {
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return }
 
+        registerUndo(actionName: "Set Recording")
         // Add recording to project
         project.sourceRecordings[recording.id] = recording
         // Update container reference
@@ -329,6 +385,7 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return }
         for trackIndex in project.songs[currentSongIndex].tracks.indices {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Change Loop Settings")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].loopSettings = settings
                 hasUnsavedChanges = true
                 return
@@ -341,6 +398,7 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return }
         for trackIndex in project.songs[currentSongIndex].tracks.indices {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Rename Container")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].name = name
                 hasUnsavedChanges = true
                 return
@@ -351,6 +409,7 @@ public final class ProjectViewModel {
     /// Links containers by setting the same linkGroupID.
     public func linkContainers(containerIDs: [ID<Container>]) {
         guard !project.songs.isEmpty, containerIDs.count >= 2 else { return }
+        registerUndo(actionName: "Link Containers")
         let linkGroupID = ID<LinkGroup>()
         // Find the first container's source recording to share
         var sharedSourceID: ID<SourceRecording>?
@@ -376,6 +435,7 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return }
         for trackIndex in project.songs[currentSongIndex].tracks.indices {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Unlink Container")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].linkGroupID = nil
                 hasUnsavedChanges = true
                 return
@@ -407,6 +467,7 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return nil }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
 
+        registerUndo(actionName: "Import Audio")
         let importer = AudioImporter()
         let recording = try importer.importAudio(from: url, to: audioDirectory)
 

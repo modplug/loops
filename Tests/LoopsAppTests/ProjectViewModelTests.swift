@@ -387,4 +387,340 @@ struct ProjectViewModelTests {
         vm.selectSong(id: secondSongID)
         #expect(vm.selectedContainerID == nil)
     }
+
+    // MARK: - Volume / Pan
+
+    @Test("Set track volume is clamped")
+    @MainActor
+    func setTrackVolume() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackVolume(trackID: trackID, volume: 1.5)
+        #expect(vm.project.songs[0].tracks[0].volume == 1.5)
+
+        vm.setTrackVolume(trackID: trackID, volume: 3.0)
+        #expect(vm.project.songs[0].tracks[0].volume == 2.0) // clamped
+
+        vm.setTrackVolume(trackID: trackID, volume: -1.0)
+        #expect(vm.project.songs[0].tracks[0].volume == 0.0) // clamped
+    }
+
+    @Test("Set track pan is clamped")
+    @MainActor
+    func setTrackPan() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackPan(trackID: trackID, pan: 0.5)
+        #expect(vm.project.songs[0].tracks[0].pan == 0.5)
+
+        vm.setTrackPan(trackID: trackID, pan: 2.0)
+        #expect(vm.project.songs[0].tracks[0].pan == 1.0) // clamped
+
+        vm.setTrackPan(trackID: trackID, pan: -5.0)
+        #expect(vm.project.songs[0].tracks[0].pan == -1.0) // clamped
+    }
+
+    // MARK: - Undo / Redo
+
+    @Test("Undo add track restores previous state")
+    @MainActor
+    func undoAddTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        #expect(vm.project.songs[0].tracks.isEmpty)
+
+        vm.addTrack(kind: .audio)
+        #expect(vm.project.songs[0].tracks.count == 1)
+        #expect(vm.undoManager?.canUndo == true)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks.isEmpty)
+    }
+
+    @Test("Redo restores undone action")
+    @MainActor
+    func redoAddTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+
+        vm.addTrack(kind: .audio)
+        #expect(vm.project.songs[0].tracks.count == 1)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks.isEmpty)
+        #expect(vm.undoManager?.canRedo == true)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks.count == 1)
+    }
+
+    @Test("Undo remove track restores track")
+    @MainActor
+    func undoRemoveTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.removeTrack(id: trackID)
+        #expect(vm.project.songs[0].tracks.isEmpty)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks.count == 1)
+    }
+
+    @Test("Undo rename track restores old name")
+    @MainActor
+    func undoRenameTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.renameTrack(id: trackID, newName: "Lead")
+        #expect(vm.project.songs[0].tracks[0].name == "Lead")
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].name == "Audio 1")
+    }
+
+    @Test("Undo toggle mute restores state")
+    @MainActor
+    func undoToggleMute() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.toggleMute(trackID: trackID)
+        #expect(vm.project.songs[0].tracks[0].isMuted)
+
+        vm.undoManager?.undo()
+        #expect(!vm.project.songs[0].tracks[0].isMuted)
+    }
+
+    @Test("Undo toggle solo restores state")
+    @MainActor
+    func undoToggleSolo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.toggleSolo(trackID: trackID)
+        #expect(vm.project.songs[0].tracks[0].isSoloed)
+
+        vm.undoManager?.undo()
+        #expect(!vm.project.songs[0].tracks[0].isSoloed)
+    }
+
+    @Test("Undo add container restores empty track")
+    @MainActor
+    func undoAddContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers.isEmpty)
+    }
+
+    @Test("Undo remove container restores it")
+    @MainActor
+    func undoRemoveContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        vm.removeContainer(trackID: trackID, containerID: containerID)
+        #expect(vm.project.songs[0].tracks[0].containers.isEmpty)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+    }
+
+    @Test("Undo move container restores position")
+    @MainActor
+    func undoMoveContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let _ = vm.moveContainer(trackID: trackID, containerID: containerID, newStartBar: 5)
+        #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 5)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 1)
+    }
+
+    @Test("Undo resize container restores dimensions")
+    @MainActor
+    func undoResizeContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let _ = vm.resizeContainer(trackID: trackID, containerID: containerID, newLengthBars: 8)
+        #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 8)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 4)
+    }
+
+    @Test("Undo add song restores song count")
+    @MainActor
+    func undoAddSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        #expect(vm.project.songs.count == 1)
+
+        vm.addSong()
+        #expect(vm.project.songs.count == 2)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs.count == 1)
+    }
+
+    @Test("Undo remove song restores it")
+    @MainActor
+    func undoRemoveSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSong()
+        #expect(vm.project.songs.count == 2)
+        let secondID = vm.project.songs[1].id
+
+        vm.removeSong(id: secondID)
+        #expect(vm.project.songs.count == 1)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs.count == 2)
+    }
+
+    @Test("Undo rename song restores name")
+    @MainActor
+    func undoRenameSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+
+        vm.renameSong(id: songID, newName: "Renamed")
+        #expect(vm.project.songs[0].name == "Renamed")
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].name == "Song 1")
+    }
+
+    @Test("Undo duplicate song removes copy")
+    @MainActor
+    func undoDuplicateSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+
+        vm.duplicateSong(id: songID)
+        #expect(vm.project.songs.count == 2)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs.count == 1)
+    }
+
+    @Test("Undo volume change restores value")
+    @MainActor
+    func undoVolumeChange() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackVolume(trackID: trackID, volume: 0.5)
+        #expect(vm.project.songs[0].tracks[0].volume == 0.5)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].volume == 1.0) // default
+    }
+
+    @Test("Undo pan change restores value")
+    @MainActor
+    func undoPanChange() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackPan(trackID: trackID, pan: -0.5)
+        #expect(vm.project.songs[0].tracks[0].pan == -0.5)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].pan == 0.0) // default
+    }
+
+    @Test("New project clears undo stack")
+    @MainActor
+    func newProjectClearsUndo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        #expect(vm.undoManager?.canUndo == true)
+
+        vm.newProject()
+        #expect(vm.undoManager?.canUndo == false)
+    }
+
+    @Test("Undo action name is set correctly")
+    @MainActor
+    func undoActionName() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+
+        vm.addTrack(kind: .audio)
+        #expect(vm.undoManager?.undoActionName == "Add Track")
+
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.toggleMute(trackID: trackID)
+        #expect(vm.undoManager?.undoActionName == "Toggle Mute")
+    }
+
+    @Test("Multiple undo/redo operations")
+    @MainActor
+    func multipleUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        vm.addTrack(kind: .bus)
+        #expect(vm.project.songs[0].tracks.count == 3)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks.count == 2)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks.count == 1)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks.count == 2)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks.count == 3)
+    }
 }
