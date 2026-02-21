@@ -205,12 +205,34 @@ public final class ProjectViewModel {
         return true
     }
 
+    /// Toggles record-arm on a container.
+    public func toggleContainerRecordArm(trackID: ID<Track>, containerID: ID<Container>) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return }
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].isRecordArmed.toggle()
+        hasUnsavedChanges = true
+    }
+
+    /// Updates the source recording for a container after recording completes.
+    public func setContainerRecording(trackID: ID<Track>, containerID: ID<Container>, recording: SourceRecording) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return }
+
+        // Add recording to project
+        project.sourceRecordings[recording.id] = recording
+        // Update container reference
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].sourceRecordingID = recording.id
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].isRecordArmed = false
+        hasUnsavedChanges = true
+    }
+
     /// Checks if a container would overlap any existing container on the same track.
     private func hasOverlap(in track: Track, with container: Container, excluding excludeID: ID<Container>? = nil) -> Bool {
         for existing in track.containers {
             if existing.id == excludeID { continue }
             if existing.id == container.id { continue }
-            // Two ranges overlap if one starts before the other ends and vice versa
             if container.startBar < existing.endBar && existing.startBar < container.endBar {
                 return true
             }
