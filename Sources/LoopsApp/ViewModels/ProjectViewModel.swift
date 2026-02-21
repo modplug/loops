@@ -171,8 +171,8 @@ public final class ProjectViewModel {
                             startBar: container.startBar,
                             lengthBars: container.lengthBars,
                             sourceRecordingID: container.sourceRecordingID,
-                            loopSettings: container.loopSettings,
-                            linkGroupID: container.linkGroupID
+                            linkGroupID: container.linkGroupID,
+                            loopSettings: container.loopSettings
                         )
                     },
                     insertEffects: track.insertEffects,
