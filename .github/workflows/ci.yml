@@ -20,6 +20,7 @@ jobs:
 
       - name: Build
         run: |
+          set -o pipefail
           swift build 2>&1 | tee build-output.txt || BUILD_FAILED=1
           if [ "$BUILD_FAILED" = "1" ]; then
             echo "## Build Failed" >> $GITHUB_STEP_SUMMARY
@@ -31,6 +32,7 @@ jobs:
 
       - name: Run tests
         run: |
+          set -o pipefail
           swift test 2>&1 | tee test-output.txt || TEST_FAILED=1
           if [ "$TEST_FAILED" = "1" ]; then
             echo "## Tests Failed" >> $GITHUB_STEP_SUMMARY
