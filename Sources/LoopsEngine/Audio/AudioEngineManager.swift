@@ -26,11 +26,16 @@ public final class AudioEngineManager: @unchecked Sendable {
         }
     }
 
+    /// Whether audio hardware with output channels is available.
+    public var hasAudioHardware: Bool {
+        !deviceManager.outputDevices().isEmpty
+    }
+
     /// Starts the audio engine with default system devices.
     /// Throws `LoopsError.engineStartFailed` on failure.
     public func start() throws {
         guard !isRunning else { return }
-        guard deviceManager.defaultOutputDeviceID() != nil else {
+        guard hasAudioHardware else {
             throw LoopsError.engineStartFailed(
                 underlying: "No audio output device available"
             )

@@ -9,8 +9,8 @@ struct AudioEngineManagerTests {
     /// Helper: skips if no audio output device (CI runners may lack audio hardware).
     private func requireAudioHardware() throws {
         try #require(
-            DeviceManager().defaultOutputDeviceID() != nil,
-            "No audio output device available"
+            !DeviceManager().outputDevices().isEmpty,
+            "No audio output device with channels available"
         )
     }
 
