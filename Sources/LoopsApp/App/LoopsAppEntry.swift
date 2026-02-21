@@ -5,18 +5,27 @@ import LoopsEngine
 /// The root view of the Loops application.
 public struct LoopsRootView: View {
     @Bindable var viewModel: ProjectViewModel
+    @Bindable var transportViewModel: TransportViewModel
     @State private var timelineViewModel = TimelineViewModel()
 
-    public init(viewModel: ProjectViewModel) {
+    public init(viewModel: ProjectViewModel, transportViewModel: TransportViewModel) {
         self.viewModel = viewModel
+        self.transportViewModel = transportViewModel
     }
 
     public var body: some View {
-        MainContentView(
-            projectViewModel: viewModel,
-            timelineViewModel: timelineViewModel
-        )
+        VStack(spacing: 0) {
+            ToolbarView(viewModel: transportViewModel)
+            Divider()
+            MainContentView(
+                projectViewModel: viewModel,
+                timelineViewModel: timelineViewModel
+            )
+        }
         .frame(minWidth: 800, minHeight: 500)
+        .onChange(of: transportViewModel.playheadBar) { _, newValue in
+            timelineViewModel.playheadBar = newValue
+        }
     }
 }
 

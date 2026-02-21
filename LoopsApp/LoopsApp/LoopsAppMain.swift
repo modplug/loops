@@ -6,14 +6,19 @@ import LoopsEngine
 struct LoopsMainApp: App {
     @State private var viewModel = ProjectViewModel()
     @State private var engineManager = AudioEngineManager()
+    @State private var transportManager = TransportManager()
+    @State private var transportViewModel: TransportViewModel?
     @State private var settingsViewModel: SettingsViewModel?
 
     var body: some Scene {
         WindowGroup {
-            LoopsRootView(viewModel: viewModel)
-                .onAppear {
-                    startEngine()
-                }
+            if let transportVM = transportViewModel {
+                LoopsRootView(viewModel: viewModel, transportViewModel: transportVM)
+            } else {
+                Text("Loading...")
+                    .frame(minWidth: 800, minHeight: 500)
+                    .onAppear { initialize() }
+            }
         }
         .defaultSize(width: 1200, height: 700)
         .commands {
@@ -26,24 +31,22 @@ struct LoopsMainApp: App {
             } else {
                 Text("Loading settings...")
                     .frame(width: 400, height: 300)
-                    .onAppear { initSettingsViewModel() }
+                    .onAppear { initialize() }
             }
         }
     }
 
-    private func startEngine() {
+    private func initialize() {
         do {
             try engineManager.start()
         } catch {
-            // Engine start failure is non-fatal at launch;
-            // user can fix via Settings > Audio Device
+            // Engine start failure is non-fatal at launch
         }
-        initSettingsViewModel()
-    }
-
-    private func initSettingsViewModel() {
         if settingsViewModel == nil {
             settingsViewModel = SettingsViewModel(engineManager: engineManager)
+        }
+        if transportViewModel == nil {
+            transportViewModel = TransportViewModel(transport: transportManager)
         }
     }
 }

@@ -1,5 +1,6 @@
 import Testing
 @testable import LoopsApp
+@testable import LoopsEngine
 
 @Suite("LoopsApp Module Tests")
 struct LoopsAppModuleTests {
@@ -7,6 +8,8 @@ struct LoopsAppModuleTests {
     @MainActor
     func rootViewCreation() {
         let viewModel = ProjectViewModel()
-        let _ = LoopsRootView(viewModel: viewModel)
+        let transport = TransportManager()
+        let transportVM = TransportViewModel(transport: transport)
+        let _ = LoopsRootView(viewModel: viewModel, transportViewModel: transportVM)
     }
 }
