@@ -5,23 +5,17 @@ import LoopsEngine
 /// The root view of the Loops application.
 public struct LoopsRootView: View {
     @Bindable var viewModel: ProjectViewModel
+    @State private var timelineViewModel = TimelineViewModel()
 
     public init(viewModel: ProjectViewModel) {
         self.viewModel = viewModel
     }
 
     public var body: some View {
-        VStack {
-            Text(viewModel.project.name)
-                .font(.largeTitle)
-            if viewModel.project.songs.isEmpty {
-                Text("No songs yet")
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("\(viewModel.project.songs.count) song(s)")
-                    .foregroundStyle(.secondary)
-            }
-        }
+        MainContentView(
+            projectViewModel: viewModel,
+            timelineViewModel: timelineViewModel
+        )
         .frame(minWidth: 800, minHeight: 500)
     }
 }
