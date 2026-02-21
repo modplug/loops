@@ -82,18 +82,30 @@ public struct MainContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            // Inspector (placeholder)
+            // Inspector
             VStack {
                 Text("Inspector")
                     .font(.headline)
                     .padding(.top, 8)
                 Divider()
-                Text("Select a track or container")
-                    .foregroundStyle(.secondary)
-                    .padding()
-                Spacer()
+                if let container = projectViewModel.selectedContainer {
+                    ContainerInspector(
+                        container: container,
+                        onUpdateLoopSettings: { settings in
+                            projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)
+                        },
+                        onUpdateName: { name in
+                            projectViewModel.updateContainerName(containerID: container.id, name: name)
+                        }
+                    )
+                } else {
+                    Text("Select a container")
+                        .foregroundStyle(.secondary)
+                        .padding()
+                    Spacer()
+                }
             }
-            .frame(minWidth: 180, idealWidth: 220, maxWidth: 280)
+            .frame(minWidth: 180, idealWidth: 250, maxWidth: 300)
         }
         .alert("Delete Track", isPresented: .init(
             get: { trackToDelete != nil },

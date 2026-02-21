@@ -228,6 +228,76 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    /// Updates the loop settings for a container.
+    public func updateContainerLoopSettings(containerID: ID<Container>, settings: LoopSettings) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].loopSettings = settings
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Updates the name of a container.
+    public func updateContainerName(containerID: ID<Container>, name: String) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].name = name
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Links containers by setting the same linkGroupID.
+    public func linkContainers(containerIDs: [ID<Container>]) {
+        guard !project.songs.isEmpty, containerIDs.count >= 2 else { return }
+        let linkGroupID = ID<LinkGroup>()
+        // Find the first container's source recording to share
+        var sharedSourceID: ID<SourceRecording>?
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            for containerIndex in project.songs[currentSongIndex].tracks[trackIndex].containers.indices {
+                let container = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+                if containerIDs.contains(container.id) {
+                    if sharedSourceID == nil {
+                        sharedSourceID = container.sourceRecordingID
+                    }
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].linkGroupID = linkGroupID
+                    if let srcID = sharedSourceID {
+                        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].sourceRecordingID = srcID
+                    }
+                }
+            }
+        }
+        hasUnsavedChanges = true
+    }
+
+    /// Unlinks a container by clearing its linkGroupID.
+    public func unlinkContainer(containerID: ID<Container>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].linkGroupID = nil
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Returns the selected container if one is selected.
+    public var selectedContainer: Container? {
+        guard let id = selectedContainerID, let song = currentSong else { return nil }
+        for track in song.tracks {
+            if let container = track.containers.first(where: { $0.id == id }) {
+                return container
+            }
+        }
+        return nil
+    }
+
     /// Checks if a container would overlap any existing container on the same track.
     private func hasOverlap(in track: Track, with container: Container, excluding excludeID: ID<Container>? = nil) -> Bool {
         for existing in track.containers {
