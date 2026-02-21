@@ -92,7 +92,7 @@ public final class MIDIManager: @unchecked Sendable {
             for _ in 0..<list.numPackets {
                 let words = packet.pointee.words
                 parseMessage(word: words.0)
-                packet = UnsafeMutablePointer(mutating: MIDIEventPacketNext(packet))
+                packet = MIDIEventPacketNext(packet)
             }
         }
     }

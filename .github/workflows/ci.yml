@@ -11,7 +11,6 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
-      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -33,14 +32,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Build failed, posting error report..."
           ERRORS=$(cat build-output.txt)
           gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments \
             -f "body=## CI Build Failed
-
           \`\`\`
           $ERRORS
-          \`\`\`"
+          \`\`\`" || true
           exit 1
 
       - name: Run tests
@@ -55,14 +52,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Tests failed, posting error report..."
           ERRORS=$(tail -100 test-output.txt)
           gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments \
             -f "body=## CI Tests Failed
-
           \`\`\`
           $ERRORS
-          \`\`\`"
+          \`\`\`" || true
           exit 1
 
       - name: Upload build logs
