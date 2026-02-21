@@ -9,6 +9,7 @@ public final class ProjectViewModel {
     public var project: Project
     public var projectURL: URL?
     public var hasUnsavedChanges: Bool = false
+    public var isExportSheetPresented: Bool = false
     public var undoManager: UndoManager?
 
     private let persistence = ProjectPersistence()

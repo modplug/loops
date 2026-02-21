@@ -39,6 +39,9 @@ public struct LoopsRootView: View {
         .onChange(of: transportViewModel.playheadBar) { _, newValue in
             timelineViewModel.playheadBar = newValue
         }
+        .sheet(isPresented: $viewModel.isExportSheetPresented) {
+            ExportAudioView(viewModel: viewModel)
+        }
     }
 }
 
@@ -82,6 +85,13 @@ public struct ProjectCommands: Commands {
                 saveProjectAs()
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
+
+            Divider()
+
+            Button("Export Audio...") {
+                viewModel.isExportSheetPresented = true
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
         }
     }
 
