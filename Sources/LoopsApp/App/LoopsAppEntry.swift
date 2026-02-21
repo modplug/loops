@@ -7,6 +7,7 @@ public struct LoopsRootView: View {
     @Bindable var viewModel: ProjectViewModel
     @Bindable var transportViewModel: TransportViewModel
     @State private var timelineViewModel = TimelineViewModel()
+    @State private var setlistViewModel: SetlistViewModel?
 
     public init(viewModel: ProjectViewModel, transportViewModel: TransportViewModel) {
         self.viewModel = viewModel
@@ -14,15 +15,27 @@ public struct LoopsRootView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            ToolbarView(viewModel: transportViewModel)
-            Divider()
-            MainContentView(
-                projectViewModel: viewModel,
-                timelineViewModel: timelineViewModel
-            )
+        ZStack {
+            VStack(spacing: 0) {
+                ToolbarView(viewModel: transportViewModel)
+                Divider()
+                MainContentView(
+                    projectViewModel: viewModel,
+                    timelineViewModel: timelineViewModel,
+                    setlistViewModel: setlistViewModel
+                )
+            }
+
+            if let setlistVM = setlistViewModel, setlistVM.isPerformMode {
+                PerformModeView(viewModel: setlistVM)
+            }
         }
         .frame(minWidth: 800, minHeight: 500)
+        .onAppear {
+            if setlistViewModel == nil {
+                setlistViewModel = SetlistViewModel(project: viewModel)
+            }
+        }
         .onChange(of: transportViewModel.playheadBar) { _, newValue in
             timelineViewModel.playheadBar = newValue
         }

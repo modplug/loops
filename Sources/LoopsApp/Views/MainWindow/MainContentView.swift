@@ -1,18 +1,27 @@
 import SwiftUI
 import LoopsCore
 
+/// Sidebar tab selection.
+public enum SidebarTab: String, CaseIterable {
+    case songs = "Songs"
+    case setlists = "Setlists"
+}
+
 /// Main content area using HSplitView: sidebar + timeline + inspector.
 public struct MainContentView: View {
     @Bindable var projectViewModel: ProjectViewModel
     @Bindable var timelineViewModel: TimelineViewModel
+    var setlistViewModel: SetlistViewModel?
     @State private var trackToDelete: Track?
     @State private var editingTrackID: ID<Track>?
     @State private var editingTrackName: String = ""
     @State private var isSidebarVisible: Bool = true
+    @State private var sidebarTab: SidebarTab = .songs
 
-    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel) {
+    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, setlistViewModel: SetlistViewModel? = nil) {
         self.projectViewModel = projectViewModel
         self.timelineViewModel = timelineViewModel
+        self.setlistViewModel = setlistViewModel
     }
 
     private var currentSong: Song? {
@@ -23,8 +32,31 @@ public struct MainContentView: View {
         HSplitView {
             // Sidebar
             if isSidebarVisible {
-                SongListView(viewModel: projectViewModel)
-                    .frame(minWidth: 150, idealWidth: 200, maxWidth: 250)
+                VStack(spacing: 0) {
+                    // Tab picker
+                    Picker("", selection: $sidebarTab) {
+                        ForEach(SidebarTab.allCases, id: \.self) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(8)
+
+                    switch sidebarTab {
+                    case .songs:
+                        SongListView(viewModel: projectViewModel)
+                    case .setlists:
+                        if let setlistVM = setlistViewModel {
+                            SetlistSidebarView(viewModel: setlistVM)
+                        } else {
+                            Text("Setlists unavailable")
+                                .foregroundStyle(.secondary)
+                                .padding()
+                            Spacer()
+                        }
+                    }
+                }
+                .frame(minWidth: 150, idealWidth: 200, maxWidth: 250)
             }
 
             // Timeline center area
@@ -118,6 +150,14 @@ public struct MainContentView: View {
                 }
                 .help("Toggle Sidebar")
                 .keyboardShortcut("s", modifiers: [.command, .option])
+            }
+            ToolbarItem(placement: .primaryAction) {
+                if let setlistVM = setlistViewModel, setlistVM.selectedSetlist != nil {
+                    Button(action: { setlistVM.enterPerformMode() }) {
+                        Label("Perform", systemImage: "play.rectangle.fill")
+                    }
+                    .help("Enter Perform Mode")
+                }
             }
         }
     }
