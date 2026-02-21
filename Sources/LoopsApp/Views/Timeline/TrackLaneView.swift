@@ -2,54 +2,118 @@ import SwiftUI
 import LoopsCore
 
 /// Renders a single track's horizontal lane on the timeline.
-/// Containers will be drawn within this lane in future issues.
+/// Supports container rendering and click-drag to create new containers.
 public struct TrackLaneView: View {
     let track: Track
     let pixelsPerBar: CGFloat
     let totalBars: Int
     let height: CGFloat
+    let selectedContainerID: ID<Container>?
+    var onContainerSelect: ((_ containerID: ID<Container>) -> Void)?
+    var onContainerDelete: ((_ containerID: ID<Container>) -> Void)?
+    var onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Bool)?
+    var onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Int, _ newLength: Int) -> Bool)?
+    var onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)?
+    var onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)?
 
-    public init(track: Track, pixelsPerBar: CGFloat, totalBars: Int, height: CGFloat = 80) {
+    @State private var dragStartX: CGFloat?
+    @State private var dragCurrentX: CGFloat?
+    @State private var isCreatingContainer = false
+
+    public init(
+        track: Track,
+        pixelsPerBar: CGFloat,
+        totalBars: Int,
+        height: CGFloat = 80,
+        selectedContainerID: ID<Container>? = nil,
+        onContainerSelect: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onContainerDelete: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Bool)? = nil,
+        onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
+        onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)? = nil,
+        onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)? = nil
+    ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
         self.totalBars = totalBars
         self.height = height
+        self.selectedContainerID = selectedContainerID
+        self.onContainerSelect = onContainerSelect
+        self.onContainerDelete = onContainerDelete
+        self.onContainerMove = onContainerMove
+        self.onContainerResizeLeft = onContainerResizeLeft
+        self.onContainerResizeRight = onContainerResizeRight
+        self.onCreateContainer = onCreateContainer
     }
 
     public var body: some View {
-        ZStack(alignment: .leading) {
-            // Track background
+        ZStack(alignment: .topLeading) {
+            // Track background — also handles drag-to-create
             Rectangle()
                 .fill(Color(nsColor: .textBackgroundColor).opacity(0.3))
+                .contentShape(Rectangle())
+                .gesture(createContainerGesture)
 
-            // Render containers
+            // Draw-to-create preview
+            if isCreatingContainer, let startX = dragStartX, let currentX = dragCurrentX {
+                let minX = min(startX, currentX)
+                let maxX = max(startX, currentX)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(trackColor.opacity(0.2))
+                    .strokeBorder(trackColor.opacity(0.5), lineWidth: 1, antialiased: true)
+                    .frame(width: maxX - minX, height: height - 4)
+                    .offset(x: minX, y: 2)
+            }
+
+            // Existing containers
             ForEach(track.containers) { container in
-                containerRect(container)
+                ContainerView(
+                    container: container,
+                    pixelsPerBar: pixelsPerBar,
+                    height: height - 4,
+                    isSelected: container.id == selectedContainerID,
+                    trackColor: trackColor,
+                    onSelect: { onContainerSelect?(container.id) },
+                    onDelete: { onContainerDelete?(container.id) },
+                    onMove: { newStart in onContainerMove?(container.id, newStart) ?? false },
+                    onResizeLeft: { start, len in onContainerResizeLeft?(container.id, start, len) ?? false },
+                    onResizeRight: { len in onContainerResizeRight?(container.id, len) ?? false }
+                )
+                .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
             }
         }
         .frame(width: CGFloat(totalBars) * pixelsPerBar, height: height)
     }
 
-    private func containerRect(_ container: Container) -> some View {
-        let x = CGFloat(container.startBar - 1) * pixelsPerBar
-        let width = CGFloat(container.lengthBars) * pixelsPerBar
+    private var createContainerGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                if !isCreatingContainer {
+                    isCreatingContainer = true
+                    // Snap start to bar boundary
+                    let snappedStart = round(value.startLocation.x / pixelsPerBar) * pixelsPerBar
+                    dragStartX = snappedStart
+                }
+                // Snap current to bar boundary
+                let snappedCurrent = round(value.location.x / pixelsPerBar) * pixelsPerBar
+                dragCurrentX = snappedCurrent
+            }
+            .onEnded { value in
+                defer {
+                    isCreatingContainer = false
+                    dragStartX = nil
+                    dragCurrentX = nil
+                }
 
-        return RoundedRectangle(cornerRadius: 4)
-            .fill(trackColor.opacity(0.3))
-            .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(trackColor.opacity(0.6), lineWidth: 1)
-            )
-            .overlay(
-                Text(container.name)
-                    .font(.caption2)
-                    .foregroundStyle(.primary)
-                    .padding(.leading, 4),
-                alignment: .topLeading
-            )
-            .frame(width: width, height: height - 4)
-            .offset(x: x, y: 0)
-            .padding(.vertical, 2)
+                guard let startX = dragStartX, let currentX = dragCurrentX else { return }
+
+                let minX = min(startX, currentX)
+                let maxX = max(startX, currentX)
+                let startBar = Int(minX / pixelsPerBar) + 1
+                let lengthBars = max(Int(round((maxX - minX) / pixelsPerBar)), 1)
+
+                onCreateContainer?(startBar, lengthBars)
+            }
     }
 
     private var trackColor: Color {

@@ -71,6 +71,7 @@ public struct MainContentView: View {
                         // Timeline
                         TimelineView(
                             viewModel: timelineViewModel,
+                            projectViewModel: projectViewModel,
                             song: song
                         )
                     }

@@ -131,4 +131,136 @@ struct ProjectViewModelTests {
         vm.toggleMute(trackID: ID<Track>())
         vm.toggleSolo(trackID: ID<Track>())
     }
+
+    // MARK: - Container Management
+
+    @Test("Add container to track")
+    @MainActor
+    func addContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let result = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        #expect(result)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+        #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 1)
+        #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 4)
+        #expect(vm.selectedContainerID != nil)
+    }
+
+    @Test("Container overlap prevention")
+    @MainActor
+    func containerOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        // Add first container: bars 1-4
+        let first = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        #expect(first)
+
+        // Try overlapping container: bars 3-6 — should fail
+        let overlap = vm.addContainer(trackID: trackID, startBar: 3, lengthBars: 4)
+        #expect(!overlap)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+
+        // Non-overlapping container: bars 5-8 — should succeed
+        let noOverlap = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+        #expect(noOverlap)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+    }
+
+    @Test("Remove container")
+    @MainActor
+    func removeContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        vm.selectedContainerID = containerID
+        vm.removeContainer(trackID: trackID, containerID: containerID)
+        #expect(vm.project.songs[0].tracks[0].containers.isEmpty)
+        #expect(vm.selectedContainerID == nil)
+    }
+
+    @Test("Move container")
+    @MainActor
+    func moveContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let result = vm.moveContainer(trackID: trackID, containerID: containerID, newStartBar: 5)
+        #expect(result)
+        #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 5)
+    }
+
+    @Test("Move container prevents overlap")
+    @MainActor
+    func moveContainerOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+        let firstID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Try to move first container to bar 4 — would overlap with second
+        let result = vm.moveContainer(trackID: trackID, containerID: firstID, newStartBar: 4)
+        #expect(!result)
+        #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 1)
+    }
+
+    @Test("Resize container")
+    @MainActor
+    func resizeContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let result = vm.resizeContainer(trackID: trackID, containerID: containerID, newLengthBars: 8)
+        #expect(result)
+        #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 8)
+    }
+
+    @Test("Resize container prevents overlap")
+    @MainActor
+    func resizeContainerOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+        let firstID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Try to extend first container to 6 bars — would overlap
+        let result = vm.resizeContainer(trackID: trackID, containerID: firstID, newLengthBars: 6)
+        #expect(!result)
+        #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 4)
+    }
+
+    @Test("Container startBar clamps to minimum 1")
+    @MainActor
+    func containerStartBarClamp() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let result = vm.addContainer(trackID: trackID, startBar: -5, lengthBars: 4)
+        #expect(result)
+        #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 1)
+    }
 }

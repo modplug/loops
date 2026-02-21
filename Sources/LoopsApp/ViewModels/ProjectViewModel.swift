@@ -124,4 +124,97 @@ public final class ProjectViewModel {
             project.songs[currentSongIndex].tracks[i].orderIndex = i
         }
     }
+
+    // MARK: - Container Management
+
+    /// The currently selected container ID.
+    public var selectedContainerID: ID<Container>?
+
+    /// Adds a container to a track. Returns false if it would overlap an existing container.
+    public func addContainer(trackID: ID<Track>, startBar: Int, lengthBars: Int) -> Bool {
+        guard !project.songs.isEmpty else { return false }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
+
+        let newContainer = Container(
+            name: "Container",
+            startBar: max(startBar, 1),
+            lengthBars: max(lengthBars, 1)
+        )
+
+        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: newContainer) {
+            return false
+        }
+
+        project.songs[currentSongIndex].tracks[trackIndex].containers.append(newContainer)
+        selectedContainerID = newContainer.id
+        hasUnsavedChanges = true
+        return true
+    }
+
+    /// Removes a container from its track.
+    public func removeContainer(trackID: ID<Track>, containerID: ID<Container>) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        project.songs[currentSongIndex].tracks[trackIndex].containers.removeAll { $0.id == containerID }
+        if selectedContainerID == containerID {
+            selectedContainerID = nil
+        }
+        hasUnsavedChanges = true
+    }
+
+    /// Moves a container to a new start bar. Returns false if it would overlap.
+    public func moveContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Int) -> Bool {
+        guard !project.songs.isEmpty else { return false }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
+
+        let clampedStart = max(newStartBar, 1)
+        var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+        proposed.startBar = clampedStart
+
+        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: proposed, excluding: containerID) {
+            return false
+        }
+
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].startBar = clampedStart
+        hasUnsavedChanges = true
+        return true
+    }
+
+    /// Resizes a container. Returns false if it would overlap.
+    public func resizeContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Int? = nil, newLengthBars: Int? = nil) -> Bool {
+        guard !project.songs.isEmpty else { return false }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
+
+        var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+        if let start = newStartBar { proposed.startBar = max(start, 1) }
+        if let length = newLengthBars { proposed.lengthBars = max(length, 1) }
+
+        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: proposed, excluding: containerID) {
+            return false
+        }
+
+        if let start = newStartBar {
+            project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].startBar = max(start, 1)
+        }
+        if let length = newLengthBars {
+            project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].lengthBars = max(length, 1)
+        }
+        hasUnsavedChanges = true
+        return true
+    }
+
+    /// Checks if a container would overlap any existing container on the same track.
+    private func hasOverlap(in track: Track, with container: Container, excluding excludeID: ID<Container>? = nil) -> Bool {
+        for existing in track.containers {
+            if existing.id == excludeID { continue }
+            if existing.id == container.id { continue }
+            // Two ranges overlap if one starts before the other ends and vice versa
+            if container.startBar < existing.endBar && existing.startBar < container.endBar {
+                return true
+            }
+        }
+        return false
+    }
 }

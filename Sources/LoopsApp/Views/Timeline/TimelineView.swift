@@ -4,11 +4,13 @@ import LoopsCore
 /// The main timeline view combining ruler, grid, track lanes, and playhead.
 public struct TimelineView: View {
     @Bindable var viewModel: TimelineViewModel
+    @Bindable var projectViewModel: ProjectViewModel
     let song: Song
     let trackHeight: CGFloat
 
-    public init(viewModel: TimelineViewModel, song: Song, trackHeight: CGFloat = 80) {
+    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, trackHeight: CGFloat = 80) {
         self.viewModel = viewModel
+        self.projectViewModel = projectViewModel
         self.song = song
         self.trackHeight = trackHeight
     }
@@ -50,7 +52,26 @@ public struct TimelineView: View {
                                 track: track,
                                 pixelsPerBar: viewModel.pixelsPerBar,
                                 totalBars: viewModel.totalBars,
-                                height: trackHeight
+                                height: trackHeight,
+                                selectedContainerID: projectViewModel.selectedContainerID,
+                                onContainerSelect: { containerID in
+                                    projectViewModel.selectedContainerID = containerID
+                                },
+                                onContainerDelete: { containerID in
+                                    projectViewModel.removeContainer(trackID: track.id, containerID: containerID)
+                                },
+                                onContainerMove: { containerID, newStartBar in
+                                    projectViewModel.moveContainer(trackID: track.id, containerID: containerID, newStartBar: newStartBar)
+                                },
+                                onContainerResizeLeft: { containerID, newStart, newLength in
+                                    projectViewModel.resizeContainer(trackID: track.id, containerID: containerID, newStartBar: newStart, newLengthBars: newLength)
+                                },
+                                onContainerResizeRight: { containerID, newLength in
+                                    projectViewModel.resizeContainer(trackID: track.id, containerID: containerID, newLengthBars: newLength)
+                                },
+                                onCreateContainer: { startBar, lengthBars in
+                                    let _ = projectViewModel.addContainer(trackID: track.id, startBar: startBar, lengthBars: lengthBars)
+                                }
                             )
                         }
                     }
@@ -74,6 +95,20 @@ public struct TimelineView: View {
         .onKeyPress("-") {
             viewModel.zoomOut()
             return .handled
+        }
+        .onKeyPress(.delete) {
+            deleteSelectedContainer()
+            return .handled
+        }
+    }
+
+    private func deleteSelectedContainer() {
+        guard let containerID = projectViewModel.selectedContainerID else { return }
+        for track in song.tracks {
+            if track.containers.contains(where: { $0.id == containerID }) {
+                projectViewModel.removeContainer(trackID: track.id, containerID: containerID)
+                return
+            }
         }
     }
 }
