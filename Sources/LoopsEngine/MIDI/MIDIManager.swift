@@ -1,0 +1,116 @@
+import Foundation
+import CoreMIDI
+import LoopsCore
+
+/// Manages CoreMIDI client, input ports, and connects to all available sources.
+public final class MIDIManager: @unchecked Sendable {
+    private var client: MIDIClientRef = 0
+    private var inputPort: MIDIPortRef = 0
+    public private(set) var isActive: Bool = false
+
+    /// Callback for received MIDI events.
+    public var onMIDIEvent: ((MIDITrigger) -> Void)?
+
+    public init() {}
+
+    deinit {
+        stop()
+    }
+
+    /// Initializes CoreMIDI client and input port, connects to all sources.
+    public func start() throws {
+        guard !isActive else { return }
+
+        var status = MIDIClientCreateWithBlock("Loops" as CFString, &client) { [weak self] notification in
+            self?.handleNotification(notification)
+        }
+        guard status == noErr else {
+            throw LoopsError.midiClientCreationFailed(status: status)
+        }
+
+        status = MIDIInputPortCreateWithProtocol(
+            client,
+            "LoopsInput" as CFString,
+            ._1_0,
+            &inputPort
+        ) { [weak self] eventList, _ in
+            self?.handleEventList(eventList)
+        }
+        guard status == noErr else {
+            throw LoopsError.midiPortCreationFailed(status: status)
+        }
+
+        connectAllSources()
+        isActive = true
+    }
+
+    /// Disconnects from all sources and disposes of the client.
+    public func stop() {
+        guard isActive else { return }
+        MIDIPortDispose(inputPort)
+        MIDIClientDispose(client)
+        inputPort = 0
+        client = 0
+        isActive = false
+    }
+
+    /// Returns the names of all connected MIDI sources.
+    public func sourceNames() -> [String] {
+        let count = MIDIGetNumberOfSources()
+        var names: [String] = []
+        for i in 0..<count {
+            let source = MIDIGetSource(i)
+            var name: Unmanaged<CFString>?
+            MIDIObjectGetStringProperty(source, kMIDIPropertyDisplayName, &name)
+            if let cfName = name?.takeRetainedValue() {
+                names.append(cfName as String)
+            }
+        }
+        return names
+    }
+
+    // MARK: - Private
+
+    private func connectAllSources() {
+        let count = MIDIGetNumberOfSources()
+        for i in 0..<count {
+            let source = MIDIGetSource(i)
+            MIDIPortConnectSource(inputPort, source, nil)
+        }
+    }
+
+    private func handleNotification(_ notification: UnsafePointer<MIDINotification>) {
+        if notification.pointee.messageID == .msgSetupChanged {
+            connectAllSources()
+        }
+    }
+
+    private func handleEventList(_ eventList: UnsafePointer<MIDIEventList>) {
+        let list = eventList.pointee
+        withUnsafePointer(to: list.packet) { firstPacket in
+            var packet = firstPacket
+            for _ in 0..<list.numPackets {
+                let words = packet.pointee.words
+                parseMessage(word: words.0)
+                packet = UnsafeMutablePointer(mutating: MIDIEventPacketNext(packet))
+            }
+        }
+    }
+
+    private func parseMessage(word: UInt32) {
+        let status = UInt8((word >> 16) & 0xF0)
+        let channel = UInt8((word >> 16) & 0x0F)
+        let data1 = UInt8((word >> 8) & 0xFF)
+
+        switch status {
+        case 0xB0: // Control Change
+            let trigger = MIDITrigger.controlChange(channel: channel, controller: data1)
+            onMIDIEvent?(trigger)
+        case 0x90: // Note On
+            let trigger = MIDITrigger.noteOn(channel: channel, note: data1)
+            onMIDIEvent?(trigger)
+        default:
+            break
+        }
+    }
+}
