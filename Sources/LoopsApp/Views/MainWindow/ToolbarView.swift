@@ -27,7 +27,7 @@ public struct ToolbarView: View {
                 // Play/Pause
                 Button(action: { viewModel.togglePlayPause() }) {
                     Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                        .foregroundStyle(viewModel.isPlaying ? .accentColor : .primary)
+                        .foregroundStyle(viewModel.isPlaying ? Color.accentColor : Color.primary)
                         .font(.title2)
                 }
                 .buttonStyle(.plain)
@@ -73,7 +73,7 @@ public struct ToolbarView: View {
             // Metronome toggle
             Button(action: { viewModel.toggleMetronome() }) {
                 Image(systemName: "metronome")
-                    .foregroundStyle(viewModel.isMetronomeEnabled ? .accentColor : .secondary)
+                    .foregroundStyle(viewModel.isMetronomeEnabled ? Color.accentColor : Color.secondary)
                     .font(.title3)
             }
             .buttonStyle(.plain)
