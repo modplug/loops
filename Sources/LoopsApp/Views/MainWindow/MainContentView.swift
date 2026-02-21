@@ -5,6 +5,9 @@ import LoopsCore
 public struct MainContentView: View {
     @Bindable var projectViewModel: ProjectViewModel
     @Bindable var timelineViewModel: TimelineViewModel
+    @State private var trackToDelete: Track?
+    @State private var editingTrackID: ID<Track>?
+    @State private var editingTrackName: String = ""
 
     public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel) {
         self.projectViewModel = projectViewModel
@@ -12,7 +15,7 @@ public struct MainContentView: View {
     }
 
     private var currentSong: Song? {
-        projectViewModel.project.songs.first
+        projectViewModel.currentSong
     }
 
     public var body: some View {
@@ -50,10 +53,16 @@ public struct MainContentView: View {
                             ScrollView(.vertical, showsIndicators: false) {
                                 VStack(spacing: 0) {
                                     ForEach(song.tracks) { track in
-                                        TrackHeaderView(track: track)
+                                        trackHeaderWithActions(track: track)
                                     }
                                 }
                             }
+
+                            Divider()
+
+                            // Add Track button
+                            addTrackMenu
+                                .padding(4)
                         }
                         .frame(width: 160)
 
@@ -85,5 +94,87 @@ public struct MainContentView: View {
             }
             .frame(minWidth: 180, idealWidth: 220, maxWidth: 280)
         }
+        .alert("Delete Track", isPresented: .init(
+            get: { trackToDelete != nil },
+            set: { if !$0 { trackToDelete = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { trackToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let track = trackToDelete {
+                    projectViewModel.removeTrack(id: track.id)
+                    trackToDelete = nil
+                }
+            }
+        } message: {
+            if let track = trackToDelete {
+                Text("Are you sure you want to delete \"\(track.name)\"?")
+            }
+        }
+    }
+
+    private func trackHeaderWithActions(track: Track) -> some View {
+        TrackHeaderView(
+            track: track,
+            onMuteToggle: { projectViewModel.toggleMute(trackID: track.id) },
+            onSoloToggle: { projectViewModel.toggleSolo(trackID: track.id) }
+        )
+        .contextMenu {
+            Button("Rename...") {
+                editingTrackID = track.id
+                editingTrackName = track.name
+            }
+            Divider()
+            Button("Delete Track", role: .destructive) {
+                trackToDelete = track
+            }
+        }
+        .onTapGesture(count: 2) {
+            editingTrackID = track.id
+            editingTrackName = track.name
+        }
+        .popover(isPresented: .init(
+            get: { editingTrackID == track.id },
+            set: { if !$0 { commitRename() } }
+        )) {
+            VStack(spacing: 8) {
+                Text("Rename Track")
+                    .font(.headline)
+                TextField("Track name", text: $editingTrackName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
+                    .onSubmit { commitRename() }
+                HStack {
+                    Button("Cancel") {
+                        editingTrackID = nil
+                    }
+                    Button("OK") {
+                        commitRename()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding()
+        }
+    }
+
+    private func commitRename() {
+        if let id = editingTrackID, !editingTrackName.isEmpty {
+            projectViewModel.renameTrack(id: id, newName: editingTrackName)
+        }
+        editingTrackID = nil
+    }
+
+    private var addTrackMenu: some View {
+        Menu {
+            ForEach(TrackKind.allCases, id: \.self) { kind in
+                Button(kind.displayName) {
+                    projectViewModel.addTrack(kind: kind)
+                }
+            }
+        } label: {
+            Label("Add Track", systemImage: "plus")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
     }
 }

@@ -48,4 +48,80 @@ public final class ProjectViewModel {
         projectURL = url
         hasUnsavedChanges = false
     }
+
+    // MARK: - Song Access
+
+    /// Index of the currently active song.
+    public var currentSongIndex: Int {
+        get { min(_currentSongIndex, max(project.songs.count - 1, 0)) }
+        set { _currentSongIndex = newValue }
+    }
+    private var _currentSongIndex: Int = 0
+
+    /// The currently active song, if any.
+    public var currentSong: Song? {
+        guard !project.songs.isEmpty else { return nil }
+        return project.songs[currentSongIndex]
+    }
+
+    // MARK: - Track Management
+
+    /// Adds a new track to the current song with auto-generated name.
+    public func addTrack(kind: TrackKind) {
+        guard !project.songs.isEmpty else { return }
+        let existingCount = project.songs[currentSongIndex].tracks
+            .filter { $0.kind == kind }.count
+        let name = "\(kind.displayName) \(existingCount + 1)"
+        let orderIndex = project.songs[currentSongIndex].tracks.count
+        let track = Track(name: name, kind: kind, orderIndex: orderIndex)
+        project.songs[currentSongIndex].tracks.append(track)
+        hasUnsavedChanges = true
+    }
+
+    /// Removes a track from the current song by ID.
+    public func removeTrack(id: ID<Track>) {
+        guard !project.songs.isEmpty else { return }
+        project.songs[currentSongIndex].tracks.removeAll { $0.id == id }
+        reindexTracks()
+        hasUnsavedChanges = true
+    }
+
+    /// Renames a track in the current song.
+    public func renameTrack(id: ID<Track>, newName: String) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == id }) else { return }
+        project.songs[currentSongIndex].tracks[index].name = newName
+        hasUnsavedChanges = true
+    }
+
+    /// Moves a track from one index to another (reordering).
+    public func moveTrack(from source: IndexSet, to destination: Int) {
+        guard !project.songs.isEmpty else { return }
+        project.songs[currentSongIndex].tracks.move(fromOffsets: source, toOffset: destination)
+        reindexTracks()
+        hasUnsavedChanges = true
+    }
+
+    /// Toggles mute on a track.
+    public func toggleMute(trackID: ID<Track>) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        project.songs[currentSongIndex].tracks[index].isMuted.toggle()
+        hasUnsavedChanges = true
+    }
+
+    /// Toggles solo on a track.
+    public func toggleSolo(trackID: ID<Track>) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        project.songs[currentSongIndex].tracks[index].isSoloed.toggle()
+        hasUnsavedChanges = true
+    }
+
+    private func reindexTracks() {
+        guard !project.songs.isEmpty else { return }
+        for i in project.songs[currentSongIndex].tracks.indices {
+            project.songs[currentSongIndex].tracks[i].orderIndex = i
+        }
+    }
 }

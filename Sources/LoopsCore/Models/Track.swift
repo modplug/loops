@@ -2,6 +2,15 @@ import Foundation
 
 public enum TrackKind: String, Codable, Sendable, CaseIterable {
     case audio, midi, bus, backing
+
+    public var displayName: String {
+        switch self {
+        case .audio: return "Audio"
+        case .midi: return "MIDI"
+        case .bus: return "Bus"
+        case .backing: return "Backing"
+        }
+    }
 }
 
 public struct Track: Codable, Equatable, Sendable, Identifiable {
