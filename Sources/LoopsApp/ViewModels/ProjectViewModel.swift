@@ -394,6 +394,59 @@ public final class ProjectViewModel {
         return nil
     }
 
+    // MARK: - Audio Import
+
+    /// Imports an audio file into a track, creating a container at the specified bar.
+    /// Returns the new container ID, or nil if import failed.
+    public func importAudio(
+        url: URL,
+        trackID: ID<Track>,
+        startBar: Int,
+        audioDirectory: URL
+    ) throws -> ID<Container>? {
+        guard !project.songs.isEmpty else { return nil }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
+
+        let importer = AudioImporter()
+        let recording = try importer.importAudio(from: url, to: audioDirectory)
+
+        // Calculate container length in bars
+        guard let song = currentSong else { return nil }
+        let lengthBars = AudioImporter.barsForDuration(
+            recording.durationSeconds,
+            tempo: song.tempo,
+            timeSignature: song.timeSignature
+        )
+
+        let container = Container(
+            name: url.deletingPathExtension().lastPathComponent,
+            startBar: max(startBar, 1),
+            lengthBars: lengthBars,
+            sourceRecordingID: recording.id,
+            loopSettings: LoopSettings(loopCount: .count(1))
+        )
+
+        // Check for overlap
+        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: container) {
+            return nil
+        }
+
+        project.sourceRecordings[recording.id] = recording
+        project.songs[currentSongIndex].tracks[trackIndex].containers.append(container)
+        selectedContainerID = container.id
+        hasUnsavedChanges = true
+        return container.id
+    }
+
+    /// Returns waveform peaks for a container, if available.
+    public func waveformPeaks(for container: Container) -> [Float]? {
+        guard let recordingID = container.sourceRecordingID,
+              let recording = project.sourceRecordings[recordingID] else { return nil }
+        return recording.waveformPeaks
+    }
+
+    // MARK: - Private
+
     /// Checks if a container would overlap any existing container on the same track.
     private func hasOverlap(in track: Track, with container: Container, excluding excludeID: ID<Container>? = nil) -> Bool {
         for existing in track.containers {

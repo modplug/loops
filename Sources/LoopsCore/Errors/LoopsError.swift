@@ -17,4 +17,6 @@ public enum LoopsError: Error, Sendable {
     case containerOverlap(trackID: String, bar: Int)
     case songNotFound(ID<Song>)
     case trackNotFound(ID<Track>)
+    case importFailed(reason: String)
+    case exportFailed(reason: String)
 }
