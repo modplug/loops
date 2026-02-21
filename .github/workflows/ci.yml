@@ -19,28 +19,14 @@ jobs:
         run: swift --version
 
       - name: Build
-        id: build
-        continue-on-error: true
-        run: swift build 2>&1 | tee build-output.txt
-
-      - name: Show build errors
-        if: steps.build.outcome == 'failure'
         run: |
-          echo "## Build Errors" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -E "(error:|warning:|note:)" build-output.txt | head -100 >> $GITHUB_STEP_SUMMARY || true
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "### Full output (last 200 lines):" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -200 build-output.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Fail if build failed
-        if: steps.build.outcome == 'failure'
-        run: exit 1
+          set -o pipefail
+          swift build 2>&1 | tee build-output.txt
 
       - name: Run tests
-        run: swift test 2>&1 | tee test-output.txt
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee test-output.txt
 
       - name: Upload build logs
         if: always()

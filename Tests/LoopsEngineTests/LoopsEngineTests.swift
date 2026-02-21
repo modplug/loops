@@ -5,6 +5,6 @@ import Testing
 struct LoopsEngineModuleTests {
     @Test("Module version matches core")
     func moduleVersion() {
-        #expect(LoopsEngine.version == "0.1.0")
+        #expect(loopsEngineVersion == "0.1.0")
     }
 }

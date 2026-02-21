@@ -8,6 +8,7 @@ public struct MainContentView: View {
     @State private var trackToDelete: Track?
     @State private var editingTrackID: ID<Track>?
     @State private var editingTrackName: String = ""
+    @State private var isSidebarVisible: Bool = true
 
     public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel) {
         self.projectViewModel = projectViewModel
@@ -20,24 +21,11 @@ public struct MainContentView: View {
 
     public var body: some View {
         HSplitView {
-            // Sidebar (placeholder)
-            VStack {
-                Text("Songs")
-                    .font(.headline)
-                    .padding(.top, 8)
-                Divider()
-                if projectViewModel.project.songs.isEmpty {
-                    Text("No songs")
-                        .foregroundStyle(.secondary)
-                        .padding()
-                } else {
-                    List(projectViewModel.project.songs) { song in
-                        Text(song.name)
-                    }
-                }
-                Spacer()
+            // Sidebar
+            if isSidebarVisible {
+                SongListView(viewModel: projectViewModel)
+                    .frame(minWidth: 150, idealWidth: 200, maxWidth: 250)
             }
-            .frame(minWidth: 150, idealWidth: 200, maxWidth: 250)
 
             // Timeline center area
             if let song = currentSong {
@@ -121,6 +109,15 @@ public struct MainContentView: View {
         } message: {
             if let track = trackToDelete {
                 Text("Are you sure you want to delete \"\(track.name)\"?")
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button(action: { withAnimation { isSidebarVisible.toggle() } }) {
+                    Image(systemName: "sidebar.left")
+                }
+                .help("Toggle Sidebar")
+                .keyboardShortcut("s", modifiers: [.command, .option])
             }
         }
     }

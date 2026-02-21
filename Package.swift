@@ -30,7 +30,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LoopsEngineTests",
-            dependencies: ["LoopsEngine"],
+            dependencies: ["LoopsEngine", "LoopsApp"],
             path: "Tests/LoopsEngineTests"
         ),
         .target(

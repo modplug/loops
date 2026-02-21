@@ -8,4 +8,4 @@ import CoreAudio
 import LoopsCore
 
 /// Module version constant.
-public let loopsEngineVersion = LoopsCore.loopsCoreVersion
+public let loopsEngineVersion = loopsCoreVersion

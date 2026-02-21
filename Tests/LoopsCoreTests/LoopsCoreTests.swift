@@ -5,6 +5,6 @@ import Testing
 struct LoopsCoreModuleTests {
     @Test("Module version is set")
     func moduleVersion() {
-        #expect(LoopsCore.version == "0.1.0")
+        #expect(loopsCoreVersion == "0.1.0")
     }
 }

@@ -263,4 +263,128 @@ struct ProjectViewModelTests {
         #expect(result)
         #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 1)
     }
+
+    // MARK: - Song Management
+
+    @Test("New project sets currentSongID")
+    @MainActor
+    func newProjectSetsSongID() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        #expect(vm.currentSongID != nil)
+        #expect(vm.currentSongID == vm.project.songs[0].id)
+    }
+
+    @Test("Add song creates new song with default settings")
+    @MainActor
+    func addSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSong()
+        #expect(vm.project.songs.count == 2)
+        #expect(vm.project.songs[1].name == "Song 2")
+        #expect(vm.currentSongID == vm.project.songs[1].id)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Select song by ID")
+    @MainActor
+    func selectSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSong()
+        let firstSongID = vm.project.songs[0].id
+        vm.selectSong(id: firstSongID)
+        #expect(vm.currentSongID == firstSongID)
+        #expect(vm.currentSongIndex == 0)
+    }
+
+    @Test("Remove song selects nearest")
+    @MainActor
+    func removeSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSong()
+        vm.addSong()
+        #expect(vm.project.songs.count == 3)
+
+        let secondSongID = vm.project.songs[1].id
+        vm.selectSong(id: secondSongID)
+        vm.removeSong(id: secondSongID)
+
+        #expect(vm.project.songs.count == 2)
+        #expect(vm.currentSongID != nil)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Cannot remove last song")
+    @MainActor
+    func cannotRemoveLastSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        #expect(vm.project.songs.count == 1)
+        let songID = vm.project.songs[0].id
+        vm.removeSong(id: songID)
+        #expect(vm.project.songs.count == 1)
+    }
+
+    @Test("Rename song")
+    @MainActor
+    func renameSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+        vm.renameSong(id: songID, newName: "My Cool Song")
+        #expect(vm.project.songs[0].name == "My Cool Song")
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Duplicate song creates copy")
+    @MainActor
+    func duplicateSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        let songID = vm.project.songs[0].id
+        vm.duplicateSong(id: songID)
+
+        #expect(vm.project.songs.count == 2)
+        #expect(vm.project.songs[1].name == "Song 1 Copy")
+        #expect(vm.project.songs[1].tracks.count == 2)
+        #expect(vm.project.songs[1].tempo == vm.project.songs[0].tempo)
+        // IDs should be different
+        #expect(vm.project.songs[1].id != vm.project.songs[0].id)
+        #expect(vm.project.songs[1].tracks[0].id != vm.project.songs[0].tracks[0].id)
+        // Should select the copy
+        #expect(vm.currentSongID == vm.project.songs[1].id)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Select nonexistent song is no-op")
+    @MainActor
+    func selectNonexistentSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let originalID = vm.currentSongID
+        vm.selectSong(id: ID<Song>())
+        #expect(vm.currentSongID == originalID)
+    }
+
+    @Test("Selecting a song clears container selection")
+    @MainActor
+    func selectSongClearsContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        #expect(vm.selectedContainerID != nil)
+
+        vm.addSong()
+        let secondSongID = vm.project.songs[1].id
+        vm.selectSong(id: vm.project.songs[0].id)
+        vm.selectSong(id: secondSongID)
+        #expect(vm.selectedContainerID == nil)
+    }
 }

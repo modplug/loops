@@ -3,6 +3,7 @@ import Foundation
 import AVFoundation
 @testable import LoopsEngine
 @testable import LoopsCore
+@testable import LoopsApp
 
 @Suite("RecordingManager Tests")
 struct RecordingManagerTests {

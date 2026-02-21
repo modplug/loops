@@ -20,6 +20,7 @@ public final class ProjectViewModel {
     public func newProject() {
         let defaultSong = Song(name: "Song 1")
         project = Project(songs: [defaultSong])
+        currentSongID = defaultSong.id
         projectURL = nil
         hasUnsavedChanges = false
     }
@@ -45,16 +46,31 @@ public final class ProjectViewModel {
     /// Loads a project from a bundle URL.
     public func open(from url: URL) throws {
         project = try persistence.load(from: url)
+        currentSongID = project.songs.first?.id
         projectURL = url
         hasUnsavedChanges = false
     }
 
     // MARK: - Song Access
 
+    /// ID of the currently selected song.
+    public var currentSongID: ID<Song>?
+
     /// Index of the currently active song.
     public var currentSongIndex: Int {
-        get { min(_currentSongIndex, max(project.songs.count - 1, 0)) }
-        set { _currentSongIndex = newValue }
+        get {
+            if let id = currentSongID,
+               let index = project.songs.firstIndex(where: { $0.id == id }) {
+                return index
+            }
+            return min(_currentSongIndex, max(project.songs.count - 1, 0))
+        }
+        set {
+            _currentSongIndex = newValue
+            if project.songs.indices.contains(newValue) {
+                currentSongID = project.songs[newValue].id
+            }
+        }
     }
     private var _currentSongIndex: Int = 0
 
@@ -62,6 +78,86 @@ public final class ProjectViewModel {
     public var currentSong: Song? {
         guard !project.songs.isEmpty else { return nil }
         return project.songs[currentSongIndex]
+    }
+
+    // MARK: - Song Management
+
+    /// Selects a song by its ID.
+    public func selectSong(id: ID<Song>) {
+        guard project.songs.contains(where: { $0.id == id }) else { return }
+        currentSongID = id
+        selectedContainerID = nil
+    }
+
+    /// Adds a new song with default settings.
+    public func addSong() {
+        let existingCount = project.songs.count
+        let song = Song(name: "Song \(existingCount + 1)")
+        project.songs.append(song)
+        currentSongID = song.id
+        hasUnsavedChanges = true
+    }
+
+    /// Removes a song by ID. Will not remove the last remaining song.
+    public func removeSong(id: ID<Song>) {
+        guard project.songs.count > 1 else { return }
+        guard let index = project.songs.firstIndex(where: { $0.id == id }) else { return }
+
+        let wasSelected = currentSongID == id
+        project.songs.remove(at: index)
+
+        if wasSelected {
+            // Select the nearest song
+            let newIndex = min(index, project.songs.count - 1)
+            currentSongID = project.songs[newIndex].id
+            selectedContainerID = nil
+        }
+        hasUnsavedChanges = true
+    }
+
+    /// Renames a song.
+    public func renameSong(id: ID<Song>, newName: String) {
+        guard let index = project.songs.firstIndex(where: { $0.id == id }) else { return }
+        project.songs[index].name = newName
+        hasUnsavedChanges = true
+    }
+
+    /// Duplicates a song and selects the copy.
+    public func duplicateSong(id: ID<Song>) {
+        guard let index = project.songs.firstIndex(where: { $0.id == id }) else { return }
+        let original = project.songs[index]
+        let copy = Song(
+            name: original.name + " Copy",
+            tempo: original.tempo,
+            timeSignature: original.timeSignature,
+            tracks: original.tracks.map { track in
+                Track(
+                    name: track.name,
+                    kind: track.kind,
+                    volume: track.volume,
+                    pan: track.pan,
+                    isMuted: track.isMuted,
+                    isSoloed: track.isSoloed,
+                    containers: track.containers.map { container in
+                        Container(
+                            name: container.name,
+                            startBar: container.startBar,
+                            lengthBars: container.lengthBars,
+                            sourceRecordingID: container.sourceRecordingID,
+                            loopSettings: container.loopSettings,
+                            linkGroupID: container.linkGroupID
+                        )
+                    },
+                    insertEffects: track.insertEffects,
+                    sendLevels: track.sendLevels,
+                    instrumentComponent: track.instrumentComponent,
+                    orderIndex: track.orderIndex
+                )
+            }
+        )
+        project.songs.insert(copy, at: index + 1)
+        currentSongID = copy.id
+        hasUnsavedChanges = true
     }
 
     // MARK: - Track Management
