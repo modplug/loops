@@ -11,6 +11,7 @@ public struct ContainerView: View {
     let height: CGFloat
     let isSelected: Bool
     let trackColor: Color
+    let waveformPeaks: [Float]?
     var onSelect: (() -> Void)?
     var onDelete: (() -> Void)?
     var onMove: ((_ newStartBar: Int) -> Bool)?
@@ -30,6 +31,7 @@ public struct ContainerView: View {
         height: CGFloat = 76,
         isSelected: Bool = false,
         trackColor: Color = .blue,
+        waveformPeaks: [Float]? = nil,
         onSelect: (() -> Void)? = nil,
         onDelete: (() -> Void)? = nil,
         onMove: ((_ newStartBar: Int) -> Bool)? = nil,
@@ -41,6 +43,7 @@ public struct ContainerView: View {
         self.height = height
         self.isSelected = isSelected
         self.trackColor = trackColor
+        self.waveformPeaks = waveformPeaks
         self.onSelect = onSelect
         self.onDelete = onDelete
         self.onMove = onMove
@@ -64,6 +67,14 @@ public struct ContainerView: View {
                             lineWidth: isSelected ? 2 : 1
                         )
                 )
+
+            // Waveform
+            if let peaks = waveformPeaks, !peaks.isEmpty {
+                WaveformView(peaks: peaks, color: trackColor)
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 16)
+                    .allowsHitTesting(false)
+            }
 
             // Container label
             VStack(alignment: .leading, spacing: 2) {
