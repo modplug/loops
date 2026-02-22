@@ -23,6 +23,11 @@ public struct ContainerInspector: View {
     var onRemoveEnterAction: ((ID<ContainerAction>) -> Void)?
     var onAddExitAction: ((ContainerAction) -> Void)?
     var onRemoveExitAction: ((ID<ContainerAction>) -> Void)?
+    var onAddAutomationLane: ((AutomationLane) -> Void)?
+    var onRemoveAutomationLane: ((ID<AutomationLane>) -> Void)?
+    var onAddBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)?
+    var onRemoveBreakpoint: ((ID<AutomationLane>, ID<AutomationBreakpoint>) -> Void)?
+    var onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)?
 
     @State private var editingName: String = ""
     @State private var selectedBoundaryMode: BoundaryMode = .hardCut
@@ -59,7 +64,12 @@ public struct ContainerInspector: View {
         onAddEnterAction: ((ContainerAction) -> Void)? = nil,
         onRemoveEnterAction: ((ID<ContainerAction>) -> Void)? = nil,
         onAddExitAction: ((ContainerAction) -> Void)? = nil,
-        onRemoveExitAction: ((ID<ContainerAction>) -> Void)? = nil
+        onRemoveExitAction: ((ID<ContainerAction>) -> Void)? = nil,
+        onAddAutomationLane: ((AutomationLane) -> Void)? = nil,
+        onRemoveAutomationLane: ((ID<AutomationLane>) -> Void)? = nil,
+        onAddBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)? = nil,
+        onRemoveBreakpoint: ((ID<AutomationLane>, ID<AutomationBreakpoint>) -> Void)? = nil,
+        onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)? = nil
     ) {
         self.container = container
         self.trackKind = trackKind
@@ -78,6 +88,11 @@ public struct ContainerInspector: View {
         self.onRemoveEnterAction = onRemoveEnterAction
         self.onAddExitAction = onAddExitAction
         self.onRemoveExitAction = onRemoveExitAction
+        self.onAddAutomationLane = onAddAutomationLane
+        self.onRemoveAutomationLane = onRemoveAutomationLane
+        self.onAddBreakpoint = onAddBreakpoint
+        self.onRemoveBreakpoint = onRemoveBreakpoint
+        self.onUpdateBreakpoint = onUpdateBreakpoint
     }
 
     public var body: some View {
@@ -289,6 +304,10 @@ public struct ContainerInspector: View {
                     onRemove: onRemoveExitAction
                 )
             }
+
+            Section("Automation Lanes") {
+                automationLanesView
+            }
         }
         .formStyle(.grouped)
         .onAppear {
@@ -461,6 +480,117 @@ public struct ContainerInspector: View {
                                                 parameterAddress: 0
                                             )
                                             onAdd?(.makeSetParameter(target: path, value: 0.5))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .font(.caption)
+        }
+    }
+
+    @ViewBuilder
+    private var automationLanesView: some View {
+        if container.automationLanes.isEmpty {
+            Text("No automation lanes")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        } else {
+            ForEach(container.automationLanes) { lane in
+                DisclosureGroup {
+                    ForEach(lane.breakpoints.sorted(by: { $0.position < $1.position })) { bp in
+                        HStack {
+                            Text("Bar \(bp.position, specifier: "%.1f")")
+                                .font(.caption)
+                                .frame(width: 60, alignment: .leading)
+                            Text("→ \(bp.value, specifier: "%.2f")")
+                                .font(.caption)
+                                .frame(width: 50, alignment: .leading)
+                            Text(bp.curve.displayName)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button(role: .destructive) {
+                                onRemoveBreakpoint?(lane.id, bp.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    HStack {
+                        Button("Add Breakpoint") {
+                            let nextPos: Double
+                            if let last = lane.breakpoints.max(by: { $0.position < $1.position }) {
+                                nextPos = last.position + 1.0
+                            } else {
+                                nextPos = 0.0
+                            }
+                            let bp = AutomationBreakpoint(
+                                position: min(nextPos, Double(container.lengthBars)),
+                                value: 0.5
+                            )
+                            onAddBreakpoint?(lane.id, bp)
+                        }
+                        .font(.caption)
+                        Spacer()
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: "waveform.path")
+                            .foregroundStyle(.cyan)
+                        Text(parameterTargetDescription(lane.targetPath))
+                            .font(.callout)
+                        Spacer()
+                        Text("\(lane.breakpoints.count) pt\(lane.breakpoints.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button(role: .destructive) {
+                            onRemoveAutomationLane?(lane.id)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        if !parameterTargets.isEmpty {
+            Menu("Add Automation Lane") {
+                ForEach(parameterTargets, id: \.track.id) { target in
+                    Menu(target.track.name) {
+                        if !target.track.insertEffects.isEmpty {
+                            Menu("Track Effects") {
+                                ForEach(Array(target.track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                    Button(effect.displayName) {
+                                        let path = EffectPath(
+                                            trackID: target.track.id,
+                                            containerID: nil,
+                                            effectIndex: index,
+                                            parameterAddress: 0
+                                        )
+                                        onAddAutomationLane?(AutomationLane(targetPath: path))
+                                    }
+                                }
+                            }
+                        }
+                        ForEach(target.containers, id: \.id) { cont in
+                            if !cont.insertEffects.isEmpty {
+                                Menu(cont.name) {
+                                    ForEach(Array(cont.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                        Button(effect.displayName) {
+                                            let path = EffectPath(
+                                                trackID: target.track.id,
+                                                containerID: cont.id,
+                                                effectIndex: index,
+                                                parameterAddress: 0
+                                            )
+                                            onAddAutomationLane?(AutomationLane(targetPath: path))
                                         }
                                     }
                                 }

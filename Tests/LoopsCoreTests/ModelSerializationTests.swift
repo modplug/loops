@@ -890,6 +890,215 @@ struct ModelSerializationTests {
         #expect(decoded.onEnterActions.count == 3)
     }
 
+    // MARK: - AutomationBreakpoint & AutomationLane
+
+    @Test("AutomationBreakpoint round-trips")
+    func automationBreakpointRoundTrip() throws {
+        let bp = AutomationBreakpoint(position: 2.5, value: 0.8, curve: .exponential)
+        let decoded = try roundTrip(bp)
+        #expect(bp == decoded)
+        #expect(decoded.position == 2.5)
+        #expect(decoded.value == 0.8)
+        #expect(decoded.curve == .exponential)
+    }
+
+    @Test("AutomationLane round-trips")
+    func automationLaneRoundTrip() throws {
+        let trackID = ID<Track>()
+        let containerID = ID<Container>()
+        let path = EffectPath(
+            trackID: trackID,
+            containerID: containerID,
+            effectIndex: 0,
+            parameterAddress: 42
+        )
+        let lane = AutomationLane(
+            targetPath: path,
+            breakpoints: [
+                AutomationBreakpoint(position: 0.0, value: 0.0, curve: .linear),
+                AutomationBreakpoint(position: 4.0, value: 1.0, curve: .sCurve),
+            ]
+        )
+        let decoded = try roundTrip(lane)
+        #expect(lane == decoded)
+        #expect(decoded.targetPath == path)
+        #expect(decoded.breakpoints.count == 2)
+        #expect(decoded.breakpoints[0].value == 0.0)
+        #expect(decoded.breakpoints[1].value == 1.0)
+    }
+
+    @Test("Container with automation lanes round-trips")
+    func containerWithAutomationLanesRoundTrip() throws {
+        let trackID = ID<Track>()
+        let path = EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 10)
+        let lane = AutomationLane(
+            targetPath: path,
+            breakpoints: [
+                AutomationBreakpoint(position: 0.0, value: 0.2),
+                AutomationBreakpoint(position: 2.0, value: 0.8, curve: .exponential),
+            ]
+        )
+        let container = Container(
+            name: "Automated",
+            startBar: 1,
+            lengthBars: 4,
+            automationLanes: [lane]
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.automationLanes.count == 1)
+        #expect(decoded.automationLanes[0].breakpoints.count == 2)
+    }
+
+    @Test("Container without automation lanes round-trips with empty array")
+    func containerWithoutAutomationLanesRoundTrip() throws {
+        let container = Container(
+            name: "Plain",
+            startBar: 1,
+            lengthBars: 4
+        )
+        let decoded = try roundTrip(container)
+        #expect(decoded.automationLanes.isEmpty)
+    }
+
+    @Test("Legacy container decodes with empty automationLanes")
+    func containerLegacyDecodingWithAutomationLanes() throws {
+        // Legacy JSON that predates the automationLanes field
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000002",
+            "name": "Legacy",
+            "startBar": 1,
+            "lengthBars": 4,
+            "loopSettings": {
+                "loopCount": { "fill": {} },
+                "boundaryMode": "hardCut",
+                "crossfadeDurationMs": 10.0
+            },
+            "isRecordArmed": false
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Container.self, from: data)
+        #expect(decoded.automationLanes.isEmpty)
+    }
+
+    // MARK: - Interpolation Engine
+
+    @Test("Interpolation with no breakpoints returns nil")
+    func interpolationNoBreakpoints() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 0)
+        let lane = AutomationLane(targetPath: path, breakpoints: [])
+        #expect(lane.interpolatedValue(atBar: 0.0) == nil)
+        #expect(lane.interpolatedValue(atBar: 5.0) == nil)
+    }
+
+    @Test("Interpolation with single breakpoint returns its value everywhere")
+    func interpolationSingleBreakpoint() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 0)
+        let bp = AutomationBreakpoint(position: 2.0, value: 0.7)
+        let lane = AutomationLane(targetPath: path, breakpoints: [bp])
+        #expect(lane.interpolatedValue(atBar: 0.0) == 0.7)
+        #expect(lane.interpolatedValue(atBar: 2.0) == 0.7)
+        #expect(lane.interpolatedValue(atBar: 10.0) == 0.7)
+    }
+
+    @Test("Interpolation before first breakpoint returns first value")
+    func interpolationBeforeFirst() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 0)
+        let lane = AutomationLane(targetPath: path, breakpoints: [
+            AutomationBreakpoint(position: 2.0, value: 0.3),
+            AutomationBreakpoint(position: 4.0, value: 0.9),
+        ])
+        #expect(lane.interpolatedValue(atBar: 0.0) == 0.3)
+        #expect(lane.interpolatedValue(atBar: 1.0) == 0.3)
+    }
+
+    @Test("Interpolation after last breakpoint returns last value")
+    func interpolationAfterLast() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 0)
+        let lane = AutomationLane(targetPath: path, breakpoints: [
+            AutomationBreakpoint(position: 0.0, value: 0.0),
+            AutomationBreakpoint(position: 4.0, value: 1.0),
+        ])
+        #expect(lane.interpolatedValue(atBar: 4.0) == 1.0)
+        #expect(lane.interpolatedValue(atBar: 8.0) == 1.0)
+    }
+
+    @Test("Linear interpolation between two breakpoints")
+    func interpolationLinear() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 0)
+        let lane = AutomationLane(targetPath: path, breakpoints: [
+            AutomationBreakpoint(position: 0.0, value: 0.0, curve: .linear),
+            AutomationBreakpoint(position: 4.0, value: 1.0, curve: .linear),
+        ])
+        // At midpoint
+        let mid = lane.interpolatedValue(atBar: 2.0)!
+        #expect(abs(mid - 0.5) < 1e-5)
+        // At quarter
+        let quarter = lane.interpolatedValue(atBar: 1.0)!
+        #expect(abs(quarter - 0.25) < 1e-5)
+        // At three-quarters
+        let threeQ = lane.interpolatedValue(atBar: 3.0)!
+        #expect(abs(threeQ - 0.75) < 1e-5)
+    }
+
+    @Test("Exponential interpolation between two breakpoints")
+    func interpolationExponential() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 0)
+        let lane = AutomationLane(targetPath: path, breakpoints: [
+            AutomationBreakpoint(position: 0.0, value: 0.0, curve: .exponential),
+            AutomationBreakpoint(position: 4.0, value: 1.0, curve: .linear),
+        ])
+        // At midpoint: t=0.5, exponential = 0.5^3 = 0.125 → value = 0.0 + 0.125 * 1.0
+        let mid = lane.interpolatedValue(atBar: 2.0)!
+        #expect(abs(mid - 0.125) < 1e-5)
+    }
+
+    @Test("S-curve interpolation between two breakpoints")
+    func interpolationSCurve() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 0)
+        let lane = AutomationLane(targetPath: path, breakpoints: [
+            AutomationBreakpoint(position: 0.0, value: 0.0, curve: .sCurve),
+            AutomationBreakpoint(position: 4.0, value: 1.0, curve: .linear),
+        ])
+        // At midpoint: t=0.5, sCurve gain = 0.5 → value = 0.5
+        let mid = lane.interpolatedValue(atBar: 2.0)!
+        #expect(abs(mid - 0.5) < 1e-5)
+    }
+
+    @Test("Interpolation with three breakpoints")
+    func interpolationThreeBreakpoints() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 0)
+        let lane = AutomationLane(targetPath: path, breakpoints: [
+            AutomationBreakpoint(position: 0.0, value: 0.0, curve: .linear),
+            AutomationBreakpoint(position: 2.0, value: 1.0, curve: .linear),
+            AutomationBreakpoint(position: 4.0, value: 0.5, curve: .linear),
+        ])
+        // Between first and second: bar 1.0 → t=0.5 → value = 0.5
+        let v1 = lane.interpolatedValue(atBar: 1.0)!
+        #expect(abs(v1 - 0.5) < 1e-5)
+        // At second breakpoint
+        let v2 = lane.interpolatedValue(atBar: 2.0)!
+        #expect(abs(v2 - 1.0) < 1e-5)
+        // Between second and third: bar 3.0 → t=0.5 → value = 1.0 + 0.5 * (0.5 - 1.0) = 0.75
+        let v3 = lane.interpolatedValue(atBar: 3.0)!
+        #expect(abs(v3 - 0.75) < 1e-5)
+    }
+
+    @Test("Interpolation with unsorted breakpoints works correctly")
+    func interpolationUnsortedBreakpoints() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 0)
+        // Breakpoints added out of order
+        let lane = AutomationLane(targetPath: path, breakpoints: [
+            AutomationBreakpoint(position: 4.0, value: 1.0, curve: .linear),
+            AutomationBreakpoint(position: 0.0, value: 0.0, curve: .linear),
+        ])
+        // Should still interpolate correctly after sorting
+        let mid = lane.interpolatedValue(atBar: 2.0)!
+        #expect(abs(mid - 0.5) < 1e-5)
+    }
+
     // MARK: - Full Project
 
     @Test("Full Project round-trips through JSON")

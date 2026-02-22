@@ -45,6 +45,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private var currentTimeSignature: TimeSignature = TimeSignature()
     private var currentSampleRate: Double = 44100.0
 
+    /// Automation state: tracks playback start time and container offsets.
+    private var automationTimer: DispatchSourceTimer?
+    private var playbackStartTime: Date?
+    private var playbackStartBar: Double = 1.0
+
     public init(engine: AVAudioEngine, audioDirURL: URL) {
         self.engine = engine
         self.audioUnitHost = AudioUnitHost(engine: engine)
@@ -109,10 +114,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 )
             }
         }
+
+        startAutomationTimer(song: song, fromBar: fromBar, bpm: bpm, timeSignature: timeSignature)
     }
 
     /// Stops all playback.
     public func stop() {
+        stopAutomationTimer()
         for (_, subgraph) in containerSubgraphs {
             subgraph.playerNode.stop()
         }
@@ -125,6 +133,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
     /// Cleans up all nodes and audio files.
     public func cleanup() {
+        stopAutomationTimer()
         for (_, subgraph) in containerSubgraphs {
             subgraph.playerNode.stop()
             engine.disconnectNodeOutput(subgraph.playerNode)
@@ -488,6 +497,59 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 }
             }
         }
+    }
+    // MARK: - Automation
+
+    /// Starts a timer that evaluates automation lanes at regular intervals.
+    private func startAutomationTimer(
+        song: Song,
+        fromBar: Double,
+        bpm: Double,
+        timeSignature: TimeSignature
+    ) {
+        // Collect all containers with automation
+        let containersWithAutomation = song.tracks.flatMap(\.containers)
+            .filter { !$0.automationLanes.isEmpty }
+        guard !containersWithAutomation.isEmpty else { return }
+
+        playbackStartBar = fromBar
+        playbackStartTime = Date()
+
+        let secondsPerBeat = 60.0 / bpm
+        let beatsPerBar = Double(timeSignature.beatsPerBar)
+        let secondsPerBar = beatsPerBar * secondsPerBeat
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInteractive))
+        // Evaluate at ~60 Hz (every ~16ms) for smooth parameter updates
+        timer.schedule(deadline: .now(), repeating: .milliseconds(16))
+        timer.setEventHandler { [weak self] in
+            guard let self, let startTime = self.playbackStartTime else { return }
+            let elapsed = Date().timeIntervalSince(startTime)
+            let currentBar = self.playbackStartBar + elapsed / secondsPerBar
+
+            for container in containersWithAutomation {
+                let containerStartBar = Double(container.startBar)
+                let containerEndBar = Double(container.endBar)
+
+                // Only evaluate if current playback is within this container
+                guard currentBar >= containerStartBar && currentBar < containerEndBar else { continue }
+
+                let barOffset = currentBar - containerStartBar
+                for lane in container.automationLanes {
+                    if let value = lane.interpolatedValue(atBar: barOffset) {
+                        self.setParameter(at: lane.targetPath, value: value)
+                    }
+                }
+            }
+        }
+        timer.resume()
+        automationTimer = timer
+    }
+
+    private func stopAutomationTimer() {
+        automationTimer?.cancel()
+        automationTimer = nil
+        playbackStartTime = nil
     }
 }
 

@@ -189,6 +189,21 @@ public struct MainContentView: View {
                         },
                         onRemoveExitAction: { actionID in
                             projectViewModel.removeContainerExitAction(containerID: container.id, actionID: actionID)
+                        },
+                        onAddAutomationLane: { lane in
+                            projectViewModel.addAutomationLane(containerID: container.id, lane: lane)
+                        },
+                        onRemoveAutomationLane: { laneID in
+                            projectViewModel.removeAutomationLane(containerID: container.id, laneID: laneID)
+                        },
+                        onAddBreakpoint: { laneID, breakpoint in
+                            projectViewModel.addAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+                        },
+                        onRemoveBreakpoint: { laneID, breakpointID in
+                            projectViewModel.removeAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpointID: breakpointID)
+                        },
+                        onUpdateBreakpoint: { laneID, breakpoint in
+                            projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
                         }
                     )
                 } else {

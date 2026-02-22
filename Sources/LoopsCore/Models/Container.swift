@@ -29,6 +29,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     public var onEnterActions: [ContainerAction]
     /// Actions to fire when this container exits (stops playing).
     public var onExitActions: [ContainerAction]
+    /// Automation lanes controlling AU parameters over this container's duration.
+    public var automationLanes: [AutomationLane]
 
     public var endBar: Int { startBar + lengthBars }
 
@@ -49,7 +51,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         enterFade: FadeSettings? = nil,
         exitFade: FadeSettings? = nil,
         onEnterActions: [ContainerAction] = [],
-        onExitActions: [ContainerAction] = []
+        onExitActions: [ContainerAction] = [],
+        automationLanes: [AutomationLane] = []
     ) {
         self.id = id
         self.name = name
@@ -68,6 +71,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         self.exitFade = exitFade
         self.onEnterActions = onEnterActions
         self.onExitActions = onExitActions
+        self.automationLanes = automationLanes
     }
 
     // MARK: - Backward-compatible decoding
@@ -77,6 +81,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         case loopSettings, isRecordArmed, volumeOverride, panOverride
         case insertEffects, isEffectChainBypassed, instrumentOverride
         case enterFade, exitFade, onEnterActions, onExitActions
+        case automationLanes
     }
 
     public init(from decoder: Decoder) throws {
@@ -98,5 +103,6 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         exitFade = try c.decodeIfPresent(FadeSettings.self, forKey: .exitFade)
         onEnterActions = try c.decodeIfPresent([ContainerAction].self, forKey: .onEnterActions) ?? []
         onExitActions = try c.decodeIfPresent([ContainerAction].self, forKey: .onExitActions) ?? []
+        automationLanes = try c.decodeIfPresent([AutomationLane].self, forKey: .automationLanes) ?? []
     }
 }

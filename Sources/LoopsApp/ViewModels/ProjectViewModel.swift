@@ -631,6 +631,81 @@ public final class ProjectViewModel {
         }
     }
 
+    // MARK: - Container Automation Lanes
+
+    /// Adds an automation lane to a container.
+    public func addAutomationLane(containerID: ID<Container>, lane: AutomationLane) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Add Automation Lane")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.append(lane)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Removes an automation lane from a container.
+    public func removeAutomationLane(containerID: ID<Container>, laneID: ID<AutomationLane>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Remove Automation Lane")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.removeAll { $0.id == laneID }
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Adds a breakpoint to an automation lane on a container.
+    public func addAutomationBreakpoint(containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                if let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.firstIndex(where: { $0.id == laneID }) {
+                    registerUndo(actionName: "Add Breakpoint")
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.append(breakpoint)
+                    hasUnsavedChanges = true
+                    return
+                }
+            }
+        }
+    }
+
+    /// Removes a breakpoint from an automation lane on a container.
+    public func removeAutomationBreakpoint(containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                if let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.firstIndex(where: { $0.id == laneID }) {
+                    registerUndo(actionName: "Remove Breakpoint")
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.removeAll { $0.id == breakpointID }
+                    hasUnsavedChanges = true
+                    return
+                }
+            }
+        }
+    }
+
+    /// Updates a breakpoint in an automation lane on a container.
+    public func updateAutomationBreakpoint(containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                if let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.firstIndex(where: { $0.id == laneID }) {
+                    if let bpIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.firstIndex(where: { $0.id == breakpoint.id }) {
+                        registerUndo(actionName: "Edit Breakpoint")
+                        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints[bpIndex] = breakpoint
+                        hasUnsavedChanges = true
+                        return
+                    }
+                }
+            }
+        }
+    }
+
     /// Returns the selected container if one is selected.
     public var selectedContainer: Container? {
         guard let id = selectedContainerID, let song = currentSong else { return nil }
