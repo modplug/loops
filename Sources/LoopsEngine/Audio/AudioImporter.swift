@@ -2,6 +2,15 @@ import Foundation
 import AVFoundation
 import LoopsCore
 
+/// Lightweight audio file metadata read from the header without decoding samples.
+public struct AudioFileMetadata: Sendable {
+    public let sampleRate: Double
+    public let sampleCount: Int64
+    public let channelCount: Int
+
+    public var durationSeconds: Double { Double(sampleCount) / sampleRate }
+}
+
 /// Imports audio files into the project bundle, converting to CAF format.
 public final class AudioImporter: Sendable {
     /// Supported audio file extensions.
@@ -14,10 +23,43 @@ public final class AudioImporter: Sendable {
         supportedExtensions.contains(url.pathExtension.lowercased())
     }
 
+    /// Reads audio file metadata (duration, sample rate) without decoding samples.
+    /// This is fast enough to call on the main thread at drop time.
+    public static func readMetadata(from url: URL) throws -> AudioFileMetadata {
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let totalFrames = file.length
+        guard totalFrames > 0 else {
+            throw LoopsError.importFailed(reason: "Audio file is empty")
+        }
+        return AudioFileMetadata(
+            sampleRate: format.sampleRate,
+            sampleCount: totalFrames,
+            channelCount: Int(format.channelCount)
+        )
+    }
+
     /// Imports an audio file into the project's audio directory.
     /// Converts the audio to CAF format and generates waveform peaks.
     /// Returns a SourceRecording with the imported audio's metadata.
     public func importAudio(from sourceURL: URL, to audioDirectory: URL) throws -> SourceRecording {
+        let recording = try importAudioFile(from: sourceURL, to: audioDirectory)
+        // Generate waveform peaks synchronously
+        let destURL = audioDirectory.appendingPathComponent(recording.filename)
+        let generator = WaveformGenerator()
+        let peaks = try? generator.generatePeaks(from: destURL)
+        return SourceRecording(
+            id: recording.id,
+            filename: recording.filename,
+            sampleRate: recording.sampleRate,
+            sampleCount: recording.sampleCount,
+            waveformPeaks: peaks
+        )
+    }
+
+    /// Imports an audio file into the project's audio directory (file copy only, no peak generation).
+    /// Returns a SourceRecording with metadata but nil waveformPeaks.
+    public func importAudioFile(from sourceURL: URL, to audioDirectory: URL) throws -> SourceRecording {
         let filename = UUID().uuidString + ".caf"
         let destinationURL = audioDirectory.appendingPathComponent(filename)
 
@@ -59,15 +101,11 @@ public final class AudioImporter: Sendable {
             sampleCount += Int64(buffer.frameLength)
         }
 
-        // Generate waveform peaks
-        let generator = WaveformGenerator()
-        let peaks = try? generator.generatePeaks(from: destinationURL)
-
         return SourceRecording(
             filename: filename,
             sampleRate: processingFormat.sampleRate,
             sampleCount: sampleCount,
-            waveformPeaks: peaks
+            waveformPeaks: nil
         )
     }
 

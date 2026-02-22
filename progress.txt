@@ -662,3 +662,31 @@
 - Automation sublanes for effect parameters render using existing `TrackAutomationSubLaneView` (full-timeline span) — no view changes needed
 - 10 new tests: isTrackEffectParameter identification (positive/negative cases), EffectPath Codable round-trip, effect parameter interpolation, ProjectViewModel add/remove/update breakpoints CRUD, undo/redo, Track Codable with mixed lanes, TimelineViewModel lane count, multiple effect lanes, duplicateTrack copies effect parameter lanes
 - All 686 tests pass
+
+### Iteration 13 — #95 MIDI instrument parameter automation (searchable)
+- `EffectPath`: added `instrumentParameterEffectIndex` sentinel (-2) for track instrument parameters, `isTrackInstrumentParameter` computed property, `trackInstrument(trackID:parameterAddress:)` factory method
+- `AudioUnitDiscovery`: added `groupName` field to `AudioUnitParameterInfo`, extracted from AU parameter tree group hierarchy
+- `ParameterPickerView`: search now matches both display name and group name, parameter rows show group name subtitle
+- `MainContentView`: extended "Track Automation" context menu with "Instrument" section for MIDI tracks with an `instrumentComponent`, supports add/remove instrument parameter lanes via `ParameterPickerView` sheet
+- `MainContentView`: updated `automationPathLabel` to show "Instrument P{address}" for instrument parameter paths
+- `PlaybackScheduler`: automation timer builds per-track instrument unit list from container subgraphs, evaluates `isTrackInstrumentParameter` lanes at ~60 Hz by setting parameter values on all container instrument units for the track
+- `PlaybackScheduler`: `ParameterResolver.setParameter` handles instrument parameter paths by applying value to all container instrument units on the track
+- `OfflineRenderer`: `processContainerThroughEffects` accepts `trackInstrumentLanes` parameter, evaluates track-level instrument automation per-chunk using absolute bar positions mapped to container-relative offsets
+- `OfflineRenderer`: container-level automation also handles instrument parameter sentinel (effectIndex == -2) targeting the container's own instrument unit
+- Instrument automation sublanes render using existing `TrackAutomationSubLaneView` (full-timeline span) — no view changes needed
+- 12 new tests: isTrackInstrumentParameter identification (positive/negative for all path types), factory method, Codable round-trip, interpolation, ProjectViewModel add/CRUD/undo-redo, Track Codable with mixed lanes, TimelineViewModel lane count, duplicateTrack copies, mixed instrument+effect+volume lanes coexistence, search filtering by name and group
+- All 698 tests pass
+
+### Iteration 14 — #96 Audio import async with preview rectangle
+- `AudioImporter`: new `AudioFileMetadata` struct for lightweight header-only metadata
+- `AudioImporter`: new `readMetadata(from:)` static method — reads sample rate, sample count, channel count from audio file header without decoding samples (fast, safe for main thread)
+- `AudioImporter`: new `importAudioFile(from:to:)` method — file copy only (no peak generation), returns `SourceRecording` with nil peaks
+- `AudioImporter`: existing `importAudio(from:to:)` refactored to use `importAudioFile` + synchronous peak generation (backward compatible)
+- `WaveformGenerator`: new `generatePeaksProgressively(from:batchSize:onProgress:)` — generates peaks in batches, calls `@Sendable` progress callback with accumulated peaks after each batch for progressive UI updates
+- `ProjectViewModel`: new `importAudioAsync(url:trackID:startBar:audioDirectory:)` — reads metadata synchronously to create correctly-sized preview container immediately, then runs file copy + progressive peak generation on `Task.detached` background thread
+- Preview container appears instantly at drop position with correct bar length (calculated from audio duration + tempo)
+- Waveform peaks render progressively as background task generates them (via `@Observable` model updates)
+- `TimelineViewModel`: new `ensureBarVisible(_:)` — expands `totalBars` if imported container extends beyond visible area (auto-scroll)
+- `TimelineView`: drop handler updated to call `importAudioAsync` and `ensureBarVisible` for auto-scroll on import
+- 12 new tests: readMetadata correct duration/sampleRate, readMetadata different sample rates, importAudioFile no peaks, progressive peaks match complete, progressive callback frequency, ensureBarVisible expands, ensureBarVisible no shrink, ensureBarVisible at boundary, importAudioAsync creates container immediately, importAudioAsync nil peaks initially, importAudioAsync rejects overlap, importAudioAsync selects container
+- All 710 tests pass

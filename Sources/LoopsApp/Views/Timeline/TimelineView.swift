@@ -86,12 +86,19 @@ public struct TimelineView: View {
                             let _ = projectViewModel.addContainer(trackID: track.id, startBar: startBar, lengthBars: lengthBars)
                         },
                         onDropAudioFile: { url, startBar in
-                            let _ = try? projectViewModel.importAudio(
+                            if let containerID = projectViewModel.importAudioAsync(
                                 url: url,
                                 trackID: track.id,
                                 startBar: startBar,
                                 audioDirectory: projectViewModel.audioDirectory
-                            )
+                            ) {
+                                // Auto-scroll if imported container extends beyond visible area
+                                if let song = projectViewModel.currentSong,
+                                   let trackObj = song.tracks.first(where: { $0.id == track.id }),
+                                   let container = trackObj.containers.first(where: { $0.id == containerID }) {
+                                    viewModel.ensureBarVisible(container.endBar)
+                                }
+                            }
                         },
                         onContainerDoubleClick: { containerID in
                             projectViewModel.selectedContainerID = containerID

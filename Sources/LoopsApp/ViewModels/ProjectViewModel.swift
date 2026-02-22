@@ -1810,6 +1810,89 @@ public final class ProjectViewModel {
         return container.id
     }
 
+    /// Imports an audio file asynchronously. Creates a preview container immediately from metadata,
+    /// then copies the file and generates waveform peaks on a background thread with progressive updates.
+    /// Returns the new container ID, or nil if import failed.
+    public func importAudioAsync(
+        url: URL,
+        trackID: ID<Track>,
+        startBar: Int,
+        audioDirectory: URL
+    ) -> ID<Container>? {
+        guard !project.songs.isEmpty else { return nil }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
+
+        // Read metadata synchronously (fast — header only)
+        guard let metadata = try? AudioImporter.readMetadata(from: url) else { return nil }
+        guard let song = currentSong else { return nil }
+
+        let lengthBars = AudioImporter.barsForDuration(
+            metadata.durationSeconds,
+            tempo: song.tempo,
+            timeSignature: song.timeSignature
+        )
+
+        // Create a placeholder recording and container immediately
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(
+            id: recordingID,
+            filename: "",
+            sampleRate: metadata.sampleRate,
+            sampleCount: metadata.sampleCount,
+            waveformPeaks: nil
+        )
+
+        let container = Container(
+            name: url.deletingPathExtension().lastPathComponent,
+            startBar: max(startBar, 1),
+            lengthBars: lengthBars,
+            sourceRecordingID: recordingID,
+            loopSettings: LoopSettings(loopCount: .count(1))
+        )
+
+        // Check for overlap
+        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: container) {
+            return nil
+        }
+
+        registerUndo(actionName: "Import Audio")
+        project.sourceRecordings[recordingID] = recording
+        project.songs[currentSongIndex].tracks[trackIndex].containers.append(container)
+        selectedContainerID = container.id
+        hasUnsavedChanges = true
+
+        let containerID = container.id
+
+        // Background: file copy + progressive peak generation
+        // Capture weak self once for the entire detached task
+        let viewModel = self
+        Task.detached {
+            let importer = AudioImporter()
+            guard let imported = try? importer.importAudioFile(from: url, to: audioDirectory) else { return }
+
+            // Update recording with real filename
+            await MainActor.run {
+                viewModel.project.sourceRecordings[recordingID]?.filename = imported.filename
+            }
+
+            // Progressive peak generation
+            let destURL = audioDirectory.appendingPathComponent(imported.filename)
+            let generator = WaveformGenerator()
+            let _ = try? generator.generatePeaksProgressively(from: destURL) { progressPeaks in
+                let peaksCopy = progressPeaks
+                Task { @MainActor in
+                    viewModel.project.sourceRecordings[recordingID]?.waveformPeaks = peaksCopy
+                }
+            }
+
+            await MainActor.run {
+                viewModel.hasUnsavedChanges = true
+            }
+        }
+
+        return containerID
+    }
+
     /// Returns waveform peaks for a container, if available.
     public func waveformPeaks(for container: Container) -> [Float]? {
         guard let recordingID = container.sourceRecordingID,

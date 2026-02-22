@@ -123,6 +123,13 @@ public final class TimelineViewModel {
         return baseHeight + CGFloat(laneCount) * Self.automationSubLaneHeight
     }
 
+    /// Expands the timeline's total bars if the given bar exceeds the current range.
+    public func ensureBarVisible(_ bar: Int) {
+        if bar > totalBars {
+            totalBars = bar + 8
+        }
+    }
+
     /// Returns the number of unique automation lanes across all containers and track-level automation.
     public func automationLaneCount(for track: Track) -> Int {
         var paths = Set<EffectPath>()

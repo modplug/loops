@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AVFoundation
 @testable import LoopsApp
 @testable import LoopsCore
 
@@ -2966,5 +2967,125 @@ struct ProjectViewModelTests {
             let decoded = try JSONDecoder().decode(FadeSettings.self, from: data)
             #expect(settings == decoded, "Round-trip failed for duration \(duration)")
         }
+    }
+
+    // MARK: - Async Audio Import (#96)
+
+    private func createTestAudioFile(sampleRate: Double = 44100, durationSeconds: Double = 2.0) throws -> URL {
+        let tempDir = FileManager.default.temporaryDirectory
+        let url = tempDir.appendingPathComponent("test-import-\(UUID().uuidString).caf")
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let frames = AVAudioFrameCount(sampleRate * durationSeconds)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        if let data = buffer.floatChannelData {
+            for i in 0..<Int(frames) {
+                data[0][i] = sin(Float(i) * 2.0 * .pi * 440.0 / Float(sampleRate)) * 0.5
+            }
+        }
+        try file.write(from: buffer)
+        return url
+    }
+
+    @Test("importAudioAsync creates container immediately with correct length")
+    @MainActor
+    func importAudioAsyncCreatesContainer() throws {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        let sourceURL = try createTestAudioFile(sampleRate: 44100, durationSeconds: 4.0)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        let audioDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-async-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDir) }
+
+        let containerID = vm.importAudioAsync(
+            url: sourceURL,
+            trackID: trackID,
+            startBar: 5,
+            audioDirectory: audioDir
+        )
+
+        // Container should be created immediately (synchronously)
+        #expect(containerID != nil)
+        let container = vm.project.songs[0].tracks[0].containers.first { $0.id == containerID }
+        #expect(container != nil)
+        #expect(container?.startBar == 5)
+        // At 120 BPM 4/4, 1 bar = 2s, so 4s = 2 bars
+        #expect(container?.lengthBars == 2)
+        #expect(container?.sourceRecordingID != nil)
+    }
+
+    @Test("importAudioAsync recording has nil peaks initially")
+    @MainActor
+    func importAudioAsyncNilPeaksInitially() throws {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        let sourceURL = try createTestAudioFile()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        let audioDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-async-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDir) }
+
+        let containerID = vm.importAudioAsync(
+            url: sourceURL,
+            trackID: trackID,
+            startBar: 1,
+            audioDirectory: audioDir
+        )
+
+        #expect(containerID != nil)
+        let container = vm.project.songs[0].tracks[0].containers.first { $0.id == containerID }
+        #expect(container != nil)
+        // Peaks should be nil initially (background task hasn't completed)
+        let peaks = vm.waveformPeaks(for: container!)
+        #expect(peaks == nil)
+    }
+
+    @Test("importAudioAsync rejects overlapping container")
+    @MainActor
+    func importAudioAsyncRejectsOverlap() throws {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        let sourceURL = try createTestAudioFile(sampleRate: 44100, durationSeconds: 4.0)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        let audioDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-async-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDir) }
+
+        // First import succeeds
+        let first = vm.importAudioAsync(url: sourceURL, trackID: trackID, startBar: 1, audioDirectory: audioDir)
+        #expect(first != nil)
+
+        // Second import at overlapping position fails
+        let second = vm.importAudioAsync(url: sourceURL, trackID: trackID, startBar: 2, audioDirectory: audioDir)
+        #expect(second == nil)
+    }
+
+    @Test("importAudioAsync selects new container")
+    @MainActor
+    func importAudioAsyncSelectsContainer() throws {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        let sourceURL = try createTestAudioFile()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        let audioDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-async-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDir) }
+
+        let containerID = vm.importAudioAsync(url: sourceURL, trackID: trackID, startBar: 1, audioDirectory: audioDir)
+        #expect(vm.selectedContainerID == containerID)
     }
 }

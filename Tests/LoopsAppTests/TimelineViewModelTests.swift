@@ -314,4 +314,33 @@ struct TimelineViewModelTests {
         #expect(regularTracks.count == 2)
         #expect(masterTrack?.kind == .master)
     }
+
+    // MARK: - Ensure Bar Visible (#96)
+
+    @Test("ensureBarVisible expands totalBars when bar exceeds current range")
+    @MainActor
+    func ensureBarVisibleExpands() {
+        let vm = TimelineViewModel()
+        vm.totalBars = 64
+        vm.ensureBarVisible(100)
+        #expect(vm.totalBars == 108) // 100 + 8 padding
+    }
+
+    @Test("ensureBarVisible does not shrink when bar is within range")
+    @MainActor
+    func ensureBarVisibleNoShrink() {
+        let vm = TimelineViewModel()
+        vm.totalBars = 64
+        vm.ensureBarVisible(32)
+        #expect(vm.totalBars == 64) // unchanged
+    }
+
+    @Test("ensureBarVisible at boundary does not expand")
+    @MainActor
+    func ensureBarVisibleAtBoundary() {
+        let vm = TimelineViewModel()
+        vm.totalBars = 64
+        vm.ensureBarVisible(64)
+        #expect(vm.totalBars == 64) // exactly at boundary, no expansion needed
+    }
 }

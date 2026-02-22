@@ -61,6 +61,75 @@ public final class WaveformGenerator: Sendable {
         return peaks
     }
 
+    /// Generates peaks progressively, calling the callback with accumulated peaks at regular intervals.
+    /// The callback receives the full peak array so far. Runs file I/O on the calling thread.
+    /// - Parameters:
+    ///   - url: Audio file URL to read.
+    ///   - targetPeakCount: Override peak count (nil = auto from duration).
+    ///   - batchSize: Number of peaks to generate between progress callbacks.
+    ///   - onProgress: Called with accumulated peaks after each batch.
+    /// - Returns: The complete peak array.
+    public func generatePeaksProgressively(
+        from url: URL,
+        targetPeakCount: Int? = nil,
+        batchSize: Int = 200,
+        onProgress: @Sendable ([Float]) -> Void
+    ) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let totalFrames = AVAudioFrameCount(file.length)
+
+        guard totalFrames > 0 else { return [] }
+
+        let durationSeconds = Double(totalFrames) / format.sampleRate
+        let peakCount = targetPeakCount ?? max(1, Int(durationSeconds * Double(Self.peaksPerSecond)))
+        let framesPerPeak = Int(totalFrames) / peakCount
+
+        guard framesPerPeak > 0 else { return [] }
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(framesPerPeak)) else {
+            return []
+        }
+
+        var peaks: [Float] = []
+        peaks.reserveCapacity(peakCount)
+
+        for peakIndex in 0..<peakCount {
+            buffer.frameLength = 0
+            do {
+                try file.read(into: buffer, frameCount: AVAudioFrameCount(framesPerPeak))
+            } catch {
+                break
+            }
+
+            guard buffer.frameLength > 0 else { break }
+
+            var maxAmplitude: Float = 0
+            if let channelData = buffer.floatChannelData {
+                let channelCount = Int(format.channelCount)
+                let frameCount = Int(buffer.frameLength)
+                for ch in 0..<channelCount {
+                    let samples = channelData[ch]
+                    for i in 0..<frameCount {
+                        let absVal = abs(samples[i])
+                        if absVal > maxAmplitude {
+                            maxAmplitude = absVal
+                        }
+                    }
+                }
+            }
+            peaks.append(min(maxAmplitude, 1.0))
+
+            if (peakIndex + 1) % batchSize == 0 {
+                onProgress(peaks)
+            }
+        }
+
+        // Final callback with complete data
+        onProgress(peaks)
+        return peaks
+    }
+
     /// Generates peaks from raw sample data (for streaming during recording).
     public static func peaksFromSamples(_ samples: UnsafeBufferPointer<Float>, samplesPerPeak: Int) -> [Float] {
         guard samplesPerPeak > 0, !samples.isEmpty else { return [] }
