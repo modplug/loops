@@ -52,6 +52,9 @@ public final class TransportViewModel {
                 self.isCountingIn = false
                 self.countInBarsRemaining = 0
 
+                // Hold playhead until audio is actually scheduled and playing
+                self.transport.beginWaitForAudioSync()
+
                 // Now start actual audio playback and recording
                 if let engine = self.engineManager, let context = self.songProvider?() {
                     self.schedulePlayback(
@@ -63,6 +66,9 @@ public final class TransportViewModel {
                         timeSignature: self.timeSignature,
                         sampleRate: engine.currentSampleRate
                     )
+                } else {
+                    // No engine — let playhead start immediately
+                    self.transport.completeAudioSync()
                 }
                 self.syncFromTransport()
             }
@@ -123,6 +129,11 @@ public final class TransportViewModel {
                         timeSignature: timeSignature,
                         sampleRate: engine.currentSampleRate
                     )
+                    // Wait for audio sync — playhead holds until
+                    // schedulePlayback task calls completeAudioSync
+                    transport.play(waitForAudioSync: true)
+                    syncFromTransport()
+                    return
                 }
             } else {
                 // Ensure scheduler exists for when count-in completes
@@ -284,7 +295,7 @@ public final class TransportViewModel {
                 timeSignature: timeSignature,
                 sampleRate: engine.currentSampleRate
             )
-            transport.play()
+            transport.play(waitForAudioSync: true)
             syncFromTransport()
         }
     }
@@ -390,6 +401,11 @@ public final class TransportViewModel {
                 timeSignature: timeSignature,
                 sampleRate: sampleRate
             )
+            // Audio player nodes are now started — calibrate the playhead
+            // so it starts advancing in sync with audible output.
+            let outputLatency = self.engineManager?.engine.outputNode.presentationLatency ?? 0
+            self.transport.completeAudioSync(audioOutputLatency: outputLatency)
+            self.syncFromTransport()
         }
     }
 

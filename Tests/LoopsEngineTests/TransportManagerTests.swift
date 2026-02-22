@@ -254,4 +254,142 @@ struct TransportManagerTests {
         transport.setPlayheadPosition(7.5)
         #expect(receivedBar == 7.5)
     }
+
+    // MARK: - Playhead-Audio Sync (#97)
+
+    @Test("Play with waitForAudioSync enters playing but sets sync flag")
+    func playWithAudioSyncHoldsPlayhead() {
+        let transport = TransportManager()
+        transport.bpm = 120.0
+        transport.setPlayheadPosition(3.0)
+        transport.play(waitForAudioSync: true)
+        #expect(transport.state == .playing)
+        #expect(transport.isWaitingForAudioSync)
+        // Playhead stays at start position while waiting
+        #expect(transport.playheadBar == 3.0)
+        transport.stop()
+    }
+
+    @Test("completeAudioSync clears sync flag and enables advancement")
+    func completeAudioSyncAllowsAdvance() {
+        let transport = TransportManager()
+        transport.bpm = 120.0
+        transport.play(waitForAudioSync: true)
+        #expect(transport.isWaitingForAudioSync)
+        transport.completeAudioSync()
+        #expect(!transport.isWaitingForAudioSync)
+        #expect(transport.state == .playing)
+        transport.stop()
+    }
+
+    @Test("completeAudioSync with latency keeps playhead at start")
+    func completeAudioSyncWithLatency() {
+        let transport = TransportManager()
+        transport.bpm = 60.0 // 1 beat/sec, 4/4 = 4 sec/bar
+        transport.play(waitForAudioSync: true)
+        // Complete with 0.5s latency — playhead should hold during latency period
+        transport.completeAudioSync(audioOutputLatency: 0.5)
+        #expect(!transport.isWaitingForAudioSync)
+        // Immediately after, playhead should still be at start (latency not yet elapsed)
+        #expect(transport.playheadBar == 1.0)
+        transport.stop()
+    }
+
+    @Test("completeAudioSync is no-op when not waiting")
+    func completeAudioSyncNoOpWhenNotWaiting() {
+        let transport = TransportManager()
+        transport.play()
+        #expect(!transport.isWaitingForAudioSync)
+        transport.completeAudioSync() // Should be no-op — flag is false
+        #expect(!transport.isWaitingForAudioSync)
+        #expect(transport.state == .playing)
+        transport.stop()
+    }
+
+    @Test("Pause clears audio sync wait")
+    func pauseClearsAudioSync() {
+        let transport = TransportManager()
+        transport.play(waitForAudioSync: true)
+        #expect(transport.isWaitingForAudioSync)
+        transport.pause()
+        #expect(!transport.isWaitingForAudioSync)
+        #expect(transport.state == .stopped)
+    }
+
+    @Test("Stop clears audio sync wait")
+    func stopClearsAudioSync() {
+        let transport = TransportManager()
+        transport.play(waitForAudioSync: true)
+        #expect(transport.isWaitingForAudioSync)
+        transport.stop()
+        #expect(!transport.isWaitingForAudioSync)
+        #expect(transport.state == .stopped)
+    }
+
+    @Test("beginWaitForAudioSync sets flag during playback")
+    func beginWaitForAudioSync() {
+        let transport = TransportManager()
+        transport.play()
+        #expect(!transport.isWaitingForAudioSync)
+        transport.beginWaitForAudioSync()
+        #expect(transport.isWaitingForAudioSync)
+        transport.completeAudioSync()
+        #expect(!transport.isWaitingForAudioSync)
+        transport.stop()
+    }
+
+    @Test("Audio sync preserves arbitrary start position")
+    func audioSyncFromArbitraryPosition() {
+        let transport = TransportManager()
+        transport.bpm = 120.0
+        transport.setPlayheadPosition(5.0)
+        transport.play(waitForAudioSync: true)
+        #expect(transport.playheadBar == 5.0)
+        #expect(transport.isWaitingForAudioSync)
+        transport.completeAudioSync()
+        // After completing sync, playhead starts from the arbitrary position
+        #expect(transport.playheadBar == 5.0)
+        #expect(!transport.isWaitingForAudioSync)
+        transport.stop()
+    }
+
+    @Test("Play without waitForAudioSync does not set sync flag (backward compat)")
+    func playWithoutSyncAdvancesImmediately() {
+        let transport = TransportManager()
+        transport.bpm = 120.0
+        transport.play()
+        #expect(!transport.isWaitingForAudioSync)
+        #expect(transport.state == .playing)
+        transport.stop()
+    }
+
+    @Test("completeAudioSync sets playbackStartBar to current playheadBar")
+    func completeAudioSyncSetsStartBar() {
+        let transport = TransportManager()
+        transport.setPlayheadPosition(7.0)
+        transport.play(waitForAudioSync: true)
+        #expect(transport.playheadBar == 7.0)
+        transport.completeAudioSync()
+        // Playhead should be at the position it was when sync completed
+        #expect(transport.playheadBar == 7.0)
+        transport.stop()
+    }
+
+    @Test("Pause during sync wait then play again works correctly")
+    func pauseResumeDuringSyncWait() {
+        let transport = TransportManager()
+        transport.setPlayheadPosition(3.0)
+        transport.play(waitForAudioSync: true)
+        #expect(transport.isWaitingForAudioSync)
+        transport.pause()
+        #expect(!transport.isWaitingForAudioSync)
+        #expect(transport.playheadBar == 3.0)
+        // Play again with sync
+        transport.play(waitForAudioSync: true)
+        #expect(transport.isWaitingForAudioSync)
+        #expect(transport.state == .playing)
+        transport.completeAudioSync()
+        #expect(!transport.isWaitingForAudioSync)
+        transport.stop()
+    }
 }

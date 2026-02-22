@@ -43,6 +43,11 @@ public final class TransportManager: @unchecked Sendable {
     /// Callback fired each tick during count-in with bars remaining.
     public var onCountInTick: ((Int) -> Void)?
 
+    /// When true, the timer runs but the playhead holds at its current position
+    /// until `completeAudioSync()` is called. This prevents the playhead from
+    /// advancing before audio player nodes have actually started rendering.
+    public private(set) var isWaitingForAudioSync: Bool = false
+
     private var displayLink: Timer?
     private var playbackStartTime: CFAbsoluteTime = 0
     private var playbackStartBar: Double = 1.0
@@ -57,20 +62,50 @@ public final class TransportManager: @unchecked Sendable {
 
     /// Starts or resumes playback. If record-armed with countInBars > 0,
     /// enters count-in phase first.
-    public func play() {
+    ///
+    /// When `waitForAudioSync` is true, the timer starts but the playhead
+    /// holds its position until `completeAudioSync()` is called. Use this
+    /// when audio playback is scheduled asynchronously so the playhead
+    /// only advances once audio is actually rendering.
+    public func play(waitForAudioSync: Bool = false) {
         guard state == .stopped else { return }
         if isRecordArmed && countInBars > 0 {
             state = .countingIn
             countInBarsRemaining = countInBars
             countInDurationSeconds = Double(countInBars) * barDurationSeconds
             countInStartTime = CFAbsoluteTimeGetCurrent()
+            isWaitingForAudioSync = false
             startTimer()
         } else {
             state = isRecordArmed ? .recording : .playing
-            playbackStartTime = CFAbsoluteTimeGetCurrent()
+            isWaitingForAudioSync = waitForAudioSync
+            if !waitForAudioSync {
+                playbackStartTime = CFAbsoluteTimeGetCurrent()
+            }
             playbackStartBar = playheadBar
             startTimer()
         }
+    }
+
+    /// Tells the transport to hold the playhead at its current position
+    /// until `completeAudioSync()` is called. Use when transitioning from
+    /// count-in to recording while audio is being scheduled asynchronously.
+    public func beginWaitForAudioSync() {
+        isWaitingForAudioSync = true
+    }
+
+    /// Resumes playhead tracking, calibrated to the current moment plus
+    /// any audio output latency compensation. Call after audio player nodes
+    /// have actually started rendering.
+    ///
+    /// - Parameter audioOutputLatency: The hardware output latency in seconds
+    ///   (e.g. from `AVAudioNode.presentationLatency`). The playhead will wait
+    ///   this long before advancing, matching audible output timing.
+    public func completeAudioSync(audioOutputLatency: Double = 0) {
+        guard isWaitingForAudioSync else { return }
+        playbackStartTime = CFAbsoluteTimeGetCurrent() + audioOutputLatency
+        playbackStartBar = playheadBar
+        isWaitingForAudioSync = false
     }
 
     /// Pauses playback at the current position.
@@ -79,6 +114,7 @@ public final class TransportManager: @unchecked Sendable {
         stopTimer()
         state = .stopped
         countInBarsRemaining = 0
+        isWaitingForAudioSync = false
     }
 
     /// Stops playback and returns playhead to bar 1.
@@ -87,6 +123,7 @@ public final class TransportManager: @unchecked Sendable {
         state = .stopped
         playheadBar = 1.0
         countInBarsRemaining = 0
+        isWaitingForAudioSync = false
         onPositionUpdate?(playheadBar)
     }
 
@@ -167,7 +204,18 @@ public final class TransportManager: @unchecked Sendable {
             return
         }
 
-        let elapsed = CFAbsoluteTimeGetCurrent() - playbackStartTime
+        // When waiting for audio sync, hold playhead at current position.
+        // The timer keeps running so callbacks still fire, but position
+        // doesn't advance until completeAudioSync() is called.
+        if isWaitingForAudioSync {
+            onPositionUpdate?(playheadBar)
+            return
+        }
+
+        // Clamp to non-negative: when audioOutputLatency pushes
+        // playbackStartTime into the future, the playhead holds at
+        // playbackStartBar until audio reaches the speakers.
+        let elapsed = max(0, CFAbsoluteTimeGetCurrent() - playbackStartTime)
         let barsElapsed = elapsed / barDurationSeconds
         playheadBar = playbackStartBar + barsElapsed
         onPositionUpdate?(playheadBar)
