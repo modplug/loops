@@ -40,11 +40,11 @@ public final class ProjectViewModel {
                 target2.hasUnsavedChanges = redoUnsaved
                 target2.currentSongID = redoSongID
             }
-            target.undoManager?.endUndoGrouping()
             target.undoManager?.setActionName(actionName)
+            target.undoManager?.endUndoGrouping()
         }
-        undoManager?.endUndoGrouping()
         undoManager?.setActionName(actionName)
+        undoManager?.endUndoGrouping()
     }
 
     /// Creates a new empty project with a default song.
