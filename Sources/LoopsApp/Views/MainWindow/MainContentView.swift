@@ -39,6 +39,7 @@ public struct MainContentView: View {
     @State private var editingSectionID: ID<SectionRegion>?
     @State private var editingSectionName: String = ""
     @State private var inspectorMode: InspectorMode = .container
+    // isMIDILearning and midiLearnTargetPath are on projectViewModel
 
     public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil) {
         self.projectViewModel = projectViewModel
@@ -676,12 +677,24 @@ public struct MainContentView: View {
             onSetPan: { pan in
                 projectViewModel.setTrackPan(trackID: track.id, pan: pan)
             },
+            onMIDILearn: { targetPath in
+                projectViewModel.startMIDIParameterLearn(targetPath: targetPath)
+            },
+            onRemoveMIDIMapping: { targetPath in
+                projectViewModel.removeMIDIParameterMapping(forTarget: targetPath)
+                projectViewModel.onMIDIParameterMappingsChanged?()
+            },
+            midiParameterMappings: projectViewModel.project.midiParameterMappings,
+            isMIDILearning: projectViewModel.isMIDIParameterLearning,
             inputPortName: inputPortName(for: track.inputPortID),
             outputPortName: outputPortName(for: track.outputPortID),
             midiDeviceName: midiDeviceName(for: track.midiInputDeviceID),
             midiChannelLabel: midiChannelLabel(for: track.midiInputChannel)
         )
     }
+
+    // MIDI learn is handled by ProjectViewModel; real-time CC dispatch
+    // is wired in LoopsRootView.onAppear via onMIDICCWithValue.
 
     @ViewBuilder
     private var storylineInspectorContent: some View {

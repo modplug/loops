@@ -316,6 +316,13 @@ public final class TransportViewModel {
         return metronomeSubdivision
     }
 
+    /// Sets a parameter value on the active PlaybackScheduler's ParameterResolver.
+    /// Used for real-time MIDI CC → parameter control.
+    @discardableResult
+    public func setParameter(at path: EffectPath, value: Float) -> Bool {
+        return playbackScheduler?.setParameter(at: path, value: value) ?? false
+    }
+
     private func syncFromTransport() {
         isPlaying = transport.state == .playing || transport.state == .recording
         isCountingIn = transport.state == .countingIn

@@ -1594,6 +1594,82 @@ public final class ProjectViewModel {
         return false
     }
 
+    // MARK: - MIDI Parameter Mappings
+
+    /// Adds a MIDI parameter mapping to the project.
+    public func addMIDIParameterMapping(_ mapping: MIDIParameterMapping) {
+        registerUndo(actionName: "Add MIDI Mapping")
+        project.midiParameterMappings.append(mapping)
+        hasUnsavedChanges = true
+    }
+
+    /// Removes a MIDI parameter mapping from the project.
+    public func removeMIDIParameterMapping(mappingID: ID<MIDIParameterMapping>) {
+        guard project.midiParameterMappings.contains(where: { $0.id == mappingID }) else { return }
+        registerUndo(actionName: "Remove MIDI Mapping")
+        project.midiParameterMappings.removeAll { $0.id == mappingID }
+        hasUnsavedChanges = true
+    }
+
+    /// Removes all MIDI parameter mappings from the project.
+    public func removeAllMIDIParameterMappings() {
+        guard !project.midiParameterMappings.isEmpty else { return }
+        registerUndo(actionName: "Remove All MIDI Mappings")
+        project.midiParameterMappings.removeAll()
+        hasUnsavedChanges = true
+    }
+
+    /// Removes any MIDI parameter mapping targeting a given EffectPath.
+    public func removeMIDIParameterMapping(forTarget targetPath: EffectPath) {
+        guard project.midiParameterMappings.contains(where: { $0.targetPath == targetPath }) else { return }
+        registerUndo(actionName: "Remove MIDI Mapping")
+        project.midiParameterMappings.removeAll { $0.targetPath == targetPath }
+        hasUnsavedChanges = true
+    }
+
+    /// Returns the MIDI parameter mapping for a given target path, if one exists.
+    public func midiParameterMapping(forTarget targetPath: EffectPath) -> MIDIParameterMapping? {
+        project.midiParameterMappings.first(where: { $0.targetPath == targetPath })
+    }
+
+    /// Whether MIDI parameter learn mode is active.
+    public var isMIDIParameterLearning: Bool = false
+
+    /// The target path being learned (set during MIDI learn mode).
+    public var midiLearnTargetPath: EffectPath?
+
+    /// Callback invoked when MIDI parameter mappings change (to sync dispatcher).
+    public var onMIDIParameterMappingsChanged: (() -> Void)?
+
+    /// Starts MIDI parameter learn mode for the given target path.
+    public func startMIDIParameterLearn(targetPath: EffectPath) {
+        isMIDIParameterLearning = true
+        midiLearnTargetPath = targetPath
+    }
+
+    /// Cancels MIDI parameter learn mode.
+    public func cancelMIDIParameterLearn() {
+        isMIDIParameterLearning = false
+        midiLearnTargetPath = nil
+    }
+
+    /// Completes MIDI parameter learn by creating a mapping for the received trigger.
+    public func completeMIDIParameterLearn(trigger: MIDITrigger) {
+        guard let targetPath = midiLearnTargetPath else { return }
+        registerUndo(actionName: "MIDI Learn")
+        // Remove any existing mapping for this trigger or target
+        project.midiParameterMappings.removeAll { $0.trigger == trigger || $0.targetPath == targetPath }
+        let mapping = MIDIParameterMapping(
+            trigger: trigger,
+            targetPath: targetPath
+        )
+        project.midiParameterMappings.append(mapping)
+        hasUnsavedChanges = true
+        isMIDIParameterLearning = false
+        midiLearnTargetPath = nil
+        onMIDIParameterMappingsChanged?()
+    }
+
     // MARK: - Audio Directory
 
     /// Returns the audio directory for this project.

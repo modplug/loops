@@ -98,9 +98,46 @@ public struct LoopsRootView: View {
                 }
             }
             engineManager?.installMasterLevelTap()
+
+            // Wire MIDI parameter learn: when learning, intercept MIDI events
+            setupMIDIParameterDispatch()
         }
         .sheet(isPresented: $viewModel.isExportSheetPresented) {
             ExportAudioView(viewModel: viewModel)
+        }
+    }
+
+    /// Wires MIDI CC events to parameter mapping dispatch and learn flow.
+    private func setupMIDIParameterDispatch() {
+        guard let midiManager = engineManager?.midiManager else { return }
+
+        let paramDispatcher = MIDIDispatcher()
+        paramDispatcher.updateParameterMappings(viewModel.project.midiParameterMappings)
+
+        // When a CC arrives with a value, scale and apply to the target parameter
+        paramDispatcher.onParameterValue = { [weak transportViewModel] path, value in
+            Task { @MainActor [weak transportViewModel] in
+                transportViewModel?.setParameter(at: path, value: value)
+            }
+        }
+
+        midiManager.onMIDICCWithValue = { trigger, ccValue in
+            paramDispatcher.dispatch(trigger, ccValue: ccValue)
+        }
+
+        // Wire MIDI learn: when ProjectViewModel is in learn mode, intercept events
+        midiManager.onMIDIEvent = { [weak viewModel] trigger in
+            guard let vm = viewModel, vm.isMIDIParameterLearning else { return }
+            Task { @MainActor [weak vm] in
+                vm?.completeMIDIParameterLearn(trigger: trigger)
+                // Rebuild the parameter dispatcher mappings
+                paramDispatcher.updateParameterMappings(vm?.project.midiParameterMappings ?? [])
+            }
+        }
+
+        // When mappings change (add/remove), rebuild the dispatcher
+        viewModel.onMIDIParameterMappingsChanged = { [weak viewModel] in
+            paramDispatcher.updateParameterMappings(viewModel?.project.midiParameterMappings ?? [])
         }
     }
 }

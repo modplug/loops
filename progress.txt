@@ -449,3 +449,32 @@
 - `duplicateSong` and `duplicateTrack` copy `trackAutomationLanes`
 - 22 new tests: EffectPath sentinels (volume/pan creation, properties, Codable round-trip), Track Codable with/without trackAutomationLanes (backward compat), volume/pan interpolation, no automation nil, ProjectViewModel CRUD (add lane, remove lane, add/update/remove breakpoint), undo/redo (lane + breakpoint), TimelineViewModel lane count/height, duplicateSong/duplicateTrack copy, invalid ID no-op
 - All 510 tests pass
+
+### Iteration 8 — #79 Track inspector: effects, routing & automation panel
+- `ProjectViewModel`: `selectedTrackID` and `selectedContainerID` now mutually exclusive via `didSet` observers — setting one clears the other
+- `ProjectViewModel`: new `selectedTrack` computed property returns the track for the selected track ID
+- `ProjectViewModel`: `addTrackEffect`, `removeTrackEffect`, `reorderTrackEffects`, `toggleTrackEffectBypass`, `toggleTrackEffectChainBypass` — all with full undo/redo, mirroring container effect methods
+- `PlaybackScheduler`: per-track insert effect chains loaded during `prepare()` — route: trackMixer → [track effects] → outputTarget (master mixer or mainMixer)
+- `PlaybackScheduler`: track effect units cleaned up in `cleanup()`, `ParameterResolver` now resolves track-level effect parameters
+- New `TrackInspectorView`: Form-based inspector showing track name (editable), kind, effects chain (add/remove/bypass/open plugin UI), I/O routing, MIDI routing, volume/pan sliders, and automation lanes summary
+- `MainContentView`: inspector panel auto-switches between `ContainerInspector` and `TrackInspectorView` based on selection context (container selected → container inspector, track selected → track inspector)
+- `MainContentView`: clicking a track header sets `selectedTrackID` (non-Cmd click), wired all track effect callbacks
+- 18 new tests: selectedTrackID/selectedContainerID mutual exclusion (both directions), selectedTrack property, selectedTrack nil, Track insertEffects Codable round-trip, addTrackEffect (basic, multiple, invalid ID), removeTrackEffect with reindex, reorderTrackEffects, toggleTrackEffectBypass, toggleTrackEffectChainBypass, undo/redo (add/remove/reorder/chain bypass), deselectAll clears both, selectTrackByIndex
+- All 528 tests pass
+
+### Iteration 9 — #80 MIDI Learn for effect parameters: CC → parameter mapping
+- New `MIDIParameterMapping` model: `trigger: MIDITrigger`, `targetPath: EffectPath`, `minValue`/`maxValue` range, `scaledValue(ccValue:)` maps CC 0–127 to parameter range
+- `Project` gains `midiParameterMappings: [MIDIParameterMapping]` with backward-compatible decoding (defaults to [])
+- `MIDILearnTarget` enum: `.control(MappableControl)` for transport, `.parameter(EffectPath, minValue:, maxValue:)` for effect parameters
+- `MIDILearnController`: extended with `startParameterLearning(for:minValue:maxValue:)`, `onParameterMappingLearned` callback, handles both control and parameter targets
+- `MIDIDispatcher`: `updateParameterMappings(_:)` builds trigger→mapping lookup, `dispatch(_:ccValue:)` overload scales and emits parameter values, `onParameterValue: ((EffectPath, Float) -> Void)?` callback
+- `MIDIManager`: added `onMIDICCWithValue: ((MIDITrigger, UInt8) -> Void)?` callback for CC events with value byte
+- `ProjectViewModel`: full CRUD — `addMIDIParameterMapping`, `removeMIDIParameterMapping(mappingID:)`, `removeMIDIParameterMapping(forTarget:)`, `removeAllMIDIParameterMappings` — all with undo/redo
+- `ProjectViewModel`: learn flow — `isMIDIParameterLearning`, `midiLearnTargetPath`, `startMIDIParameterLearn`, `completeMIDIParameterLearn`, `cancelMIDIParameterLearn`
+- `TransportViewModel`: `setParameter(at:value:)` forwards to `PlaybackScheduler.setParameter` (ParameterResolver)
+- Real-time signal chain: MIDIManager → MIDIDispatcher (parameter lookup + CC scaling) → TransportViewModel.setParameter → PlaybackScheduler (ParameterResolver) → AUParameter
+- `TrackInspectorView`: context menu on effect rows ("MIDI Learn" / "Remove MIDI Mapping"), cyan dot indicator on mapped effects, "MIDI Mappings" section listing all track mappings with trigger→target display and remove buttons
+- `MainContentView`: wired MIDI learn/remove callbacks and mapping state to inspector
+- `LoopsAppEntry`: `setupMIDIParameterDispatch()` wires MIDIManager CC events → MIDIDispatcher, intercepts events during learn mode, syncs dispatcher mappings on change
+- 20 new tests: MIDIParameterMapping Codable round-trip, CC scaling (0→min, 127→max, 64→midpoint), Project backward-compat decode, Project with mappings round-trip, ProjectViewModel CRUD (add/remove by ID/target/all), undo/redo (add/remove), multiple mappings, MIDIDispatcher parameter dispatch (mapped/unmapped/learn-mode), MIDILearnController parameter learning/cancel, learn flow integration, learn replaces existing mapping
+- All 550 tests pass

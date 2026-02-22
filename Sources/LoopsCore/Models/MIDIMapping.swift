@@ -27,3 +27,31 @@ public struct MIDIMapping: Codable, Equatable, Sendable, Identifiable {
         self.sourceDeviceName = sourceDeviceName
     }
 }
+
+/// Maps a MIDI CC trigger to an effect parameter, with value scaling.
+public struct MIDIParameterMapping: Codable, Equatable, Sendable, Identifiable {
+    public var id: ID<MIDIParameterMapping>
+    public var trigger: MIDITrigger
+    public var targetPath: EffectPath
+    public var minValue: Float
+    public var maxValue: Float
+
+    public init(
+        id: ID<MIDIParameterMapping> = ID(),
+        trigger: MIDITrigger,
+        targetPath: EffectPath,
+        minValue: Float = 0.0,
+        maxValue: Float = 1.0
+    ) {
+        self.id = id
+        self.trigger = trigger
+        self.targetPath = targetPath
+        self.minValue = minValue
+        self.maxValue = maxValue
+    }
+
+    /// Scales a CC value (0–127) to the parameter's min–max range.
+    public func scaledValue(ccValue: UInt8) -> Float {
+        minValue + (Float(ccValue) / 127.0) * (maxValue - minValue)
+    }
+}
