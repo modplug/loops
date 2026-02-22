@@ -287,6 +287,23 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    /// Inserts a new track at a specific index in the current song.
+    /// The track is inserted before the master track if atIndex >= master position.
+    public func insertTrack(kind: TrackKind, atIndex index: Int) {
+        guard !project.songs.isEmpty else { return }
+        guard kind != .master else { return }
+        registerUndo(actionName: "Insert Track")
+        let existingCount = project.songs[currentSongIndex].tracks
+            .filter { $0.kind == kind }.count
+        let name = "\(kind.displayName) \(existingCount + 1)"
+        let clampedIndex = min(index, project.songs[currentSongIndex].tracks.count)
+        let track = Track(name: name, kind: kind, orderIndex: clampedIndex)
+        project.songs[currentSongIndex].tracks.insert(track, at: clampedIndex)
+        project.songs[currentSongIndex].ensureMasterTrackLast()
+        reindexTracks()
+        hasUnsavedChanges = true
+    }
+
     /// Removes a track from the current song by ID.
     /// Master tracks cannot be deleted.
     public func removeTrack(id: ID<Track>) {

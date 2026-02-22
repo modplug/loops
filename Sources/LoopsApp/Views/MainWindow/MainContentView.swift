@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import LoopsCore
 import LoopsEngine
 
@@ -39,6 +40,7 @@ public struct MainContentView: View {
     @State private var editingSectionID: ID<SectionRegion>?
     @State private var editingSectionName: String = ""
     @State private var inspectorMode: InspectorMode = .container
+    @State private var draggingTrackID: ID<Track>?
     @FocusState private var isMainFocused: Bool
     // isMIDILearning and midiLearnTargetPath are on projectViewModel
 
@@ -484,8 +486,35 @@ public struct MainContentView: View {
                     VStack(spacing: 0) {
                         ForEach(song.tracks) { track in
                             trackHeaderWithActions(track: track)
+                                .opacity(draggingTrackID == track.id ? 0.4 : 1.0)
+                                .onDrag {
+                                    guard track.kind != .master else {
+                                        return NSItemProvider()
+                                    }
+                                    draggingTrackID = track.id
+                                    return NSItemProvider(object: track.id.rawValue.uuidString as NSString)
+                                }
+                                .onDrop(of: [.text], delegate: TrackDropDelegate(
+                                    targetTrack: track,
+                                    draggingTrackID: $draggingTrackID,
+                                    song: song,
+                                    onReorder: { source, destination in
+                                        projectViewModel.moveTrack(from: source, to: destination)
+                                    }
+                                ))
                         }
-                        Spacer(minLength: 0)
+                        // Empty space at bottom for context menu target (at least one track height)
+                        Color.clear
+                            .frame(height: max(80, geo.size.height - trackListContentHeight(song: song)))
+                            .contentShape(Rectangle())
+                            .contextMenu {
+                                ForEach(TrackKind.creatableKinds, id: \.self) { kind in
+                                    Button("Insert \(kind.displayName) Track") {
+                                        let insertIndex = song.tracks.filter({ $0.kind != .master }).count
+                                        projectViewModel.insertTrack(kind: kind, atIndex: insertIndex)
+                                    }
+                                }
+                            }
                     }
                     .frame(width: 160)
                     .frame(minHeight: geo.size.height)
@@ -1100,6 +1129,48 @@ public struct MainContentView: View {
             return "\(trackName)/\(cName) FX\(path.effectIndex)"
         }
         return "\(trackName) FX\(path.effectIndex)"
+    }
+
+    private func trackListContentHeight(song: Song) -> CGFloat {
+        song.tracks.reduce(CGFloat(0)) { total, track in
+            total + timelineViewModel.trackHeight(for: track, baseHeight: 80)
+        }
+    }
+}
+
+// MARK: - Track Drag-to-Reorder Drop Delegate
+
+private struct TrackDropDelegate: DropDelegate {
+    let targetTrack: Track
+    @Binding var draggingTrackID: ID<Track>?
+    let song: Song
+    let onReorder: (IndexSet, Int) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let dragID = draggingTrackID,
+              dragID != targetTrack.id,
+              targetTrack.kind != .master else { return }
+        guard let sourceIndex = song.tracks.firstIndex(where: { $0.id == dragID }),
+              let destIndex = song.tracks.firstIndex(where: { $0.id == targetTrack.id }) else { return }
+        let destination = destIndex > sourceIndex ? destIndex + 1 : destIndex
+        onReorder(IndexSet(integer: sourceIndex), destination)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggingTrackID = nil
+        return true
+    }
+
+    func dropExited(info: DropInfo) {
+        // Keep draggingTrackID until performDrop
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        draggingTrackID != nil && targetTrack.kind != .master
     }
 }
 

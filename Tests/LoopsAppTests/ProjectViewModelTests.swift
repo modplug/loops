@@ -2637,4 +2637,167 @@ struct ProjectViewModelTests {
         vm.toggleContainerEffectChainBypass(containerID: containerID)
         #expect(!vm.project.songs[0].tracks[0].containers[0].isEffectChainBypassed)
     }
+
+    // MARK: - Track Reorder, Delete, Creation (#91)
+
+    @Test("Reorder tracks updates model order correctly")
+    @MainActor
+    func reorderTracksUpdatesModel() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        vm.addTrack(kind: .bus)
+        // Order: Audio 1, MIDI 1, Bus 1, Master
+        #expect(vm.project.songs[0].tracks[0].kind == .audio)
+        #expect(vm.project.songs[0].tracks[1].kind == .midi)
+        #expect(vm.project.songs[0].tracks[2].kind == .bus)
+        #expect(vm.project.songs[0].tracks[3].kind == .master)
+
+        // Move Bus (index 2) to top (index 0)
+        vm.moveTrack(from: IndexSet(integer: 2), to: 0)
+        #expect(vm.project.songs[0].tracks[0].kind == .bus)
+        #expect(vm.project.songs[0].tracks[1].kind == .audio)
+        #expect(vm.project.songs[0].tracks[2].kind == .midi)
+        // Master still at bottom
+        #expect(vm.project.songs[0].tracks[3].kind == .master)
+        // orderIndex updated
+        for (i, track) in vm.project.songs[0].tracks.enumerated() {
+            #expect(track.orderIndex == i)
+        }
+    }
+
+    @Test("Reorder tracks: master cannot be moved")
+    @MainActor
+    func reorderMasterCannotBeMoved() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        // Order: Audio 1, MIDI 1, Master
+        let masterIndex = vm.project.songs[0].tracks.firstIndex(where: { $0.kind == .master })!
+        vm.moveTrack(from: IndexSet(integer: masterIndex), to: 0)
+        // Master still at bottom (move was rejected)
+        #expect(vm.project.songs[0].tracks.last?.kind == .master)
+    }
+
+    @Test("Reorder tracks undo/redo")
+    @MainActor
+    func reorderTracksUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        let originalOrder = vm.project.songs[0].tracks.map { $0.kind }
+
+        vm.moveTrack(from: IndexSet(integer: 1), to: 0)
+        let reorderedOrder = vm.project.songs[0].tracks.map { $0.kind }
+        #expect(reorderedOrder != originalOrder)
+
+        vm.undoManager?.undo()
+        let afterUndo = vm.project.songs[0].tracks.map { $0.kind }
+        #expect(afterUndo == originalOrder)
+
+        vm.undoManager?.redo()
+        let afterRedo = vm.project.songs[0].tracks.map { $0.kind }
+        #expect(afterRedo == reorderedOrder)
+    }
+
+    @Test("Delete track removes it from song")
+    @MainActor
+    func deleteTrackRemovesFromSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        // 3 tracks: Audio, MIDI, Master
+        #expect(vm.project.songs[0].tracks.count == 3)
+
+        let midiID = vm.project.songs[0].tracks[1].id
+        vm.removeTrack(id: midiID)
+        #expect(vm.project.songs[0].tracks.count == 2)
+        #expect(vm.project.songs[0].tracks[0].kind == .audio)
+        #expect(vm.project.songs[0].tracks[1].kind == .master)
+    }
+
+    @Test("Delete master track is prevented")
+    @MainActor
+    func deleteMasterTrackPrevented() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let masterID = vm.project.songs[0].tracks.first(where: { $0.kind == .master })!.id
+        let countBefore = vm.project.songs[0].tracks.count
+        vm.removeTrack(id: masterID)
+        #expect(vm.project.songs[0].tracks.count == countBefore)
+    }
+
+    @Test("Insert track at specific index")
+    @MainActor
+    func insertTrackAtIndex() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        // Order: Audio 1, MIDI 1, Master
+        #expect(vm.project.songs[0].tracks.count == 3)
+
+        // Insert a bus track at index 1 (between Audio and MIDI)
+        vm.insertTrack(kind: .bus, atIndex: 1)
+        #expect(vm.project.songs[0].tracks.count == 4)
+        #expect(vm.project.songs[0].tracks[0].kind == .audio)
+        #expect(vm.project.songs[0].tracks[1].kind == .bus)
+        #expect(vm.project.songs[0].tracks[2].kind == .midi)
+        #expect(vm.project.songs[0].tracks[3].kind == .master)
+        // orderIndex updated
+        for (i, track) in vm.project.songs[0].tracks.enumerated() {
+            #expect(track.orderIndex == i)
+        }
+    }
+
+    @Test("Insert track at end goes above master")
+    @MainActor
+    func insertTrackAtEndAboveMaster() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        // Order: Audio 1, Master
+
+        // Insert at index beyond track count — should go before master
+        vm.insertTrack(kind: .midi, atIndex: 100)
+        #expect(vm.project.songs[0].tracks.count == 3)
+        #expect(vm.project.songs[0].tracks[1].kind == .midi)
+        #expect(vm.project.songs[0].tracks[2].kind == .master)
+    }
+
+    @Test("Insert track undo/redo")
+    @MainActor
+    func insertTrackUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        #expect(vm.project.songs[0].tracks.count == 2)
+
+        vm.insertTrack(kind: .midi, atIndex: 0)
+        #expect(vm.project.songs[0].tracks.count == 3)
+        #expect(vm.project.songs[0].tracks[0].kind == .midi)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks.count == 2)
+        #expect(vm.project.songs[0].tracks[0].kind == .audio)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks.count == 3)
+        #expect(vm.project.songs[0].tracks[0].kind == .midi)
+    }
+
+    @Test("Insert master track is prevented")
+    @MainActor
+    func insertMasterTrackPrevented() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let countBefore = vm.project.songs[0].tracks.count
+        vm.insertTrack(kind: .master, atIndex: 0)
+        #expect(vm.project.songs[0].tracks.count == countBefore)
+    }
 }
