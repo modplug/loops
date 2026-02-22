@@ -97,12 +97,12 @@ public struct ContainerView: View {
         ZStack {
             // Container body
             RoundedRectangle(cornerRadius: 4)
-                .fill(trackColor.opacity(isSelected ? 0.5 : 0.3))
+                .fill(container.isRecordArmed ? Color.red.opacity(0.15) : trackColor.opacity(isSelected ? 0.5 : 0.3))
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
                         .strokeBorder(
-                            isSelected ? Color.accentColor : trackColor.opacity(0.6),
-                            lineWidth: isSelected ? 2 : 1
+                            container.isRecordArmed ? Color.red : (isSelected ? Color.accentColor : trackColor.opacity(0.6)),
+                            lineWidth: container.isRecordArmed || isSelected ? 2 : 1
                         )
                 )
 
@@ -147,6 +147,11 @@ public struct ContainerView: View {
             // Container label
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 2) {
+                    if container.isRecordArmed {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 7))
+                            .foregroundStyle(.red)
+                    }
                     if isClone {
                         Image(systemName: "link")
                             .font(.system(size: 8))

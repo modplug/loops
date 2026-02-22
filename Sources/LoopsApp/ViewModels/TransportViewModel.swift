@@ -22,6 +22,7 @@ public final class TransportViewModel {
     private let transport: TransportManager
     private let engineManager: AudioEngineManager?
     private var playbackScheduler: PlaybackScheduler?
+    private var containerRecorder: ContainerRecorder?
     private var playbackGeneration = 0
     private var playbackTask: Task<Void, Never>?
     /// Tracks the last prepared song so we can skip re-preparing when unchanged.
@@ -35,6 +36,14 @@ public final class TransportViewModel {
     /// Direct callback for playhead changes. Avoids SwiftUI observation overhead
     /// by routing updates outside the view re-evaluation cycle.
     public var onPlayheadChanged: ((Double) -> Void)?
+
+    /// Called when waveform peaks are updated during recording.
+    /// Parameters: containerID, peaks array.
+    public var onRecordingPeaksUpdated: ((ID<Container>, [Float]) -> Void)?
+
+    /// Called when recording completes for a container.
+    /// Parameters: trackID, containerID, SourceRecording.
+    public var onRecordingComplete: ((ID<Track>, ID<Container>, SourceRecording) -> Void)?
 
     public init(transport: TransportManager, engineManager: AudioEngineManager? = nil) {
         self.transport = transport
@@ -157,6 +166,7 @@ public final class TransportViewModel {
 
     public func pause() {
         playbackGeneration += 1
+        stopContainerRecording()
         let previousTask = playbackTask
         previousTask?.cancel()
         let scheduler = playbackScheduler
@@ -171,6 +181,7 @@ public final class TransportViewModel {
 
     public func stop() {
         playbackGeneration += 1
+        stopContainerRecording()
         let previousTask = playbackTask
         previousTask?.cancel()
         let scheduler = playbackScheduler
@@ -261,6 +272,7 @@ public final class TransportViewModel {
         playbackGeneration += 1
         let wasPlaying = isPlaying
         if wasPlaying {
+            stopContainerRecording()
             let previousTask = playbackTask
             previousTask?.cancel()
             let scheduler = playbackScheduler
@@ -401,12 +413,69 @@ public final class TransportViewModel {
                 timeSignature: timeSignature,
                 sampleRate: sampleRate
             )
+
+            // Start container recording after audio scheduling
+            if let context = self.songProvider?() {
+                self.startContainerRecordingIfNeeded(
+                    song: context.song,
+                    fromBar: fromBar,
+                    bpm: bpm,
+                    timeSignature: timeSignature,
+                    sampleRate: sampleRate,
+                    audioDir: context.audioDir
+                )
+            }
+
             // Audio player nodes are now started — calibrate the playhead
             // so it starts advancing in sync with audible output.
             let outputLatency = self.engineManager?.engine.outputNode.presentationLatency ?? 0
             self.transport.completeAudioSync(audioOutputLatency: outputLatency)
             self.syncFromTransport()
         }
+    }
+
+    /// Starts container recording if the transport is record-armed and the
+    /// current song has armed containers on audio tracks.
+    private func startContainerRecordingIfNeeded(
+        song: Song,
+        fromBar: Double,
+        bpm: Double,
+        timeSignature: TimeSignature,
+        sampleRate: Double,
+        audioDir: URL
+    ) {
+        guard isRecordArmed else { return }
+
+        // Collect armed containers from audio tracks
+        var armed: [(containerID: ID<Container>, trackID: ID<Track>, startBar: Int, endBar: Int)] = []
+        for track in song.tracks where track.kind == .audio {
+            for container in track.containers where container.isRecordArmed {
+                armed.append((container.id, track.id, container.startBar, container.endBar))
+            }
+        }
+        guard !armed.isEmpty, let engine = engineManager else { return }
+
+        let recorder = ContainerRecorder(engine: engine.engine, audioDirURL: audioDir)
+        recorder.onPeaksUpdated = { [weak self] containerID, peaks in
+            self?.onRecordingPeaksUpdated?(containerID, peaks)
+        }
+        recorder.onRecordingComplete = { [weak self] trackID, containerID, recording in
+            self?.onRecordingComplete?(trackID, containerID, recording)
+        }
+        containerRecorder = recorder
+        recorder.startMonitoring(
+            armedContainers: armed,
+            fromBar: fromBar,
+            bpm: bpm,
+            timeSignature: timeSignature,
+            sampleRate: sampleRate
+        )
+    }
+
+    /// Stops container recording if active.
+    private func stopContainerRecording() {
+        containerRecorder?.stopMonitoring()
+        containerRecorder = nil
     }
 
     private func syncFromTransport() {

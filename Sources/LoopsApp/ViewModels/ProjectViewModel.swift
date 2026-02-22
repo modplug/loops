@@ -25,6 +25,10 @@ public final class ProjectViewModel {
     /// Section region metadata copied with section copy operations.
     public var clipboardSectionRegion: SectionRegion?
 
+    /// Live waveform peaks for containers currently being recorded.
+    /// Cleared when recording completes and peaks are stored in the SourceRecording.
+    public var liveRecordingPeaks: [ID<Container>: [Float]] = [:]
+
     private let persistence = ProjectPersistence()
 
     public init(project: Project = Project()) {
@@ -693,6 +697,8 @@ public final class ProjectViewModel {
         // Update container reference
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].sourceRecordingID = recording.id
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].isRecordArmed = false
+        // Clear live recording peaks now that final peaks are in the SourceRecording
+        liveRecordingPeaks.removeValue(forKey: containerID)
         hasUnsavedChanges = true
     }
 
@@ -1895,9 +1901,18 @@ public final class ProjectViewModel {
 
     /// Returns waveform peaks for a container, if available.
     public func waveformPeaks(for container: Container) -> [Float]? {
+        // Check live recording peaks first (in-progress recording)
+        if let livePeaks = liveRecordingPeaks[container.id], !livePeaks.isEmpty {
+            return livePeaks
+        }
         guard let recordingID = container.sourceRecordingID,
               let recording = project.sourceRecordings[recordingID] else { return nil }
         return recording.waveformPeaks
+    }
+
+    /// Updates live waveform peaks during an in-progress recording.
+    public func updateRecordingPeaks(containerID: ID<Container>, peaks: [Float]) {
+        liveRecordingPeaks[containerID] = peaks
     }
 
     // MARK: - Private

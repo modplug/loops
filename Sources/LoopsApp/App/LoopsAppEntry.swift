@@ -94,6 +94,14 @@ public struct LoopsRootView: View {
             let config = viewModel.currentSong?.metronomeConfig ?? MetronomeConfig()
             transportViewModel.applyMetronomeConfig(config)
 
+            // Wire container recording callbacks
+            transportViewModel.onRecordingPeaksUpdated = { [weak viewModel] containerID, peaks in
+                viewModel?.updateRecordingPeaks(containerID: containerID, peaks: peaks)
+            }
+            transportViewModel.onRecordingComplete = { [weak viewModel] trackID, containerID, recording in
+                viewModel?.setContainerRecording(trackID: trackID, containerID: containerID, recording: recording)
+            }
+
             // Set up master level metering
             engineManager?.onMasterLevelUpdate = { [weak mixerViewModel] peak in
                 Task { @MainActor in

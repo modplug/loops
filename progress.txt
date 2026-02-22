@@ -690,3 +690,36 @@
 - `TimelineView`: drop handler updated to call `importAudioAsync` and `ensureBarVisible` for auto-scroll on import
 - 12 new tests: readMetadata correct duration/sampleRate, readMetadata different sample rates, importAudioFile no peaks, progressive peaks match complete, progressive callback frequency, ensureBarVisible expands, ensureBarVisible no shrink, ensureBarVisible at boundary, importAudioAsync creates container immediately, importAudioAsync nil peaks initially, importAudioAsync rejects overlap, importAudioAsync selects container
 - All 710 tests pass
+
+### Iteration 15 — #97 Playhead-audio sync fix
+- Root cause: `TransportViewModel.play()` called `transport.play()` synchronously (starting the wall-clock playhead timer) while audio scheduling ran in an async Task — playhead moved before audio started
+- `TransportManager`: added `isWaitingForAudioSync` flag — when true, `tick()` holds playhead at current position (callbacks still fire, but position doesn't advance)
+- `TransportManager`: added `play(waitForAudioSync:)` parameter — sets the flag and defers `playbackStartTime` capture until sync completes
+- `TransportManager`: added `beginWaitForAudioSync()` for count-in → recording transition
+- `TransportManager`: added `completeAudioSync(audioOutputLatency:)` — resets `playbackStartTime` accounting for hardware output latency, clears flag
+- `TransportManager`: `tick()` uses `max(0, elapsed)` clamp so latency compensation holds playhead at start until audio reaches speakers
+- `TransportManager`: `pause()` and `stop()` clear `isWaitingForAudioSync`
+- `TransportViewModel.play()`: non-count-in path uses `transport.play(waitForAudioSync: true)`, count-in and no-engine paths use `transport.play()` (no wait)
+- `TransportViewModel.schedulePlayback()`: after `scheduler.play()`, calls `transport.completeAudioSync(audioOutputLatency:)` with `engine.outputNode.presentationLatency`
+- `TransportViewModel.seek(toBar:)`: uses `transport.play(waitForAudioSync: true)` for re-seek during playback
+- `TransportViewModel` count-in completion: calls `transport.beginWaitForAudioSync()` before scheduling, `completeAudioSync` called by the async task
+- 11 new tests: sync flag on play, completeAudioSync clears flag, latency holds playhead, no-op when not waiting, pause/stop clear flag, beginWaitForAudioSync, arbitrary start position, backward compat (no sync flag), completeAudioSync sets start bar, pause/resume during sync
+- All 721 tests pass
+
+### Iteration 16 — #98 Audio recording into armed containers
+- New `ContainerRecorder` engine class: captures audio from engine input node into armed containers during playback
+- `ContainerRecorder`: tracks playhead bar position from accumulated sample count, starts/stops recording as playhead enters/leaves armed container bar ranges
+- `ContainerRecorder`: generates waveform peaks incrementally from captured samples (~100 peaks/sec) and reports via `onPeaksUpdated` callback
+- `ContainerRecorder`: finalizes recording with `SourceRecording` metadata (filename, sample rate, sample count, peaks) via `onRecordingComplete` callback
+- `TransportViewModel`: added `containerRecorder` property, `startContainerRecordingIfNeeded` / `stopContainerRecording` methods
+- `TransportViewModel`: recording starts after audio scheduling in `schedulePlayback`, stops on pause/stop/seek
+- `TransportViewModel`: `onRecordingPeaksUpdated` and `onRecordingComplete` callbacks for UI integration
+- `ProjectViewModel`: added `liveRecordingPeaks` dictionary for in-progress recording waveform display
+- `ProjectViewModel`: `updateRecordingPeaks(containerID:peaks:)` stores live peaks during recording
+- `ProjectViewModel`: `waveformPeaks(for:)` returns live peaks during recording, falls back to SourceRecording peaks
+- `ProjectViewModel`: `setContainerRecording` clears live peaks when recording completes
+- `ContainerView`: armed containers show red border (2px) and red-tinted background
+- `ContainerView`: armed containers show red filled circle icon next to container name
+- `LoopsRootView`: wired `onRecordingPeaksUpdated` → `updateRecordingPeaks` and `onRecordingComplete` → `setContainerRecording`
+- 10 new tests: armed state serialization round-trip, armed defaults false, CAF writer produces valid readable file, recording duration matches bar range (120 BPM/4 bars = 352800 samples), set recording clears live peaks, live peaks shown during recording, container record arm undo/redo, peaksFromSamples correctness, samplesPerBar calculation, armed visual state persists through encode/decode
+- All 731 tests pass
