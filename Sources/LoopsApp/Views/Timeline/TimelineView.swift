@@ -133,6 +133,17 @@ public struct TimelineView: View {
                 }
             }
 
+            // Range selection overlay
+            if let range = viewModel.selectedRange {
+                let startX = CGFloat(range.lowerBound - 1) * viewModel.pixelsPerBar
+                let width = CGFloat(range.count) * viewModel.pixelsPerBar
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.15))
+                    .frame(width: width, height: displayHeight)
+                    .offset(x: startX)
+                    .allowsHitTesting(false)
+            }
+
             // Playhead — extends full height
             PlayheadView(
                 xPosition: viewModel.playheadX,

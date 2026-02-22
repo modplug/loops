@@ -23,6 +23,12 @@ public final class TimelineViewModel {
     /// Number of bars visible in the timeline.
     public var totalBars: Int = 64
 
+    /// Selected bar range from ruler drag (transient, not persisted). 1-based, inclusive.
+    public var selectedRange: ClosedRange<Int>?
+
+    /// Tracks selected for range copy filtering. Empty means all tracks included.
+    public var selectedTrackIDs: Set<ID<Track>> = []
+
     /// Minimum pixels per bar (fully zoomed out).
     public static let minPixelsPerBar: CGFloat = 30.0
 
@@ -67,6 +73,20 @@ public final class TimelineViewModel {
     /// Zooms out by one step.
     public func zoomOut() {
         pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, Self.minPixelsPerBar)
+    }
+
+    /// Toggles a track's selection for range copy filtering.
+    public func toggleTrackSelection(trackID: ID<Track>) {
+        if selectedTrackIDs.contains(trackID) {
+            selectedTrackIDs.remove(trackID)
+        } else {
+            selectedTrackIDs.insert(trackID)
+        }
+    }
+
+    /// Clears the selected range.
+    public func clearSelectedRange() {
+        selectedRange = nil
     }
 
     /// Toggles automation sub-lane expansion for a track.

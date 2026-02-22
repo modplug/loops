@@ -22,6 +22,8 @@ public final class ProjectViewModel {
     public var clipboard: [ClipboardContainerEntry] = []
     /// The leftmost start bar of copied containers, used for offset calculation on paste.
     public var clipboardBaseBar: Int = 1
+    /// Section region metadata copied with section copy operations.
+    public var clipboardSectionRegion: SectionRegion?
 
     private let persistence = ProjectPersistence()
 
@@ -935,13 +937,16 @@ public final class ProjectViewModel {
         guard let container = track.containers.first(where: { $0.id == containerID }) else { return }
         clipboard = [ClipboardContainerEntry(container: container, trackID: trackID)]
         clipboardBaseBar = container.startBar
+        clipboardSectionRegion = nil
     }
 
     /// Copies all containers within a bar range (e.g., from a section) to the clipboard.
-    public func copyContainersInRange(startBar: Int, endBar: Int) {
+    /// If trackFilter is non-empty, only includes containers from those tracks.
+    public func copyContainersInRange(startBar: Int, endBar: Int, trackFilter: Set<ID<Track>> = []) {
         guard let song = currentSong else { return }
         var entries: [ClipboardContainerEntry] = []
         for track in song.tracks {
+            if !trackFilter.isEmpty && !trackFilter.contains(track.id) { continue }
             for container in track.containers {
                 // Include containers that overlap the range
                 if container.startBar < endBar && container.endBar > startBar {
@@ -949,9 +954,77 @@ public final class ProjectViewModel {
                 }
             }
         }
-        guard !entries.isEmpty else { return }
         clipboard = entries
         clipboardBaseBar = startBar
+        clipboardSectionRegion = nil
+    }
+
+    /// Copies a section's containers and metadata to the clipboard.
+    public func copySectionWithMetadata(sectionID: ID<SectionRegion>) {
+        guard let song = currentSong else { return }
+        guard let section = song.sections.first(where: { $0.id == sectionID }) else { return }
+        copyContainersInRange(startBar: section.startBar, endBar: section.endBar)
+        clipboardSectionRegion = section
+    }
+
+    /// Pastes clipboard containers to their original tracks at the given bar offset.
+    /// If section metadata exists, also creates a section region.
+    /// Returns the number of containers successfully pasted.
+    @discardableResult
+    public func pasteContainersToOriginalTracks(atBar: Int) -> Int {
+        guard !project.songs.isEmpty else { return 0 }
+        let hasContainers = !clipboard.isEmpty
+        let hasSection = clipboardSectionRegion != nil
+        guard hasContainers || hasSection else { return 0 }
+
+        let offset = atBar - clipboardBaseBar
+        var pasted = 0
+
+        registerUndo(actionName: "Paste")
+        for entry in clipboard {
+            guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == entry.trackID }) else { continue }
+
+            let newContainer = Container(
+                name: entry.container.name,
+                startBar: max(entry.container.startBar + offset, 1),
+                lengthBars: entry.container.lengthBars,
+                sourceRecordingID: entry.container.sourceRecordingID,
+                linkGroupID: entry.container.linkGroupID,
+                loopSettings: entry.container.loopSettings,
+                insertEffects: entry.container.insertEffects,
+                isEffectChainBypassed: entry.container.isEffectChainBypassed,
+                instrumentOverride: entry.container.instrumentOverride,
+                enterFade: entry.container.enterFade,
+                exitFade: entry.container.exitFade,
+                onEnterActions: entry.container.onEnterActions,
+                onExitActions: entry.container.onExitActions,
+                automationLanes: entry.container.automationLanes
+            )
+
+            if !hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: newContainer) {
+                project.songs[currentSongIndex].tracks[trackIndex].containers.append(newContainer)
+                pasted += 1
+            }
+        }
+
+        // Also paste section metadata if present
+        if let section = clipboardSectionRegion {
+            let newSection = SectionRegion(
+                name: section.name,
+                startBar: max(section.startBar + offset, 1),
+                lengthBars: section.lengthBars,
+                color: section.color,
+                notes: section.notes
+            )
+            if !hasSectionOverlap(in: project.songs[currentSongIndex], with: newSection) {
+                project.songs[currentSongIndex].sections.append(newSection)
+            }
+        }
+
+        if pasted > 0 || hasSection {
+            hasUnsavedChanges = true
+        }
+        return pasted
     }
 
     /// Duplicates a container as an independent copy at the next available position on the same track.

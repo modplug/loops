@@ -21,6 +21,7 @@ public struct TrackHeaderView: View {
     var onRecordArmToggle: (() -> Void)?
     var onMonitorToggle: (() -> Void)?
     var onAutomationToggle: (() -> Void)?
+    var isTrackSelected: Bool
 
     public init(
         track: Track,
@@ -35,7 +36,8 @@ public struct TrackHeaderView: View {
         onSoloToggle: (() -> Void)? = nil,
         onRecordArmToggle: (() -> Void)? = nil,
         onMonitorToggle: (() -> Void)? = nil,
-        onAutomationToggle: (() -> Void)? = nil
+        onAutomationToggle: (() -> Void)? = nil,
+        isTrackSelected: Bool = false
     ) {
         self.track = track
         self.height = height
@@ -50,6 +52,7 @@ public struct TrackHeaderView: View {
         self.onRecordArmToggle = onRecordArmToggle
         self.onMonitorToggle = onMonitorToggle
         self.onAutomationToggle = onAutomationToggle
+        self.isTrackSelected = isTrackSelected
     }
 
     public var body: some View {
@@ -214,7 +217,9 @@ public struct TrackHeaderView: View {
                 ? Color.red.opacity(0.1)
                 : track.isMonitoring
                     ? Color.orange.opacity(0.1)
-                    : Color(nsColor: .controlBackgroundColor)
+                    : isTrackSelected
+                        ? Color.accentColor.opacity(0.08)
+                        : Color(nsColor: .controlBackgroundColor)
         )
         .overlay(
             Rectangle()
@@ -222,6 +227,13 @@ public struct TrackHeaderView: View {
                 .foregroundStyle(Color.secondary.opacity(0.3)),
             alignment: .bottom
         )
+        .overlay(alignment: .leading) {
+            if isTrackSelected {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(width: 3)
+            }
+        }
     }
 
     private var hasAutomation: Bool {

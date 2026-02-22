@@ -1651,4 +1651,260 @@ struct ProjectViewModelTests {
         let consolidated = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == cloneID })!
         #expect(!consolidated.isClone)
     }
+
+    // MARK: - Time Range Selection & Copy/Paste (#69)
+
+    @Test("Range copy produces correct containers within range only")
+    @MainActor
+    func rangeCopyWithinRange() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+        let _ = vm.addContainer(trackID: trackID, startBar: 10, lengthBars: 2) // outside range
+
+        // Copy range bars 1-8 (endBar exclusive = 9)
+        vm.copyContainersInRange(startBar: 1, endBar: 9)
+        #expect(vm.clipboard.count == 2)
+        #expect(vm.clipboardBaseBar == 1)
+        #expect(vm.clipboardSectionRegion == nil)
+    }
+
+    @Test("Paste at bar offset adjusts container positions correctly")
+    @MainActor
+    func pasteMultiTrackAtOffset() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        let track1ID = vm.project.songs[0].tracks[0].id
+        let track2ID = vm.project.songs[0].tracks[1].id
+        let _ = vm.addContainer(trackID: track1ID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: track2ID, startBar: 2, lengthBars: 3)
+
+        // Copy range bars 1-5
+        vm.copyContainersInRange(startBar: 1, endBar: 6)
+        #expect(vm.clipboard.count == 2)
+
+        // Paste at bar 10 → offset is +9
+        let pasted = vm.pasteContainersToOriginalTracks(atBar: 10)
+        #expect(pasted == 2)
+        // Track 1 should have original (1-4) + pasted (10-13)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+        let pastedContainer1 = vm.project.songs[0].tracks[0].containers[1]
+        #expect(pastedContainer1.startBar == 10)
+        #expect(pastedContainer1.lengthBars == 4)
+        // Track 2 should have original (2-4) + pasted (11-13)
+        #expect(vm.project.songs[0].tracks[1].containers.count == 2)
+        let pastedContainer2 = vm.project.songs[0].tracks[1].containers[1]
+        #expect(pastedContainer2.startBar == 11)
+        #expect(pastedContainer2.lengthBars == 3)
+    }
+
+    @Test("Section copy includes section metadata")
+    @MainActor
+    func sectionCopyIncludesMetadata() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        vm.addSection(name: "Intro", startBar: 1, lengthBars: 4, color: "#FF5733")
+        let sectionID = vm.project.songs[0].sections[0].id
+
+        vm.copySectionWithMetadata(sectionID: sectionID)
+        #expect(vm.clipboard.count == 1)
+        #expect(vm.clipboardSectionRegion != nil)
+        #expect(vm.clipboardSectionRegion?.name == "Intro")
+        #expect(vm.clipboardSectionRegion?.color == "#FF5733")
+
+        // Paste at bar 10 — should create containers AND section region
+        let pasted = vm.pasteContainersToOriginalTracks(atBar: 10)
+        #expect(pasted == 1)
+        #expect(vm.project.songs[0].sections.count == 2)
+        let pastedSection = vm.project.songs[0].sections[1]
+        #expect(pastedSection.name == "Intro")
+        #expect(pastedSection.startBar == 10)
+        #expect(pastedSection.lengthBars == 4)
+        #expect(pastedSection.color == "#FF5733")
+    }
+
+    @Test("Track filter excludes non-selected tracks from copy")
+    @MainActor
+    func trackFilterExcludesNonSelected() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        let track1ID = vm.project.songs[0].tracks[0].id
+        let track2ID = vm.project.songs[0].tracks[1].id
+        let _ = vm.addContainer(trackID: track1ID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: track2ID, startBar: 1, lengthBars: 4)
+
+        // Copy with filter — only track 1
+        vm.copyContainersInRange(startBar: 1, endBar: 5, trackFilter: [track1ID])
+        #expect(vm.clipboard.count == 1)
+        #expect(vm.clipboard[0].trackID == track1ID)
+    }
+
+    @Test("Empty range copy produces empty clipboard")
+    @MainActor
+    func emptyRangeCopy() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+
+        // Copy range that has no containers
+        vm.copyContainersInRange(startBar: 20, endBar: 25)
+        #expect(vm.clipboard.isEmpty)
+    }
+
+    @Test("Paste with empty clipboard is no-op")
+    @MainActor
+    func pasteEmptyClipboard() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        // Reset unsaved changes flag
+        vm.hasUnsavedChanges = false
+
+        #expect(vm.clipboard.isEmpty)
+        let pasted = vm.pasteContainersToOriginalTracks(atBar: 1)
+        #expect(pasted == 0)
+        // Containers count unchanged
+        #expect(vm.project.songs[0].tracks[0].containers.isEmpty)
+        _ = trackID
+    }
+
+    @Test("Regular copy clears section metadata from clipboard")
+    @MainActor
+    func regularCopyClearsSectionMetadata() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // First do a section copy
+        vm.addSection(name: "Intro", startBar: 1, lengthBars: 4)
+        let sectionID = vm.project.songs[0].sections[0].id
+        vm.copySectionWithMetadata(sectionID: sectionID)
+        #expect(vm.clipboardSectionRegion != nil)
+
+        // Regular copy should clear section metadata
+        vm.copyContainer(trackID: trackID, containerID: containerID)
+        #expect(vm.clipboardSectionRegion == nil)
+    }
+
+    @Test("Range copy clears section metadata from clipboard")
+    @MainActor
+    func rangeCopyClearsSectionMetadata() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+
+        // First do a section copy
+        vm.addSection(name: "Intro", startBar: 1, lengthBars: 4)
+        let sectionID = vm.project.songs[0].sections[0].id
+        vm.copySectionWithMetadata(sectionID: sectionID)
+        #expect(vm.clipboardSectionRegion != nil)
+
+        // Range copy should clear section metadata
+        vm.copyContainersInRange(startBar: 1, endBar: 5)
+        #expect(vm.clipboardSectionRegion == nil)
+    }
+
+    @Test("Multi-track paste skips overlapping containers")
+    @MainActor
+    func multiTrackPasteSkipsOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+
+        // Copy the container
+        vm.copyContainersInRange(startBar: 1, endBar: 5)
+        #expect(vm.clipboard.count == 1)
+
+        // Paste at bar 3 — overlaps with existing (1-4)
+        let pasted = vm.pasteContainersToOriginalTracks(atBar: 3)
+        #expect(pasted == 0)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+    }
+
+    @Test("Paste with empty track filter includes all tracks")
+    @MainActor
+    func emptyTrackFilterIncludesAll() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        vm.addTrack(kind: .bus)
+        let track1ID = vm.project.songs[0].tracks[0].id
+        let track2ID = vm.project.songs[0].tracks[1].id
+        let track3ID = vm.project.songs[0].tracks[2].id
+        let _ = vm.addContainer(trackID: track1ID, startBar: 1, lengthBars: 2)
+        let _ = vm.addContainer(trackID: track2ID, startBar: 1, lengthBars: 2)
+        let _ = vm.addContainer(trackID: track3ID, startBar: 1, lengthBars: 2)
+
+        // Empty filter means all tracks
+        vm.copyContainersInRange(startBar: 1, endBar: 3, trackFilter: [])
+        #expect(vm.clipboard.count == 3)
+    }
+
+    @Test("Paste creates independent containers not clones")
+    @MainActor
+    func pasteCreatesIndependentContainers() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+
+        vm.copyContainersInRange(startBar: 1, endBar: 5)
+        let pasted = vm.pasteContainersToOriginalTracks(atBar: 10)
+        #expect(pasted == 1)
+
+        let pastedContainer = vm.project.songs[0].tracks[0].containers[1]
+        #expect(pastedContainer.id != originalID)
+        #expect(pastedContainer.parentContainerID == nil) // not a clone
+        #expect(!pastedContainer.isClone)
+    }
+
+    @Test("Paste multi-track undo restores state")
+    @MainActor
+    func pasteMultiTrackUndo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        let track1ID = vm.project.songs[0].tracks[0].id
+        let track2ID = vm.project.songs[0].tracks[1].id
+        let _ = vm.addContainer(trackID: track1ID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: track2ID, startBar: 1, lengthBars: 4)
+
+        vm.copyContainersInRange(startBar: 1, endBar: 5)
+        vm.pasteContainersToOriginalTracks(atBar: 10)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+        #expect(vm.project.songs[0].tracks[1].containers.count == 2)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+        #expect(vm.project.songs[0].tracks[1].containers.count == 1)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+        #expect(vm.project.songs[0].tracks[1].containers.count == 2)
+    }
 }

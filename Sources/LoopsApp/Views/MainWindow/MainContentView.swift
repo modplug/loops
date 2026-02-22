@@ -79,7 +79,14 @@ public struct MainContentView: View {
                             RulerView(
                                 totalBars: timelineViewModel.totalBars,
                                 pixelsPerBar: timelineViewModel.pixelsPerBar,
-                                timeSignature: song.timeSignature
+                                timeSignature: song.timeSignature,
+                                selectedRange: timelineViewModel.selectedRange,
+                                onRangeSelect: { range in
+                                    timelineViewModel.selectedRange = range
+                                },
+                                onRangeDeselect: {
+                                    timelineViewModel.clearSelectedRange()
+                                }
                             )
                         }
                     }
@@ -131,9 +138,7 @@ public struct MainContentView: View {
                                     projectViewModel.recolorSection(sectionID: sectionID, color: color)
                                 },
                                 onSectionCopy: { sectionID in
-                                    if let section = song.sections.first(where: { $0.id == sectionID }) {
-                                        projectViewModel.copyContainersInRange(startBar: section.startBar, endBar: section.endBar)
-                                    }
+                                    projectViewModel.copySectionWithMetadata(sectionID: sectionID)
                                 },
                                 onSectionSplit: { sectionID, atBar in
                                     projectViewModel.splitSection(sectionID: sectionID, atBar: atBar)
@@ -415,12 +420,23 @@ public struct MainContentView: View {
             }
             return .ignored
         }
+        .onKeyPress("c", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) else { return .ignored }
+            handleCopy()
+            return .handled
+        }
+        .onKeyPress("v", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) else { return .ignored }
+            handlePaste()
+            return .handled
+        }
     }
 
     private func trackHeaderWithActions(track: Track) -> some View {
         let isExpanded = timelineViewModel.automationExpanded.contains(track.id)
         let laneLabels = automationLaneLabels(for: track)
         let perTrackHeight = timelineViewModel.trackHeight(for: track, baseHeight: 80)
+        let isSelected = timelineViewModel.selectedTrackIDs.contains(track.id)
         return TrackHeaderView(
             track: track,
             height: perTrackHeight,
@@ -440,7 +456,16 @@ public struct MainContentView: View {
             },
             onAutomationToggle: {
                 timelineViewModel.toggleAutomationExpanded(trackID: track.id)
-            }
+            },
+            isTrackSelected: isSelected
+        )
+        .simultaneousGesture(
+            TapGesture()
+                .onEnded {
+                    if NSEvent.modifierFlags.contains(.command) {
+                        timelineViewModel.toggleTrackSelection(trackID: track.id)
+                    }
+                }
         )
         .contextMenu {
             Button("Rename...") {
@@ -551,6 +576,29 @@ public struct MainContentView: View {
             projectViewModel.renameTrack(id: id, newName: editingTrackName)
         }
         editingTrackID = nil
+    }
+
+    private func handleCopy() {
+        if let range = timelineViewModel.selectedRange {
+            projectViewModel.copyContainersInRange(
+                startBar: range.lowerBound,
+                endBar: range.upperBound + 1,
+                trackFilter: timelineViewModel.selectedTrackIDs
+            )
+        } else if let containerID = projectViewModel.selectedContainerID, let song = currentSong {
+            for track in song.tracks {
+                if track.containers.contains(where: { $0.id == containerID }) {
+                    projectViewModel.copyContainer(trackID: track.id, containerID: containerID)
+                    return
+                }
+            }
+        }
+    }
+
+    private func handlePaste() {
+        guard !projectViewModel.clipboard.isEmpty || projectViewModel.clipboardSectionRegion != nil else { return }
+        let playheadBar = Int(timelineViewModel.playheadBar)
+        projectViewModel.pasteContainersToOriginalTracks(atBar: playheadBar)
     }
 
     private func commitSectionRename() {

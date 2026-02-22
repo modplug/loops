@@ -105,4 +105,44 @@ struct TimelineViewModelTests {
         let ts3 = TimeSignature(beatsPerBar: 3, beatUnit: 4)
         #expect(vm.pixelsPerBeat(timeSignature: ts3) == 40.0)
     }
+
+    // MARK: - Selected Range (#69)
+
+    @Test("Selected range defaults to nil")
+    @MainActor
+    func selectedRangeDefault() {
+        let vm = TimelineViewModel()
+        #expect(vm.selectedRange == nil)
+        #expect(vm.selectedTrackIDs.isEmpty)
+    }
+
+    @Test("Set and clear selected range")
+    @MainActor
+    func setAndClearSelectedRange() {
+        let vm = TimelineViewModel()
+        vm.selectedRange = 3...8
+        #expect(vm.selectedRange == 3...8)
+        vm.clearSelectedRange()
+        #expect(vm.selectedRange == nil)
+    }
+
+    @Test("Toggle track selection adds and removes")
+    @MainActor
+    func toggleTrackSelection() {
+        let vm = TimelineViewModel()
+        let trackID = ID<Track>()
+        let trackID2 = ID<Track>()
+
+        #expect(vm.selectedTrackIDs.isEmpty)
+        vm.toggleTrackSelection(trackID: trackID)
+        #expect(vm.selectedTrackIDs.contains(trackID))
+        #expect(vm.selectedTrackIDs.count == 1)
+
+        vm.toggleTrackSelection(trackID: trackID2)
+        #expect(vm.selectedTrackIDs.count == 2)
+
+        vm.toggleTrackSelection(trackID: trackID)
+        #expect(!vm.selectedTrackIDs.contains(trackID))
+        #expect(vm.selectedTrackIDs.count == 1)
+    }
 }
