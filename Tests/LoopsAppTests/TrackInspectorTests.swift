@@ -287,6 +287,91 @@ struct TrackInspectorTests {
         #expect(restored[1].displayName == "B")
     }
 
+    @Test("reorderTrackEffects undo then redo restores reordered state")
+    @MainActor
+    func reorderTrackEffectsUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "A"))
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "B"))
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "C"))
+
+        vm.reorderTrackEffects(trackID: trackID, from: IndexSet(integer: 0), to: 3)
+
+        let reordered = vm.project.songs[0].tracks[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(reordered[0].displayName == "B")
+        #expect(reordered[1].displayName == "C")
+        #expect(reordered[2].displayName == "A")
+
+        vm.undoManager?.undo()
+        let undone = vm.project.songs[0].tracks[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(undone[0].displayName == "A")
+        #expect(undone[1].displayName == "B")
+        #expect(undone[2].displayName == "C")
+
+        vm.undoManager?.redo()
+        let redone = vm.project.songs[0].tracks[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(redone[0].displayName == "B")
+        #expect(redone[1].displayName == "C")
+        #expect(redone[2].displayName == "A")
+    }
+
+    @Test("reorderTrackEffects moves middle effect to end")
+    @MainActor
+    func reorderTrackEffectsMiddleToEnd() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "A"))
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "B"))
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "C"))
+
+        // SwiftUI .onMove: drag item at index 1 to end (position 3)
+        vm.reorderTrackEffects(trackID: trackID, from: IndexSet(integer: 1), to: 3)
+
+        let effects = vm.project.songs[0].tracks[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(effects[0].displayName == "A")
+        #expect(effects[1].displayName == "C")
+        #expect(effects[2].displayName == "B")
+    }
+
+    @Test("reorderContainerEffects undo then redo restores reordered state")
+    @MainActor
+    func reorderContainerEffectsUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "A", orderIndex: 0))
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "B", orderIndex: 1))
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "C", orderIndex: 2))
+
+        vm.reorderContainerEffects(containerID: containerID, from: IndexSet(integer: 2), to: 0)
+        let reordered = vm.project.songs[0].tracks[0].containers[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(reordered[0].displayName == "C")
+        #expect(reordered[1].displayName == "A")
+        #expect(reordered[2].displayName == "B")
+
+        vm.undoManager?.undo()
+        let undone = vm.project.songs[0].tracks[0].containers[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(undone[0].displayName == "A")
+        #expect(undone[1].displayName == "B")
+        #expect(undone[2].displayName == "C")
+
+        vm.undoManager?.redo()
+        let redone = vm.project.songs[0].tracks[0].containers[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(redone[0].displayName == "C")
+        #expect(redone[1].displayName == "A")
+        #expect(redone[2].displayName == "B")
+    }
+
     @Test("toggleTrackEffectChainBypass undo/redo")
     @MainActor
     func toggleChainBypassUndoRedo() {

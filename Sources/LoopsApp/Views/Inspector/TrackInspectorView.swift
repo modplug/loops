@@ -294,6 +294,9 @@ public struct TrackInspectorView: View {
         ForEach(Array(sortedEffects.enumerated()), id: \.element.id) { effectIndex, effect in
             effectRow(effect: effect, effectIndex: effectIndex)
         }
+        .onMove { from, to in
+            onReorderEffects?(from, to)
+        }
     }
 
     @ViewBuilder
@@ -301,6 +304,9 @@ public struct TrackInspectorView: View {
         let effectPath = EffectPath(trackID: track.id, effectIndex: effectIndex, parameterAddress: 0)
         let hasMIDIMapping = midiParameterMappings.contains { $0.targetPath.trackID == track.id && $0.targetPath.containerID == nil && $0.targetPath.effectIndex == effectIndex }
         HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.tertiary)
+                .font(.caption)
             Circle()
                 .fill(effect.isBypassed ? Color.gray : Color.green)
                 .frame(width: 6, height: 6)

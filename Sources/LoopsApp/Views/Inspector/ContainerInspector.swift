@@ -335,6 +335,9 @@ public struct ContainerInspector: View {
             } else {
                 ForEach(Array(sortedEffects.enumerated()), id: \.element.id) { index, effect in
                     HStack {
+                        Image(systemName: "line.3.horizontal")
+                            .foregroundStyle(.tertiary)
+                            .font(.caption)
                         Circle()
                             .fill(effect.isBypassed ? Color.gray : Color.green)
                             .frame(width: 8, height: 8)
@@ -371,6 +374,9 @@ public struct ContainerInspector: View {
                         }
                         .buttonStyle(.plain)
                     }
+                }
+                .onMove { from, to in
+                    onReorderEffects?(from, to)
                 }
 
                 Toggle("Bypass All Effects", isOn: Binding(

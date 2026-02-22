@@ -811,3 +811,54 @@
 - `LoopsAppEntry`: already wires `onRecordingPropagated` → `registerAndScheduleLinkedContainers`
 - 13 new tests: clone inherits sourceRecordingID, clone overrides sourceRecordingID, clone inherits nil sourceRecording, ContainerField.sourceRecording displayName, recording propagates via parentContainerID, recording propagates via linkGroup, recording override isolation, recording into clone marks overridden, onRecordingPropagated callback fires, live peaks propagate to linked containers, live peaks don't propagate to overridden clone, setContainerRecording clears live peaks, no propagation to unrelated containers
 - All 811 tests pass
+
+### Iteration 2 — #106 Keyboard shortcut focus management
+- New `FocusedField` enum with `.main` case to track whether main content area has keyboard focus
+- Replaced `@FocusState private var isMainFocused: Bool` with `@FocusState private var focusedField: FocusedField?` on `MainContentView`
+- Computed `isTextFieldFocused` property: returns true when `focusedField != .main` (nil means a text field or non-main view has focus)
+- Guarded all single-key `.onKeyPress` handlers (Space, Return, R, M, Left, Right, Home, End, 1-9, Tab) with `guard !isTextFieldFocused else { return .ignored }` — allows normal typing in text fields
+- Modifier-key shortcuts (Cmd+C, Cmd+V, Cmd+D, Cmd+A, Cmd+Shift+M, Cmd+Shift+L) NOT guarded — OS handles Cmd+key in text fields separately
+- Escape key: when text field focused, restores focus to `.main` (returns to shortcut mode); when main focused, performs deselect-all as before
+- `.focusScope(inspectorNamespace)` applied to inspector panel container for proper focus scoping
+- SwiftUI focus mechanism: when a TextField in a child view (ContainerInspector, TrackInspectorView, StorylineInspectorView) gains focus, `focusedField` naturally becomes `nil` because focus leaves the `.main`-bound view
+- 10 new tests: FocusedField enum, Hashable conformance, MainContentView creation, shortcut model test, escape deselect, nil-means-text-field-active logic, shortcut guard documentation, ContentMode/InspectorMode/SidebarTab enums unchanged
+- All 821 tests pass
+
+### Iteration 3 — #107 Undo/Redo toolbar buttons
+- `ToolbarView`: added `onUndo`/`onRedo` callbacks, `canUndo`/`canRedo` disabled state, `undoActionName`/`redoActionName` for tooltips
+- `ToolbarView`: undo button (`arrow.uturn.backward`) and redo button (`arrow.uturn.forward`) placed after transport controls with divider separation
+- Buttons disabled when no undo/redo actions available, tooltips show action name (e.g., "Undo Rename Track")
+- `LoopsRootView`: wired undo/redo state from `viewModel.undoManager` to ToolbarView parameters
+- All parameters have defaults for backward compatibility — existing ToolbarView callers unaffected
+- 10 new tests: ToolbarView accepts params, undo disabled initially, undo enabled after action, redo enabled after undo, redo disabled without redo, undo action name, redo action name, undo reverses action, redo reapplies action, state updates immediately
+- All 831 tests pass
+
+### Iteration 4 — #108 Undo history panel with toast notifications
+- New `UndoHistoryEntry` model: `id: UUID`, `actionName: String`, `timestamp: Date`, `isCurrent: Bool`, computed `relativeTimeString` (just now / Ns ago / Nm ago / Nh ago)
+- New `UndoToastMessage` model: `id: UUID`, `text: String` for auto-dismissing overlay
+- `ProjectViewModel`: `undoHistory: [UndoHistoryEntry]` parallel array maintained alongside `registerUndo()` calls, `undoHistoryCursor: Int` tracks current position
+- `ProjectViewModel`: `appendToUndoHistory(actionName:)` — trims future entries above cursor (invalidated by new action), appends new entry, updates cursor
+- `ProjectViewModel`: `clearUndoHistory()` — called by `newProject()` and `open(from:)` to reset history on project load
+- `ProjectViewModel`: `undoToastMessage: UndoToastMessage?` — set on undo/redo via `NSUndoManagerDidUndoChange` / `NSUndoManagerDidRedoChange` notification observers
+- Notification observers use `queue: nil` + `MainActor.assumeIsolated` for synchronous firing on the main actor
+- `handleUndoNotification()`: decrements cursor, sets toast "Undo: <action>"
+- `handleRedoNotification()`: increments cursor, sets toast "Redo: <action>"
+- New `UndoToastView`: auto-dismissing overlay with `.ultraThinMaterial` background, `RoundedRectangle` shape, shadow, slide+fade transition
+- New `UndoHistoryView`: popover panel with scrollable list of history entries (reversed order, newest on top), accent highlight on current entry, relative timestamps, empty state text
+- `ToolbarView`: new `undoHistory` and `undoHistoryCursor` parameters (with defaults), clock icon button (`.clock.arrow.circlepath`) next to undo/redo buttons, opens `UndoHistoryView` popover
+- `LoopsRootView`: passes `viewModel.undoHistory` and `viewModel.undoHistoryCursor` to ToolbarView
+- `LoopsRootView`: toast overlay mounted in ZStack at bottom center, `.onChange(of: undoToastMessage)` auto-dismisses after 2 seconds with animation
+- 14 new tests: history tracks actions through undo/redo cycles, new action after undo trims future, history entries have action names, history entries have timestamps, newProject clears history, toast triggers on undo, toast triggers on redo, relativeTimeString (just now/minutes/hours), UndoHistoryEntry conformance, UndoToastMessage conformance, ToolbarView accepts history params, full undo cycle (3 actions undo all redo all)
+- All 845 tests pass
+
+### Iteration 5 — #109 Effect chain reordering UI
+- `TrackInspectorView`: added `.onMove` modifier to effect list `ForEach` — wires to existing `onReorderEffects` callback
+- `TrackInspectorView`: added drag handle icon (`line.3.horizontal`) to each effect row
+- `ContainerInspector`: added `.onMove` modifier to effect list `ForEach` — wires to existing `onReorderEffects` callback
+- `ContainerInspector`: added drag handle icon to each effect row
+- `ContainerDetailEditor`: added `.onMove` modifier to effect list `ForEach` — wires to existing `onReorderEffects` callback
+- `ContainerDetailEditor`: added drag handle icon to each effect row
+- All three views use `Form > Section > ForEach` which supports native `.onMove` drag reordering on macOS
+- Backend reorder methods (`reorderTrackEffects`, `reorderContainerEffects`) already existed with full undo/redo
+- 3 new tests: track effect reorder undo+redo cycle, track effect reorder middle-to-end, container effect reorder undo+redo cycle
+- All 848 tests pass
