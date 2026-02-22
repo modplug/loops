@@ -149,6 +149,12 @@ public struct TimelineView: View {
                             if selectedBreakpointID == breakpointID {
                                 selectedBreakpointID = nil
                             }
+                        },
+                        onSetEnterFade: { containerID, fade in
+                            projectViewModel.setContainerEnterFade(containerID: containerID, fade: fade)
+                        },
+                        onSetExitFade: { containerID, fade in
+                            projectViewModel.setContainerExitFade(containerID: containerID, fade: fade)
                         }
                     )
                 }

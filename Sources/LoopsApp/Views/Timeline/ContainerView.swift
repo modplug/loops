@@ -26,6 +26,8 @@ public struct ContainerView: View {
     var onLinkClone: (() -> Void)?
     var onUnlink: (() -> Void)?
     var onArmToggle: (() -> Void)?
+    var onSetEnterFade: ((FadeSettings?) -> Void)?
+    var onSetExitFade: ((FadeSettings?) -> Void)?
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -35,6 +37,9 @@ public struct ContainerView: View {
     @State private var isResizingRight = false
     @State private var isAltDragging = false
     @State private var altDragOffset: CGFloat = 0
+    @State private var isHovering = false
+    @State private var enterFadeDragWidth: CGFloat?
+    @State private var exitFadeDragWidth: CGFloat?
 
     public init(
         container: Container,
@@ -56,7 +61,9 @@ public struct ContainerView: View {
         onDuplicate: (() -> Void)? = nil,
         onLinkClone: (() -> Void)? = nil,
         onUnlink: (() -> Void)? = nil,
-        onArmToggle: (() -> Void)? = nil
+        onArmToggle: (() -> Void)? = nil,
+        onSetEnterFade: ((FadeSettings?) -> Void)? = nil,
+        onSetExitFade: ((FadeSettings?) -> Void)? = nil
     ) {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
@@ -78,6 +85,8 @@ public struct ContainerView: View {
         self.onLinkClone = onLinkClone
         self.onUnlink = onUnlink
         self.onArmToggle = onArmToggle
+        self.onSetEnterFade = onSetEnterFade
+        self.onSetExitFade = onSetExitFade
     }
 
     private var containerWidth: CGFloat {
@@ -116,6 +125,24 @@ public struct ContainerView: View {
                 .padding(2)
                 .allowsHitTesting(false)
             }
+
+            // Fade curve overlays
+            if container.enterFade != nil || container.exitFade != nil || enterFadeDragWidth != nil || exitFadeDragWidth != nil {
+                FadeOverlayShape(
+                    containerWidth: containerWidth,
+                    height: height,
+                    enterFade: container.enterFade,
+                    exitFade: container.exitFade,
+                    enterFadeDragWidth: enterFadeDragWidth,
+                    exitFadeDragWidth: exitFadeDragWidth,
+                    pixelsPerBar: pixelsPerBar
+                )
+                .fill(Color.black.opacity(0.25))
+                .allowsHitTesting(false)
+            }
+
+            // Fade handles
+            fadeHandleOverlay
 
             // Container label
             VStack(alignment: .leading, spacing: 2) {
@@ -179,6 +206,7 @@ public struct ContainerView: View {
         }
         .frame(width: displayWidth, height: height)
         .offset(x: displayOffset)
+        .onHover { hovering in isHovering = hovering }
         .onTapGesture(count: 2) { onDoubleClick?() }
         .onTapGesture { onSelect?() }
         .gesture(altCloneGesture)
@@ -297,5 +325,173 @@ public struct ContainerView: View {
                 }
                 altDragOffset = 0
             }
+    }
+
+    // MARK: - Fade Handles
+
+    private var showFadeHandles: Bool {
+        isHovering || container.enterFade != nil || container.exitFade != nil
+    }
+
+    private var enterFadeWidth: CGFloat {
+        if let dragW = enterFadeDragWidth { return dragW }
+        guard let fade = container.enterFade else { return 0 }
+        return CGFloat(fade.duration) * pixelsPerBar
+    }
+
+    private var exitFadeWidth: CGFloat {
+        if let dragW = exitFadeDragWidth { return dragW }
+        guard let fade = container.exitFade else { return 0 }
+        return CGFloat(fade.duration) * pixelsPerBar
+    }
+
+    private static let fadeHandleSize: CGFloat = 10
+
+    @ViewBuilder
+    private var fadeHandleOverlay: some View {
+        if showFadeHandles {
+            // Enter fade handle (top-left)
+            Circle()
+                .fill(Color.white.opacity(0.9))
+                .frame(width: Self.fadeHandleSize, height: Self.fadeHandleSize)
+                .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 1)
+                .offset(x: enterFadeWidth - Self.fadeHandleSize / 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.top, 2)
+                .gesture(enterFadeDragGesture)
+                .onHover { hovering in
+                    if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                }
+
+            // Exit fade handle (top-right)
+            Circle()
+                .fill(Color.white.opacity(0.9))
+                .frame(width: Self.fadeHandleSize, height: Self.fadeHandleSize)
+                .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 1)
+                .offset(x: -exitFadeWidth + Self.fadeHandleSize / 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.top, 2)
+                .gesture(exitFadeDragGesture)
+                .onHover { hovering in
+                    if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                }
+        }
+    }
+
+    private var enterFadeDragGesture: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { value in
+                let currentWidth = CGFloat(container.enterFade?.duration ?? 0) * pixelsPerBar
+                let newWidth = max(0, min(currentWidth + value.translation.width, containerWidth))
+                enterFadeDragWidth = newWidth
+            }
+            .onEnded { value in
+                let currentWidth = CGFloat(container.enterFade?.duration ?? 0) * pixelsPerBar
+                let newWidth = max(0, min(currentWidth + value.translation.width, containerWidth))
+                let newDuration = Double(newWidth) / Double(pixelsPerBar)
+                enterFadeDragWidth = nil
+                if newDuration < 0.125 {
+                    onSetEnterFade?(nil)
+                } else {
+                    let snapped = round(newDuration * 4.0) / 4.0
+                    let curve = container.enterFade?.curve ?? .linear
+                    onSetEnterFade?(FadeSettings(duration: max(0.25, snapped), curve: curve))
+                }
+            }
+    }
+
+    private var exitFadeDragGesture: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { value in
+                let currentWidth = CGFloat(container.exitFade?.duration ?? 0) * pixelsPerBar
+                let newWidth = max(0, min(currentWidth - value.translation.width, containerWidth))
+                exitFadeDragWidth = newWidth
+            }
+            .onEnded { value in
+                let currentWidth = CGFloat(container.exitFade?.duration ?? 0) * pixelsPerBar
+                let newWidth = max(0, min(currentWidth - value.translation.width, containerWidth))
+                let newDuration = Double(newWidth) / Double(pixelsPerBar)
+                exitFadeDragWidth = nil
+                if newDuration < 0.125 {
+                    onSetExitFade?(nil)
+                } else {
+                    let snapped = round(newDuration * 4.0) / 4.0
+                    let curve = container.exitFade?.curve ?? .linear
+                    onSetExitFade?(FadeSettings(duration: max(0.25, snapped), curve: curve))
+                }
+            }
+    }
+}
+
+// MARK: - Fade Overlay Shape
+
+/// Draws the semi-transparent fade overlay on a container.
+/// For fade-in: a shape covering the top of the container that tapers down following the curve.
+/// For fade-out: a shape covering the top of the container that rises following the inverse curve.
+/// The shaded area represents the gain reduction (area above the curve = silence).
+struct FadeOverlayShape: Shape {
+    let containerWidth: CGFloat
+    let height: CGFloat
+    let enterFade: FadeSettings?
+    let exitFade: FadeSettings?
+    let enterFadeDragWidth: CGFloat?
+    let exitFadeDragWidth: CGFloat?
+    let pixelsPerBar: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+
+        // Enter fade overlay (gain ramps 0→1, so overlay shows the silence portion above the curve)
+        let enterWidth: CGFloat
+        if let dragW = enterFadeDragWidth {
+            enterWidth = dragW
+        } else if let fade = enterFade {
+            enterWidth = CGFloat(fade.duration) * pixelsPerBar
+        } else {
+            enterWidth = 0
+        }
+        let enterCurve = enterFade?.curve ?? .linear
+
+        if enterWidth > 0 {
+            path.move(to: CGPoint(x: 0, y: 0))
+            let steps = max(Int(enterWidth / 2), 20)
+            for i in 0...steps {
+                let t = Double(i) / Double(steps)
+                let gain = enterCurve.gain(at: t)
+                let x = CGFloat(t) * enterWidth
+                let y = CGFloat(1.0 - gain) * rect.height
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+            path.addLine(to: CGPoint(x: 0, y: 0))
+            path.closeSubpath()
+        }
+
+        // Exit fade overlay (gain ramps 1→0)
+        let exitWidth: CGFloat
+        if let dragW = exitFadeDragWidth {
+            exitWidth = dragW
+        } else if let fade = exitFade {
+            exitWidth = CGFloat(fade.duration) * pixelsPerBar
+        } else {
+            exitWidth = 0
+        }
+        let exitCurve = exitFade?.curve ?? .linear
+
+        if exitWidth > 0 {
+            let startX = rect.width - exitWidth
+            path.move(to: CGPoint(x: rect.width, y: 0))
+            let steps = max(Int(exitWidth / 2), 20)
+            for i in 0...steps {
+                let t = Double(i) / Double(steps)
+                let gain = exitCurve.gain(at: 1.0 - t)
+                let x = startX + CGFloat(t) * exitWidth
+                let y = CGFloat(1.0 - gain) * rect.height
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+            path.addLine(to: CGPoint(x: rect.width, y: 0))
+            path.closeSubpath()
+        }
+
+        return path
     }
 }

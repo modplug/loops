@@ -38,6 +38,8 @@ public struct TrackLaneView: View {
     var onAddTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onUpdateTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
+    var onSetEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
+    var onSetExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
@@ -75,7 +77,9 @@ public struct TrackLaneView: View {
         onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)? = nil,
         onAddTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
         onUpdateTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
-        onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)? = nil
+        onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)? = nil,
+        onSetEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)? = nil,
+        onSetExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)? = nil
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
@@ -109,6 +113,8 @@ public struct TrackLaneView: View {
         self.onAddTrackBreakpoint = onAddTrackBreakpoint
         self.onUpdateTrackBreakpoint = onUpdateTrackBreakpoint
         self.onDeleteTrackBreakpoint = onDeleteTrackBreakpoint
+        self.onSetEnterFade = onSetEnterFade
+        self.onSetExitFade = onSetExitFade
     }
 
     private var baseHeight: CGFloat {
@@ -169,7 +175,9 @@ public struct TrackLaneView: View {
                         onDuplicate: { onDuplicateContainer?(container.id) },
                         onLinkClone: { onLinkCloneContainer?(container.id) },
                         onUnlink: { onUnlinkContainer?(container.id) },
-                        onArmToggle: { onArmToggle?() }
+                        onArmToggle: { onArmToggle?() },
+                        onSetEnterFade: { fade in onSetEnterFade?(container.id, fade) },
+                        onSetExitFade: { fade in onSetExitFade?(container.id, fade) }
                     )
                     .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
                 }

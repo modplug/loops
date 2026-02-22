@@ -2800,4 +2800,171 @@ struct ProjectViewModelTests {
         vm.insertTrack(kind: .master, atIndex: 0)
         #expect(vm.project.songs[0].tracks.count == countBefore)
     }
+
+    // MARK: - Fade Handle Tests (#93)
+
+    @Test("Fade handle drag sets enter fade duration correctly")
+    @MainActor
+    func fadeHandleDragSetsEnterFadeDuration() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 8)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Simulate drag handle setting a 2-bar fade-in
+        vm.setContainerEnterFade(containerID: containerID, fade: FadeSettings(duration: 2.0, curve: .linear))
+        let result = vm.project.songs[0].tracks[0].containers[0].enterFade
+        #expect(result?.duration == 2.0)
+        #expect(result?.curve == .linear)
+    }
+
+    @Test("Fade handle drag sets exit fade duration correctly")
+    @MainActor
+    func fadeHandleDragSetsExitFadeDuration() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 8)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Simulate drag handle setting a 3-bar fade-out with exponential curve
+        vm.setContainerExitFade(containerID: containerID, fade: FadeSettings(duration: 3.0, curve: .exponential))
+        let result = vm.project.songs[0].tracks[0].containers[0].exitFade
+        #expect(result?.duration == 3.0)
+        #expect(result?.curve == .exponential)
+    }
+
+    @Test("Fade handle drag to zero removes fade")
+    @MainActor
+    func fadeHandleDragToZeroRemovesFade() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 8)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Set a fade first
+        vm.setContainerEnterFade(containerID: containerID, fade: FadeSettings(duration: 2.0, curve: .linear))
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade != nil)
+
+        // Drag to zero removes fade
+        vm.setContainerEnterFade(containerID: containerID, fade: nil)
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade == nil)
+    }
+
+    @Test("Fade handle preserves curve type when adjusting duration")
+    @MainActor
+    func fadeHandlePreservesCurveType() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 8)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Set initial fade with s-curve
+        vm.setContainerEnterFade(containerID: containerID, fade: FadeSettings(duration: 2.0, curve: .sCurve))
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade?.curve == .sCurve)
+
+        // Adjust duration but keep same curve (simulates drag handle behavior)
+        vm.setContainerEnterFade(containerID: containerID, fade: FadeSettings(duration: 4.0, curve: .sCurve))
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade?.duration == 4.0)
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade?.curve == .sCurve)
+    }
+
+    @Test("FadeOverlayShape produces non-empty path for enter fade")
+    func fadeOverlayEnterFadePath() {
+        let shape = FadeOverlayShape(
+            containerWidth: 480,
+            height: 76,
+            enterFade: FadeSettings(duration: 2.0, curve: .linear),
+            exitFade: nil,
+            enterFadeDragWidth: nil,
+            exitFadeDragWidth: nil,
+            pixelsPerBar: 120
+        )
+        let path = shape.path(in: CGRect(x: 0, y: 0, width: 480, height: 76))
+        #expect(!path.isEmpty)
+    }
+
+    @Test("FadeOverlayShape produces non-empty path for exit fade")
+    func fadeOverlayExitFadePath() {
+        let shape = FadeOverlayShape(
+            containerWidth: 480,
+            height: 76,
+            enterFade: nil,
+            exitFade: FadeSettings(duration: 1.5, curve: .exponential),
+            enterFadeDragWidth: nil,
+            exitFadeDragWidth: nil,
+            pixelsPerBar: 120
+        )
+        let path = shape.path(in: CGRect(x: 0, y: 0, width: 480, height: 76))
+        #expect(!path.isEmpty)
+    }
+
+    @Test("FadeOverlayShape produces non-empty path for each curve type")
+    func fadeOverlayAllCurveTypes() {
+        for curve in CurveType.allCases {
+            let shape = FadeOverlayShape(
+                containerWidth: 480,
+                height: 76,
+                enterFade: FadeSettings(duration: 2.0, curve: curve),
+                exitFade: FadeSettings(duration: 2.0, curve: curve),
+                enterFadeDragWidth: nil,
+                exitFadeDragWidth: nil,
+                pixelsPerBar: 120
+            )
+            let path = shape.path(in: CGRect(x: 0, y: 0, width: 480, height: 76))
+            #expect(!path.isEmpty, "Path should not be empty for curve type \(curve)")
+        }
+    }
+
+    @Test("FadeOverlayShape empty when no fades")
+    func fadeOverlayEmptyWhenNoFades() {
+        let shape = FadeOverlayShape(
+            containerWidth: 480,
+            height: 76,
+            enterFade: nil,
+            exitFade: nil,
+            enterFadeDragWidth: nil,
+            exitFadeDragWidth: nil,
+            pixelsPerBar: 120
+        )
+        let path = shape.path(in: CGRect(x: 0, y: 0, width: 480, height: 76))
+        #expect(path.isEmpty)
+    }
+
+    @Test("FadeOverlayShape uses drag width over model during drag")
+    func fadeOverlayDragWidthOverride() {
+        // Model has 2-bar fade but drag is showing 4-bar width
+        let shape = FadeOverlayShape(
+            containerWidth: 480,
+            height: 76,
+            enterFade: FadeSettings(duration: 2.0, curve: .linear),
+            exitFade: nil,
+            enterFadeDragWidth: 480, // 4 bars at 120ppb
+            exitFadeDragWidth: nil,
+            pixelsPerBar: 120
+        )
+        let path = shape.path(in: CGRect(x: 0, y: 0, width: 480, height: 76))
+        #expect(!path.isEmpty)
+        // The path should use the drag width (480px = full container) not the model (240px = 2 bars)
+        let bounds = path.boundingRect
+        #expect(bounds.width > 300, "Drag width should produce wider overlay than model duration")
+    }
+
+    @Test("FadeSettings serialization round-trip with various durations")
+    func fadeSettingsVariousDurationsRoundTrip() throws {
+        let durations: [Double] = [0.25, 0.5, 1.0, 2.5, 4.0, 8.0, 16.0]
+        for duration in durations {
+            let settings = FadeSettings(duration: duration, curve: .linear)
+            let data = try JSONEncoder().encode(settings)
+            let decoded = try JSONDecoder().decode(FadeSettings.self, from: data)
+            #expect(settings == decoded, "Round-trip failed for duration \(duration)")
+        }
+    }
 }
