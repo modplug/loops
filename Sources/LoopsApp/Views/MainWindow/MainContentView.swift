@@ -8,6 +8,12 @@ public enum SidebarTab: String, CaseIterable {
     case setlists = "Setlists"
 }
 
+/// Inspector mode selection.
+public enum InspectorMode: String, CaseIterable {
+    case container = "Container"
+    case storyline = "Storyline"
+}
+
 /// Main content area using HSplitView: sidebar + timeline + inspector.
 public struct MainContentView: View {
     @Bindable var projectViewModel: ProjectViewModel
@@ -24,6 +30,7 @@ public struct MainContentView: View {
     @State private var showContainerDetailEditor: Bool = false
     @State private var editingSectionID: ID<SectionRegion>?
     @State private var editingSectionName: String = ""
+    @State private var inspectorMode: InspectorMode = .container
 
     public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
         self.projectViewModel = projectViewModel
@@ -210,81 +217,27 @@ public struct MainContentView: View {
             }
 
             // Inspector
-            VStack {
+            VStack(spacing: 0) {
                 Text("Inspector")
                     .font(.headline)
                     .padding(.top, 8)
+
+                Picker("", selection: $inspectorMode) {
+                    ForEach(InspectorMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+
                 Divider()
-                if let container = projectViewModel.selectedContainer {
-                    ContainerInspector(
-                        container: container,
-                        trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
-                        allContainers: projectViewModel.allContainersInCurrentSong,
-                        allTracks: projectViewModel.allTracksInCurrentSong,
-                        showDetailEditor: $showContainerDetailEditor,
-                        onUpdateLoopSettings: { settings in
-                            projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)
-                        },
-                        onUpdateName: { name in
-                            projectViewModel.updateContainerName(containerID: container.id, name: name)
-                        },
-                        onAddEffect: { effect in
-                            projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
-                        },
-                        onRemoveEffect: { effectID in
-                            projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
-                        },
-                        onToggleEffectBypass: { effectID in
-                            projectViewModel.toggleContainerEffectBypass(containerID: container.id, effectID: effectID)
-                        },
-                        onToggleChainBypass: {
-                            projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
-                        },
-                        onReorderEffects: { source, destination in
-                            projectViewModel.reorderContainerEffects(containerID: container.id, from: source, to: destination)
-                        },
-                        onSetInstrumentOverride: { override in
-                            projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
-                        },
-                        onSetEnterFade: { fade in
-                            projectViewModel.setContainerEnterFade(containerID: container.id, fade: fade)
-                        },
-                        onSetExitFade: { fade in
-                            projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
-                        },
-                        onAddEnterAction: { action in
-                            projectViewModel.addContainerEnterAction(containerID: container.id, action: action)
-                        },
-                        onRemoveEnterAction: { actionID in
-                            projectViewModel.removeContainerEnterAction(containerID: container.id, actionID: actionID)
-                        },
-                        onAddExitAction: { action in
-                            projectViewModel.addContainerExitAction(containerID: container.id, action: action)
-                        },
-                        onRemoveExitAction: { actionID in
-                            projectViewModel.removeContainerExitAction(containerID: container.id, actionID: actionID)
-                        },
-                        onAddAutomationLane: { lane in
-                            projectViewModel.addAutomationLane(containerID: container.id, lane: lane)
-                        },
-                        onRemoveAutomationLane: { laneID in
-                            projectViewModel.removeAutomationLane(containerID: container.id, laneID: laneID)
-                        },
-                        onAddBreakpoint: { laneID, breakpoint in
-                            projectViewModel.addAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
-                        },
-                        onRemoveBreakpoint: { laneID, breakpointID in
-                            projectViewModel.removeAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpointID: breakpointID)
-                        },
-                        onUpdateBreakpoint: { laneID, breakpoint in
-                            projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
-                        }
-                    )
-                } else {
-                    Text("Select a container")
-                        .foregroundStyle(.secondary)
-                        .padding()
-                    Spacer()
+
+                switch inspectorMode {
+                case .container:
+                    containerInspectorContent
+                case .storyline:
+                    storylineInspectorContent
                 }
             }
             .frame(minWidth: 180, idealWidth: 250, maxWidth: 300)
@@ -429,6 +382,98 @@ public struct MainContentView: View {
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             handlePaste()
             return .handled
+        }
+    }
+
+    @ViewBuilder
+    private var containerInspectorContent: some View {
+        if let container = projectViewModel.selectedContainer {
+            ContainerInspector(
+                container: container,
+                trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
+                allContainers: projectViewModel.allContainersInCurrentSong,
+                allTracks: projectViewModel.allTracksInCurrentSong,
+                showDetailEditor: $showContainerDetailEditor,
+                onUpdateLoopSettings: { settings in
+                    projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)
+                },
+                onUpdateName: { name in
+                    projectViewModel.updateContainerName(containerID: container.id, name: name)
+                },
+                onAddEffect: { effect in
+                    projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
+                },
+                onRemoveEffect: { effectID in
+                    projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
+                },
+                onToggleEffectBypass: { effectID in
+                    projectViewModel.toggleContainerEffectBypass(containerID: container.id, effectID: effectID)
+                },
+                onToggleChainBypass: {
+                    projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
+                },
+                onReorderEffects: { source, destination in
+                    projectViewModel.reorderContainerEffects(containerID: container.id, from: source, to: destination)
+                },
+                onSetInstrumentOverride: { override in
+                    projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
+                },
+                onSetEnterFade: { fade in
+                    projectViewModel.setContainerEnterFade(containerID: container.id, fade: fade)
+                },
+                onSetExitFade: { fade in
+                    projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
+                },
+                onAddEnterAction: { action in
+                    projectViewModel.addContainerEnterAction(containerID: container.id, action: action)
+                },
+                onRemoveEnterAction: { actionID in
+                    projectViewModel.removeContainerEnterAction(containerID: container.id, actionID: actionID)
+                },
+                onAddExitAction: { action in
+                    projectViewModel.addContainerExitAction(containerID: container.id, action: action)
+                },
+                onRemoveExitAction: { actionID in
+                    projectViewModel.removeContainerExitAction(containerID: container.id, actionID: actionID)
+                },
+                onAddAutomationLane: { lane in
+                    projectViewModel.addAutomationLane(containerID: container.id, lane: lane)
+                },
+                onRemoveAutomationLane: { laneID in
+                    projectViewModel.removeAutomationLane(containerID: container.id, laneID: laneID)
+                },
+                onAddBreakpoint: { laneID, breakpoint in
+                    projectViewModel.addAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+                },
+                onRemoveBreakpoint: { laneID, breakpointID in
+                    projectViewModel.removeAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpointID: breakpointID)
+                },
+                onUpdateBreakpoint: { laneID, breakpoint in
+                    projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+                }
+            )
+        } else {
+            Text("Select a container")
+                .foregroundStyle(.secondary)
+                .padding()
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var storylineInspectorContent: some View {
+        if let song = currentSong {
+            StorylineInspectorView(
+                entries: StorylineDerivation.derive(sections: song.sections, tracks: song.tracks),
+                onUpdateNotes: { sectionID, notes in
+                    projectViewModel.setSectionNotes(sectionID: sectionID, notes: notes)
+                }
+            )
+        } else {
+            Text("No song selected")
+                .foregroundStyle(.secondary)
+                .padding()
+            Spacer()
         }
     }
 
