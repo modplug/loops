@@ -560,3 +560,31 @@
 - Both instrument and effect plugin windows now consistently resize to their preferred dimensions
 - 3 new tests: effect plugin window opens with non-loading dimensions (AUDelay), two different effects open separate windows (AUDelay + AUReverb2), same plugin reuses existing window
 - All 619 tests pass
+
+### Iteration 5 — #87 Track inspector: make routing and MIDI fields editable
+- Replaced read-only `Text` views in `TrackInspectorView` routing section with interactive `Menu` controls for I/O ports, MIDI device, and MIDI channel
+- `inputPortPicker`: Menu listing available input ports from `SettingsViewModel`, "Default" option sets nil
+- `outputPortPicker`: Menu listing available output ports, shared by audio and master tracks
+- `midiDevicePicker`: Menu listing available MIDI input devices from `MIDIManager.availableInputDevices()`, "All Devices" option sets nil
+- `midiChannelPicker`: Menu with Omni + channels 1–16 for MIDI track channel selection
+- Replaced `inputPortName`/`outputPortName`/`midiDeviceName`/`midiChannelLabel` display-only string params with `availableInputPorts: [InputPort]`, `availableOutputPorts: [OutputPort]`, `availableMIDIDevices: [MIDIInputDevice]` for interactive selection
+- Display names resolved locally: `inputPortDisplayName`, `outputPortDisplayName`, `midiDeviceDisplayName`, `midiChannelDisplayName` computed properties
+- `MainContentView`: wired `onSetInputPort` → `projectViewModel.setTrackInputPort`, `onSetOutputPort` → `setTrackOutputPort`/`setMasterOutputPort`, `onSetMIDIInput` → `setTrackMIDIInput`
+- `MainContentView`: passes `settingsViewModel?.inputPorts`, `settingsViewModel?.outputPorts`, `engineManager?.midiManager.availableInputDevices()` to inspector
+- Track name, volume/pan sliders, effects chain (add/remove/reorder/bypass), expression pedal all already editable from previous iterations
+- 9 new tests: set input port updates model, set output port updates model, add effect reflected in chain, input port undo/redo, output port undo/redo, set master output port, set MIDI input updates device and channel, clear input port sets nil, invalid track ID no-op
+- All 628 tests pass
+
+### Iteration 6 — #88 Container inspector inline editing
+- Replaced read-only summary cards in `ContainerInspector` with inline editing components from `ContainerDetailEditor`
+- Effects section: inline effect list with bypass/remove/plugin-UI buttons, "Add Effect" menu browser grouped by manufacturer, chain bypass toggle, instrument override picker (MIDI tracks)
+- Actions section: split into "Enter Actions" and "Exit Actions" sections with full action list display, remove buttons, and add menus (MIDI, Trigger, Parameter actions)
+- Fades section: split into "Enter Fade" and "Exit Fade" sections with enable toggle, duration slider (0.25–16 bars), curve type picker, `FadeCurvePreview` visualization
+- Automation section: inline automation lane list with disclosure groups, breakpoint tables (position/value/curve), add/remove breakpoints, add/remove lanes via parameter picker sheet
+- Added `containerTrack: Track` parameter to `ContainerInspector` for automation target resolution
+- Added `onUpdateEffectPreset` callback for plugin window preset changes
+- Added fade state (`enterFadeEnabled/Duration/Curve`, `exitFadeEnabled/Duration/Curve`), effect browser state, and automation/parameter picker sheet state
+- `MainContentView`: passes `containerTrack` and `onUpdateEffectPreset` to inspector
+- "Open Detail Editor" button retained for full-screen editing access
+- 8 new tests: toggle effect bypass, set enter fade, set exit fade, clear fade, fade undo/redo, add/remove enter action, add/remove automation lane, toggle effect chain bypass
+- All 636 tests pass

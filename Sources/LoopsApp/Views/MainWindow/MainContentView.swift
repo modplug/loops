@@ -593,6 +593,7 @@ public struct MainContentView: View {
             ContainerInspector(
                 container: container,
                 trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
+                containerTrack: projectViewModel.selectedContainerTrack ?? Track(name: "", kind: .audio),
                 allContainers: projectViewModel.allContainersInCurrentSong,
                 allTracks: projectViewModel.allTracksInCurrentSong,
                 bpm: transportViewModel?.bpm ?? 120.0,
@@ -654,6 +655,9 @@ public struct MainContentView: View {
                 },
                 onUpdateBreakpoint: { laneID, breakpoint in
                     projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+                },
+                onUpdateEffectPreset: { effectID, data in
+                    projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effectID, presetData: data)
                 }
             )
         } else if let track = projectViewModel.selectedTrack {

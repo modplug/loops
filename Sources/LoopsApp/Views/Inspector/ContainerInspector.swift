@@ -2,11 +2,11 @@ import SwiftUI
 import LoopsCore
 import LoopsEngine
 
-/// Inspector panel showing a container summary with an "Edit Container" button
-/// that opens the full detail editor sheet.
+/// Inspector panel with inline editing for all container properties.
 public struct ContainerInspector: View {
     let container: Container
     let trackKind: TrackKind
+    let containerTrack: Track
     let allContainers: [Container]
     let allTracks: [Track]
     let bpm: Double
@@ -30,6 +30,7 @@ public struct ContainerInspector: View {
     var onAddBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)?
     var onRemoveBreakpoint: ((ID<AutomationLane>, ID<AutomationBreakpoint>) -> Void)?
     var onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)?
+    var onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)?
 
     @Binding var showDetailEditor: Bool
 
@@ -39,6 +40,23 @@ public struct ContainerInspector: View {
     @State private var loopCountValue: Int = 1
     @State private var crossfadeDuration: Double = 10.0
 
+    // Fade state
+    @State private var enterFadeEnabled: Bool = false
+    @State private var enterFadeDuration: Double = 1.0
+    @State private var enterFadeCurve: CurveType = .linear
+    @State private var exitFadeEnabled: Bool = false
+    @State private var exitFadeDuration: Double = 1.0
+    @State private var exitFadeCurve: CurveType = .linear
+
+    // Effect browser state
+    @State private var availableEffects: [AudioUnitInfo] = []
+    @State private var availableInstruments: [AudioUnitInfo] = []
+
+    // Automation/parameter picker state
+    @State private var pendingAutomationLane: PendingEffectSelection?
+    @State private var pendingParameterAction: PendingEffectSelection?
+    @State private var pendingParameterActionCallback: ((EffectPath) -> Void)?
+
     enum LoopCountMode: String, CaseIterable {
         case fill = "Fill"
         case count = "Count"
@@ -47,6 +65,7 @@ public struct ContainerInspector: View {
     public init(
         container: Container,
         trackKind: TrackKind = .audio,
+        containerTrack: Track = Track(name: "", kind: .audio),
         allContainers: [Container] = [],
         allTracks: [Track] = [],
         bpm: Double = 120.0,
@@ -70,10 +89,12 @@ public struct ContainerInspector: View {
         onRemoveAutomationLane: ((ID<AutomationLane>) -> Void)? = nil,
         onAddBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)? = nil,
         onRemoveBreakpoint: ((ID<AutomationLane>, ID<AutomationBreakpoint>) -> Void)? = nil,
-        onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)? = nil
+        onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)? = nil,
+        onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)? = nil
     ) {
         self.container = container
         self.trackKind = trackKind
+        self.containerTrack = containerTrack
         self.allContainers = allContainers
         self.allTracks = allTracks
         self.bpm = bpm
@@ -98,6 +119,7 @@ public struct ContainerInspector: View {
         self.onAddBreakpoint = onAddBreakpoint
         self.onRemoveBreakpoint = onRemoveBreakpoint
         self.onUpdateBreakpoint = onUpdateBreakpoint
+        self.onUpdateEffectPreset = onUpdateEffectPreset
     }
 
     public var body: some View {
@@ -141,36 +163,55 @@ public struct ContainerInspector: View {
                 }
             }
 
-            // Summary cards
+            // Inline effects editing
             Section("Effects") {
-                effectsSummary
+                effectsEditor
             }
 
-            Section("Actions") {
-                actionsSummary
+            // Inline actions editing
+            Section("Enter Actions") {
+                actionListEditor(
+                    actions: container.onEnterActions,
+                    onAdd: onAddEnterAction,
+                    onRemove: onRemoveEnterAction
+                )
             }
 
-            Section("Fades") {
-                fadesSummary
+            Section("Exit Actions") {
+                actionListEditor(
+                    actions: container.onExitActions,
+                    onAdd: onAddExitAction,
+                    onRemove: onRemoveExitAction
+                )
             }
 
+            // Inline fades editing
+            Section("Enter Fade") {
+                enterFadeEditor
+            }
+
+            Section("Exit Fade") {
+                exitFadeEditor
+            }
+
+            // Inline automation editing
             Section("Automation") {
-                automationSummary
+                automationEditor
             }
 
-            // Edit button
+            // Full detail editor button
             Section {
                 Button {
                     showDetailEditor = true
                 } label: {
-                    Label("Edit Container", systemImage: "slider.horizontal.3")
+                    Label("Open Detail Editor", systemImage: "slider.horizontal.3")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
             }
 
-            // Loop settings inline (simple enough for inspector)
+            // Loop settings
             Section("Loop Settings") {
                 Picker("Loop Mode", selection: $loopCountMode) {
                     ForEach(LoopCountMode.allCases, id: \.self) { mode in
@@ -210,13 +251,43 @@ public struct ContainerInspector: View {
         }
         .formStyle(.grouped)
         .onAppear { loadFromContainer() }
+        .task {
+            let discovery = AudioUnitDiscovery()
+            let effects = await Task.detached { discovery.effects() }.value
+            let instruments = trackKind == .midi
+                ? await Task.detached { discovery.instruments() }.value
+                : []
+            availableEffects = effects
+            availableInstruments = instruments
+        }
+        .sheet(item: $pendingAutomationLane) { pending in
+            ParameterPickerView(
+                pending: pending,
+                onPick: { path in
+                    onAddAutomationLane?(AutomationLane(targetPath: path))
+                    pendingAutomationLane = nil
+                },
+                onCancel: { pendingAutomationLane = nil }
+            )
+        }
+        .sheet(item: $pendingParameterAction) { pending in
+            ParameterPickerView(
+                pending: pending,
+                onPick: { path in
+                    pendingParameterActionCallback?(path)
+                    pendingParameterAction = nil
+                },
+                onCancel: { pendingParameterAction = nil }
+            )
+        }
     }
 
-    // MARK: - Summary Cards
+    // MARK: - Inline Effects Editor
 
-    private var effectsSummary: some View {
+    private var effectsEditor: some View {
         Group {
-            if container.insertEffects.isEmpty {
+            let sortedEffects = container.insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+            if sortedEffects.isEmpty {
                 HStack {
                     Image(systemName: "waveform")
                         .foregroundStyle(.secondary)
@@ -225,148 +296,546 @@ public struct ContainerInspector: View {
                 }
                 .font(.callout)
             } else {
-                ForEach(container.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex })) { effect in
-                    HStack(spacing: 6) {
+                ForEach(sortedEffects) { effect in
+                    HStack {
                         Circle()
                             .fill(effect.isBypassed ? Color.gray : Color.green)
-                            .frame(width: 6, height: 6)
+                            .frame(width: 8, height: 8)
                         Text(effect.displayName)
-                            .font(.callout)
                             .lineLimit(1)
+                        Spacer()
+                        Button {
+                            PluginWindowManager.shared.open(
+                                component: effect.component,
+                                displayName: effect.displayName,
+                                presetData: effect.presetData,
+                                onPresetChanged: { data in
+                                    onUpdateEffectPreset?(effect.id, data)
+                                }
+                            )
+                        } label: {
+                            Image(systemName: "slider.horizontal.3")
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open plugin UI")
+                        Button(effect.isBypassed ? "Bypassed" : "Active") {
+                            onToggleEffectBypass?(effect.id)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(effect.isBypassed ? .secondary : .primary)
+                        .buttonStyle(.plain)
+                        Button(role: .destructive) {
+                            onRemoveEffect?(effect.id)
+                        } label: {
+                            Image(systemName: "trash")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                if container.isEffectChainBypassed {
-                    Text("Chain bypassed")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+
+                Toggle("Bypass All Effects", isOn: Binding(
+                    get: { container.isEffectChainBypassed },
+                    set: { _ in onToggleChainBypass?() }
+                ))
+            }
+
+            if !availableEffects.isEmpty {
+                effectBrowser
+            }
+
+            if trackKind == .midi {
+                instrumentOverrideEditor
+            }
+        }
+    }
+
+    private var effectBrowser: some View {
+        let grouped = Dictionary(grouping: availableEffects) { $0.manufacturerName }
+        let manufacturers = grouped.keys.sorted()
+        return Group {
+            Menu("Add Effect") {
+                ForEach(manufacturers, id: \.self) { manufacturer in
+                    Menu(manufacturer) {
+                        ForEach(grouped[manufacturer] ?? []) { effect in
+                            Button(effect.name) {
+                                let insert = InsertEffect(
+                                    component: effect.componentInfo,
+                                    displayName: effect.name,
+                                    orderIndex: container.insertEffects.count
+                                )
+                                onAddEffect?(insert)
+                            }
+                        }
+                    }
                 }
             }
-            HStack {
-                Spacer()
-                Text("\(container.insertEffects.count) effect\(container.insertEffects.count == 1 ? "" : "s")")
+            .font(.callout)
+        }
+    }
+
+    private var instrumentOverrideEditor: some View {
+        Group {
+            if let override = container.instrumentOverride {
+                let name = availableInstruments.first(where: { $0.componentInfo == override })?.name ?? "Unknown AU"
+                HStack {
+                    Image(systemName: "pianokeys")
+                        .foregroundStyle(.blue)
+                    Text(name)
+                    Spacer()
+                    Button {
+                        PluginWindowManager.shared.open(
+                            component: override,
+                            displayName: name,
+                            presetData: nil,
+                            onPresetChanged: nil
+                        )
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open instrument UI")
+                    Button(role: .destructive) {
+                        onSetInstrumentOverride?(nil)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                Text("Using track instrument")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            }
+            Menu("Set Instrument") {
+                ForEach(availableInstruments) { instrument in
+                    Button(instrument.name) {
+                        onSetInstrumentOverride?(instrument.componentInfo)
+                    }
+                }
+            }
+            .font(.callout)
+        }
+    }
+
+    // MARK: - Inline Actions Editor
+
+    @ViewBuilder
+    private func actionListEditor(
+        actions: [ContainerAction],
+        onAdd: ((ContainerAction) -> Void)?,
+        onRemove: ((ID<ContainerAction>) -> Void)?
+    ) -> some View {
+        if actions.isEmpty {
+            Text("No actions")
+                .foregroundStyle(.secondary)
+                .font(.callout)
+        } else {
+            ForEach(actions) { action in
+                HStack {
+                    actionRowView(action: action)
+                    Spacer()
+                    Button(role: .destructive) {
+                        onRemove?(action.id)
+                    } label: {
+                        Image(systemName: "trash")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+
+        addMIDIActionMenu(onAdd: onAdd)
+        if !triggerTargets.isEmpty {
+            addTriggerActionMenu(onAdd: onAdd)
+        }
+        if !parameterTargets.isEmpty {
+            addParameterActionMenu(onAdd: onAdd)
+        }
+    }
+
+    @ViewBuilder
+    private func actionRowView(action: ContainerAction) -> some View {
+        switch action {
+        case .sendMIDI(_, let message, let destination):
+            Image(systemName: "music.note")
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(message.summary)
+                Text(destination.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .triggerContainer(_, let targetID, let triggerAction):
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(triggerAction.summary)
+                Text(containerName(for: targetID))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .setParameter(_, let target, let value):
+            Image(systemName: "slider.horizontal.3")
+                .foregroundStyle(.purple)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Set param \(target.parameterAddress) → \(value, specifier: "%.2f")")
+                Text(parameterTargetDescription(target))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
-    private var actionsSummary: some View {
-        Group {
-            let enterCount = container.onEnterActions.count
-            let exitCount = container.onExitActions.count
-            let totalCount = enterCount + exitCount
+    // MARK: - Action Menu Helpers
 
-            if totalCount == 0 {
-                HStack {
-                    Image(systemName: "bolt")
-                        .foregroundStyle(.secondary)
-                    Text("No actions")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.callout)
-            } else {
-                if enterCount > 0 {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.right.circle")
-                            .foregroundStyle(.green)
-                            .font(.caption)
-                        Text("\(enterCount) enter")
-                            .font(.callout)
-                        Spacer()
-                        actionTypeSummary(container.onEnterActions)
+    private var triggerTargets: [Container] {
+        allContainers.filter { $0.id != container.id }
+    }
+
+    private var parameterTargets: [ParameterTarget] {
+        allTracks.compactMap { track in
+            let containersWithEffects = track.containers.filter { !$0.insertEffects.isEmpty }
+            let hasEffects = !track.insertEffects.isEmpty || !containersWithEffects.isEmpty
+            guard hasEffects else { return nil }
+            return ParameterTarget(track: track, containers: containersWithEffects)
+        }
+    }
+
+    private var automationTargets: [ParameterTarget] {
+        let containersWithEffects = containerTrack.containers.filter { !$0.insertEffects.isEmpty }
+        let hasEffects = !containerTrack.insertEffects.isEmpty || !containersWithEffects.isEmpty
+        guard hasEffects else { return [] }
+        return [ParameterTarget(track: containerTrack, containers: containersWithEffects)]
+    }
+
+    private struct ParameterTarget {
+        let track: Track
+        let containers: [Container]
+    }
+
+    private func containerName(for targetID: ID<Container>) -> String {
+        allContainers.first(where: { $0.id == targetID })?.name ?? "Unknown"
+    }
+
+    private func parameterTargetDescription(_ path: EffectPath) -> String {
+        let trackName = allTracks.first(where: { $0.id == path.trackID })?.name ?? "Unknown Track"
+        if let containerID = path.containerID {
+            let cName = allContainers.first(where: { $0.id == containerID })?.name ?? "Unknown"
+            return "\(trackName) → \(cName) [FX \(path.effectIndex)]"
+        } else {
+            return "\(trackName) [Track FX \(path.effectIndex)]"
+        }
+    }
+
+    private func addMIDIActionMenu(onAdd: ((ContainerAction) -> Void)?) -> some View {
+        Menu("Add MIDI Action") {
+            Menu("Program Change") {
+                ForEach(Array(stride(from: 0, to: 128, by: 1)), id: \.self) { program in
+                    Button("PC \(program)") {
+                        let action = ContainerAction.makeSendMIDI(
+                            message: .programChange(channel: 0, program: UInt8(program)),
+                            destination: .externalPort(name: "MIDI Out")
+                        )
+                        onAdd?(action)
                     }
                 }
-                if exitCount > 0 {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.left.circle")
-                            .foregroundStyle(.red)
-                            .font(.caption)
-                        Text("\(exitCount) exit")
-                            .font(.callout)
-                        Spacer()
-                        actionTypeSummary(container.onExitActions)
+            }
+            Menu("Control Change") {
+                ForEach([0, 1, 7, 10, 11, 64, 91, 93], id: \.self) { cc in
+                    Button("CC \(cc) = 127") {
+                        let action = ContainerAction.makeSendMIDI(
+                            message: .controlChange(channel: 0, controller: UInt8(cc), value: 127),
+                            destination: .externalPort(name: "MIDI Out")
+                        )
+                        onAdd?(action)
+                    }
+                }
+            }
+            Menu("Note On") {
+                ForEach([36, 48, 60, 72, 84], id: \.self) { note in
+                    Button("Note \(note) vel 127") {
+                        let action = ContainerAction.makeSendMIDI(
+                            message: .noteOn(channel: 0, note: UInt8(note), velocity: 127),
+                            destination: .externalPort(name: "MIDI Out")
+                        )
+                        onAdd?(action)
+                    }
+                }
+            }
+            Menu("Note Off") {
+                ForEach([36, 48, 60, 72, 84], id: \.self) { note in
+                    Button("Note Off \(note)") {
+                        let action = ContainerAction.makeSendMIDI(
+                            message: .noteOff(channel: 0, note: UInt8(note), velocity: 0),
+                            destination: .externalPort(name: "MIDI Out")
+                        )
+                        onAdd?(action)
                     }
                 }
             }
         }
+        .font(.callout)
     }
 
-    private func actionTypeSummary(_ actions: [ContainerAction]) -> some View {
-        let types = Set(actions.map { action -> String in
-            switch action {
-            case .sendMIDI: return "MIDI"
-            case .triggerContainer: return "Trigger"
-            case .setParameter: return "Param"
-            }
-        })
-        return Text(types.sorted().joined(separator: ", "))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-    }
-
-    private var fadesSummary: some View {
-        Group {
-            if container.enterFade == nil && container.exitFade == nil {
-                HStack {
-                    Image(systemName: "waveform.path.ecg")
-                        .foregroundStyle(.secondary)
-                    Text("No fades")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.callout)
-            } else {
-                if let fade = container.enterFade {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.up.right")
-                            .foregroundStyle(.green)
-                            .font(.caption)
-                        Text("In: \(fade.duration, specifier: "%.2g") bar\(fade.duration == 1 ? "" : "s")")
-                            .font(.callout)
-                        Text(fade.curve.displayName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+    private func addTriggerActionMenu(onAdd: ((ContainerAction) -> Void)?) -> some View {
+        Menu("Add Trigger Action") {
+            ForEach(triggerTargets) { target in
+                Menu(target.name) {
+                    Button("Start") {
+                        onAdd?(.makeTriggerContainer(targetID: target.id, action: .start))
                     }
-                }
-                if let fade = container.exitFade {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.down.right")
-                            .foregroundStyle(.red)
-                            .font(.caption)
-                        Text("Out: \(fade.duration, specifier: "%.2g") bar\(fade.duration == 1 ? "" : "s")")
-                            .font(.callout)
-                        Text(fade.curve.displayName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    Button("Stop") {
+                        onAdd?(.makeTriggerContainer(targetID: target.id, action: .stop))
+                    }
+                    Button("Arm Record") {
+                        onAdd?(.makeTriggerContainer(targetID: target.id, action: .armRecord))
+                    }
+                    Button("Disarm Record") {
+                        onAdd?(.makeTriggerContainer(targetID: target.id, action: .disarmRecord))
                     }
                 }
             }
         }
+        .font(.callout)
     }
 
-    private var automationSummary: some View {
-        Group {
-            let count = container.automationLanes.count
-            if count == 0 {
-                HStack {
-                    Image(systemName: "waveform.path")
-                        .foregroundStyle(.secondary)
-                    Text("No automation")
-                        .foregroundStyle(.secondary)
+    private func addParameterActionMenu(onAdd: ((ContainerAction) -> Void)?) -> some View {
+        Menu("Add Parameter Action") {
+            ForEach(parameterTargets, id: \.track.id) { target in
+                Menu(target.track.name) {
+                    if !target.track.insertEffects.isEmpty {
+                        Menu("Track Effects") {
+                            ForEach(Array(target.track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                Button(effect.displayName) {
+                                    pendingParameterActionCallback = { path in
+                                        onAdd?(.makeSetParameter(target: path, value: 0.5))
+                                    }
+                                    pendingParameterAction = PendingEffectSelection(
+                                        trackID: target.track.id,
+                                        containerID: nil,
+                                        effectIndex: index,
+                                        component: effect.component,
+                                        effectName: effect.displayName
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    ForEach(target.containers, id: \.id) { cont in
+                        if !cont.insertEffects.isEmpty {
+                            Menu(cont.name) {
+                                ForEach(Array(cont.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                    Button(effect.displayName) {
+                                        pendingParameterActionCallback = { path in
+                                            onAdd?(.makeSetParameter(target: path, value: 0.5))
+                                        }
+                                        pendingParameterAction = PendingEffectSelection(
+                                            trackID: target.track.id,
+                                            containerID: cont.id,
+                                            effectIndex: index,
+                                            component: effect.component,
+                                            effectName: effect.displayName
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                .font(.callout)
-            } else {
+            }
+        }
+        .font(.callout)
+    }
+
+    // MARK: - Inline Fades Editor
+
+    private var enterFadeEditor: some View {
+        Group {
+            Toggle("Enable Fade In", isOn: $enterFadeEnabled)
+                .onChange(of: enterFadeEnabled) { _, enabled in
+                    commitEnterFade(enabled: enabled)
+                }
+
+            if enterFadeEnabled {
                 HStack {
-                    Image(systemName: "waveform.path")
-                        .foregroundStyle(.cyan)
-                    Text("\(count) lane\(count == 1 ? "" : "s")")
+                    Text("Duration")
+                    Slider(value: $enterFadeDuration, in: 0.25...16.0, step: 0.25)
+                    Text("\(enterFadeDuration, specifier: "%.2g") bar\(enterFadeDuration == 1 ? "" : "s")")
+                        .frame(width: 60, alignment: .trailing)
                         .font(.callout)
-                    Spacer()
-                    let totalPoints = container.automationLanes.reduce(0) { $0 + $1.breakpoints.count }
-                    Text("\(totalPoints) breakpoint\(totalPoints == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                }
+                .onChange(of: enterFadeDuration) { _, _ in commitEnterFade(enabled: true) }
+
+                Picker("Curve", selection: $enterFadeCurve) {
+                    ForEach(CurveType.allCases, id: \.self) { curve in
+                        Text(curve.displayName).tag(curve)
+                    }
+                }
+                .onChange(of: enterFadeCurve) { _, _ in commitEnterFade(enabled: true) }
+
+                FadeCurvePreview(curve: enterFadeCurve, isFadeIn: true)
+                    .frame(height: 80)
+                    .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private var exitFadeEditor: some View {
+        Group {
+            Toggle("Enable Fade Out", isOn: $exitFadeEnabled)
+                .onChange(of: exitFadeEnabled) { _, enabled in
+                    commitExitFade(enabled: enabled)
+                }
+
+            if exitFadeEnabled {
+                HStack {
+                    Text("Duration")
+                    Slider(value: $exitFadeDuration, in: 0.25...16.0, step: 0.25)
+                    Text("\(exitFadeDuration, specifier: "%.2g") bar\(exitFadeDuration == 1 ? "" : "s")")
+                        .frame(width: 60, alignment: .trailing)
+                        .font(.callout)
+                }
+                .onChange(of: exitFadeDuration) { _, _ in commitExitFade(enabled: true) }
+
+                Picker("Curve", selection: $exitFadeCurve) {
+                    ForEach(CurveType.allCases, id: \.self) { curve in
+                        Text(curve.displayName).tag(curve)
+                    }
+                }
+                .onChange(of: exitFadeCurve) { _, _ in commitExitFade(enabled: true) }
+
+                FadeCurvePreview(curve: exitFadeCurve, isFadeIn: false)
+                    .frame(height: 80)
+                    .padding(.vertical, 4)
+            }
+        }
+    }
+
+    // MARK: - Inline Automation Editor
+
+    @ViewBuilder
+    private var automationEditor: some View {
+        if container.automationLanes.isEmpty {
+            HStack {
+                Image(systemName: "waveform.path")
+                    .foregroundStyle(.secondary)
+                Text("No automation lanes")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.callout)
+        } else {
+            ForEach(container.automationLanes) { lane in
+                DisclosureGroup {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                        GridRow {
+                            Text("Position")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            Text("Value")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            Text("Curve")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            Text("")
+                        }
+                        ForEach(lane.breakpoints.sorted(by: { $0.position < $1.position })) { bp in
+                            GridRow {
+                                Text("Bar \(bp.position, specifier: "%.1f")")
+                                    .font(.callout)
+                                Text("\(bp.value, specifier: "%.2f")")
+                                    .font(.callout)
+                                Text(bp.curve.displayName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Button(role: .destructive) {
+                                    onRemoveBreakpoint?(lane.id, bp.id)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    Button("Add Breakpoint") {
+                        let nextPos: Double
+                        if let last = lane.breakpoints.max(by: { $0.position < $1.position }) {
+                            nextPos = last.position + 1.0
+                        } else {
+                            nextPos = 0.0
+                        }
+                        let bp = AutomationBreakpoint(
+                            position: min(nextPos, Double(container.lengthBars)),
+                            value: 0.5
+                        )
+                        onAddBreakpoint?(lane.id, bp)
+                    }
+                    .font(.callout)
+                } label: {
+                    HStack {
+                        Image(systemName: "waveform.path")
+                            .foregroundStyle(.cyan)
+                        Text(parameterTargetDescription(lane.targetPath))
+                        Spacer()
+                        Text("\(lane.breakpoints.count) pt\(lane.breakpoints.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button(role: .destructive) {
+                            onRemoveAutomationLane?(lane.id)
+                        } label: {
+                            Image(systemName: "trash")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
+        }
+        if !automationTargets.isEmpty {
+            Menu("Add Automation Lane") {
+                ForEach(automationTargets, id: \.track.id) { target in
+                    if !target.track.insertEffects.isEmpty {
+                        Menu("Track Effects") {
+                            ForEach(Array(target.track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                Button(effect.displayName) {
+                                    pendingAutomationLane = PendingEffectSelection(
+                                        trackID: target.track.id,
+                                        containerID: nil,
+                                        effectIndex: index,
+                                        component: effect.component,
+                                        effectName: effect.displayName
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    ForEach(target.containers, id: \.id) { cont in
+                        if !cont.insertEffects.isEmpty {
+                            Menu(cont.name) {
+                                ForEach(Array(cont.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                    Button(effect.displayName) {
+                                        pendingAutomationLane = PendingEffectSelection(
+                                            trackID: target.track.id,
+                                            containerID: cont.id,
+                                            effectIndex: index,
+                                            component: effect.component,
+                                            effectName: effect.displayName
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .font(.callout)
         }
     }
 
@@ -384,6 +853,8 @@ public struct ContainerInspector: View {
             loopCountMode = .count
             loopCountValue = n
         }
+
+        loadFadeState()
     }
 
     private func commitLoopSettings() {
@@ -394,6 +865,39 @@ public struct ContainerInspector: View {
             crossfadeDurationMs: crossfadeDuration
         )
         onUpdateLoopSettings?(settings)
+    }
+
+    private func loadFadeState() {
+        if let fade = container.enterFade {
+            enterFadeEnabled = true
+            enterFadeDuration = fade.duration
+            enterFadeCurve = fade.curve
+        } else {
+            enterFadeEnabled = false
+        }
+        if let fade = container.exitFade {
+            exitFadeEnabled = true
+            exitFadeDuration = fade.duration
+            exitFadeCurve = fade.curve
+        } else {
+            exitFadeEnabled = false
+        }
+    }
+
+    private func commitEnterFade(enabled: Bool) {
+        if enabled {
+            onSetEnterFade?(FadeSettings(duration: enterFadeDuration, curve: enterFadeCurve))
+        } else {
+            onSetEnterFade?(nil)
+        }
+    }
+
+    private func commitExitFade(enabled: Bool) {
+        if enabled {
+            onSetExitFade?(FadeSettings(duration: exitFadeDuration, curve: exitFadeCurve))
+        } else {
+            onSetExitFade?(nil)
+        }
     }
 }
 

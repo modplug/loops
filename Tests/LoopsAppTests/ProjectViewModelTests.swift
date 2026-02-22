@@ -2468,4 +2468,173 @@ struct ProjectViewModelTests {
         vm.setTrackInputPort(trackID: bogusID, portID: "device:0:0")
         #expect(vm.project.songs[0].tracks[0].inputPortID == nil)
     }
+
+    // MARK: - Container Inspector Inline Editing Tests
+
+    @Test("Toggle effect bypass in inspector updates container model")
+    @MainActor
+    func toggleEffectBypassInInspector() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effect = InsertEffect(component: comp, displayName: "TestEffect", orderIndex: 0)
+        vm.addContainerEffect(containerID: containerID, effect: effect)
+
+        let effectID = vm.project.songs[0].tracks[0].containers[0].insertEffects[0].id
+        #expect(!vm.project.songs[0].tracks[0].containers[0].insertEffects[0].isBypassed)
+
+        vm.toggleContainerEffectBypass(containerID: containerID, effectID: effectID)
+        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].isBypassed)
+
+        vm.toggleContainerEffectBypass(containerID: containerID, effectID: effectID)
+        #expect(!vm.project.songs[0].tracks[0].containers[0].insertEffects[0].isBypassed)
+    }
+
+    @Test("Set enter fade in inspector updates container model")
+    @MainActor
+    func setEnterFadeInInspector() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade == nil)
+
+        let fade = FadeSettings(duration: 2.0, curve: .exponential)
+        vm.setContainerEnterFade(containerID: containerID, fade: fade)
+
+        let result = vm.project.songs[0].tracks[0].containers[0].enterFade
+        #expect(result != nil)
+        #expect(result?.duration == 2.0)
+        #expect(result?.curve == .exponential)
+    }
+
+    @Test("Set exit fade in inspector updates container model")
+    @MainActor
+    func setExitFadeInInspector() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let fade = FadeSettings(duration: 4.0, curve: .sCurve)
+        vm.setContainerExitFade(containerID: containerID, fade: fade)
+
+        let result = vm.project.songs[0].tracks[0].containers[0].exitFade
+        #expect(result != nil)
+        #expect(result?.duration == 4.0)
+        #expect(result?.curve == .sCurve)
+    }
+
+    @Test("Clear fade in inspector removes fade from container model")
+    @MainActor
+    func clearFadeInInspector() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        vm.setContainerEnterFade(containerID: containerID, fade: FadeSettings(duration: 2.0, curve: .linear))
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade != nil)
+
+        vm.setContainerEnterFade(containerID: containerID, fade: nil)
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade == nil)
+    }
+
+    @Test("Fade setting undo/redo in inspector")
+    @MainActor
+    func fadeSettingUndoRedoInInspector() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let fade = FadeSettings(duration: 3.0, curve: .exponential)
+        vm.setContainerEnterFade(containerID: containerID, fade: fade)
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade?.duration == 3.0)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade == nil)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].containers[0].enterFade?.duration == 3.0)
+    }
+
+    @Test("Add and remove enter action in inspector updates container model")
+    @MainActor
+    func addRemoveEnterActionInInspector() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        #expect(vm.project.songs[0].tracks[0].containers[0].onEnterActions.isEmpty)
+
+        let action = ContainerAction.makeSendMIDI(
+            message: .programChange(channel: 0, program: 42),
+            destination: .externalPort(name: "MIDI Out")
+        )
+        vm.addContainerEnterAction(containerID: containerID, action: action)
+        #expect(vm.project.songs[0].tracks[0].containers[0].onEnterActions.count == 1)
+
+        let actionID = vm.project.songs[0].tracks[0].containers[0].onEnterActions[0].id
+        vm.removeContainerEnterAction(containerID: containerID, actionID: actionID)
+        #expect(vm.project.songs[0].tracks[0].containers[0].onEnterActions.isEmpty)
+    }
+
+    @Test("Add and remove automation lane in inspector updates container model")
+    @MainActor
+    func addRemoveAutomationLaneInInspector() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes.isEmpty)
+
+        let path = EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 100)
+        let lane = AutomationLane(targetPath: path)
+        vm.addAutomationLane(containerID: containerID, lane: lane)
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes.count == 1)
+
+        let laneID = vm.project.songs[0].tracks[0].containers[0].automationLanes[0].id
+        vm.removeAutomationLane(containerID: containerID, laneID: laneID)
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes.isEmpty)
+    }
+
+    @Test("Toggle effect chain bypass in inspector updates container model")
+    @MainActor
+    func toggleEffectChainBypassInInspector() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        #expect(!vm.project.songs[0].tracks[0].containers[0].isEffectChainBypassed)
+
+        vm.toggleContainerEffectChainBypass(containerID: containerID)
+        #expect(vm.project.songs[0].tracks[0].containers[0].isEffectChainBypassed)
+
+        vm.toggleContainerEffectChainBypass(containerID: containerID)
+        #expect(!vm.project.songs[0].tracks[0].containers[0].isEffectChainBypassed)
+    }
 }
