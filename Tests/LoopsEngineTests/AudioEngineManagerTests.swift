@@ -6,11 +6,11 @@ import Foundation
 @Suite("AudioEngineManager Tests")
 struct AudioEngineManagerTests {
 
-    /// Helper: skips if no audio output device (CI runners may lack audio hardware).
+    /// Helper: skips if running in CI where audio hardware is unavailable.
     private func requireAudioHardware() throws {
         try #require(
-            !DeviceManager().outputDevices().isEmpty,
-            "No audio output device with channels available"
+            ProcessInfo.processInfo.environment["CI"] == nil,
+            "Audio hardware not available on CI"
         )
     }
 
