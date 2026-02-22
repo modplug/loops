@@ -21,6 +21,10 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     /// Optional AU instrument override. When set, this container routes through
     /// this instrument instead of the track's default instrument.
     public var instrumentOverride: AudioComponentInfo?
+    /// Optional fade-in applied at the container start (gain ramp 0→1).
+    public var enterFade: FadeSettings?
+    /// Optional fade-out applied at the container end (gain ramp 1→0).
+    public var exitFade: FadeSettings?
 
     public var endBar: Int { startBar + lengthBars }
 
@@ -37,7 +41,9 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         panOverride: Float? = nil,
         insertEffects: [InsertEffect] = [],
         isEffectChainBypassed: Bool = false,
-        instrumentOverride: AudioComponentInfo? = nil
+        instrumentOverride: AudioComponentInfo? = nil,
+        enterFade: FadeSettings? = nil,
+        exitFade: FadeSettings? = nil
     ) {
         self.id = id
         self.name = name
@@ -52,6 +58,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         self.insertEffects = insertEffects
         self.isEffectChainBypassed = isEffectChainBypassed
         self.instrumentOverride = instrumentOverride
+        self.enterFade = enterFade
+        self.exitFade = exitFade
     }
 
     // MARK: - Backward-compatible decoding
@@ -60,6 +68,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         case id, name, startBar, lengthBars, sourceRecordingID, linkGroupID
         case loopSettings, isRecordArmed, volumeOverride, panOverride
         case insertEffects, isEffectChainBypassed, instrumentOverride
+        case enterFade, exitFade
     }
 
     public init(from decoder: Decoder) throws {
@@ -77,5 +86,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         insertEffects = try c.decodeIfPresent([InsertEffect].self, forKey: .insertEffects) ?? []
         isEffectChainBypassed = try c.decodeIfPresent(Bool.self, forKey: .isEffectChainBypassed) ?? false
         instrumentOverride = try c.decodeIfPresent(AudioComponentInfo.self, forKey: .instrumentOverride)
+        enterFade = try c.decodeIfPresent(FadeSettings.self, forKey: .enterFade)
+        exitFade = try c.decodeIfPresent(FadeSettings.self, forKey: .exitFade)
     }
 }

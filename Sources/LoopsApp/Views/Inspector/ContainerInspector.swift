@@ -13,6 +13,8 @@ public struct ContainerInspector: View {
     var onToggleEffectBypass: ((ID<InsertEffect>) -> Void)?
     var onToggleChainBypass: (() -> Void)?
     var onSetInstrumentOverride: ((AudioComponentInfo?) -> Void)?
+    var onSetEnterFade: ((FadeSettings?) -> Void)?
+    var onSetExitFade: ((FadeSettings?) -> Void)?
 
     @State private var editingName: String = ""
     @State private var selectedBoundaryMode: BoundaryMode = .hardCut
@@ -20,6 +22,12 @@ public struct ContainerInspector: View {
     @State private var loopCountValue: Int = 1
     @State private var crossfadeDuration: Double = 10.0
     @State private var availableInstruments: [AudioUnitInfo] = []
+    @State private var enterFadeEnabled: Bool = false
+    @State private var enterFadeDuration: Double = 1.0
+    @State private var enterFadeCurve: CurveType = .linear
+    @State private var exitFadeEnabled: Bool = false
+    @State private var exitFadeDuration: Double = 1.0
+    @State private var exitFadeCurve: CurveType = .linear
 
     enum LoopCountMode: String, CaseIterable {
         case fill = "Fill"
@@ -35,7 +43,9 @@ public struct ContainerInspector: View {
         onRemoveEffect: ((ID<InsertEffect>) -> Void)? = nil,
         onToggleEffectBypass: ((ID<InsertEffect>) -> Void)? = nil,
         onToggleChainBypass: (() -> Void)? = nil,
-        onSetInstrumentOverride: ((AudioComponentInfo?) -> Void)? = nil
+        onSetInstrumentOverride: ((AudioComponentInfo?) -> Void)? = nil,
+        onSetEnterFade: ((FadeSettings?) -> Void)? = nil,
+        onSetExitFade: ((FadeSettings?) -> Void)? = nil
     ) {
         self.container = container
         self.trackKind = trackKind
@@ -46,6 +56,8 @@ public struct ContainerInspector: View {
         self.onToggleEffectBypass = onToggleEffectBypass
         self.onToggleChainBypass = onToggleChainBypass
         self.onSetInstrumentOverride = onSetInstrumentOverride
+        self.onSetEnterFade = onSetEnterFade
+        self.onSetExitFade = onSetExitFade
     }
 
     public var body: some View {
@@ -193,6 +205,54 @@ public struct ContainerInspector: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("Fades") {
+                Toggle("Fade In", isOn: $enterFadeEnabled)
+                    .onChange(of: enterFadeEnabled) { _, enabled in
+                        commitEnterFade(enabled: enabled)
+                    }
+
+                if enterFadeEnabled {
+                    HStack {
+                        Text("Duration")
+                        Slider(value: $enterFadeDuration, in: 0.25...16.0, step: 0.25)
+                        Text("\(enterFadeDuration, specifier: "%.2g") bar\(enterFadeDuration == 1 ? "" : "s")")
+                            .frame(width: 60, alignment: .trailing)
+                            .font(.caption)
+                    }
+                    .onChange(of: enterFadeDuration) { _, _ in commitEnterFade(enabled: true) }
+
+                    Picker("Curve", selection: $enterFadeCurve) {
+                        ForEach(CurveType.allCases, id: \.self) { curve in
+                            Text(curve.displayName).tag(curve)
+                        }
+                    }
+                    .onChange(of: enterFadeCurve) { _, _ in commitEnterFade(enabled: true) }
+                }
+
+                Toggle("Fade Out", isOn: $exitFadeEnabled)
+                    .onChange(of: exitFadeEnabled) { _, enabled in
+                        commitExitFade(enabled: enabled)
+                    }
+
+                if exitFadeEnabled {
+                    HStack {
+                        Text("Duration")
+                        Slider(value: $exitFadeDuration, in: 0.25...16.0, step: 0.25)
+                        Text("\(exitFadeDuration, specifier: "%.2g") bar\(exitFadeDuration == 1 ? "" : "s")")
+                            .frame(width: 60, alignment: .trailing)
+                            .font(.caption)
+                    }
+                    .onChange(of: exitFadeDuration) { _, _ in commitExitFade(enabled: true) }
+
+                    Picker("Curve", selection: $exitFadeCurve) {
+                        ForEach(CurveType.allCases, id: \.self) { curve in
+                            Text(curve.displayName).tag(curve)
+                        }
+                    }
+                    .onChange(of: exitFadeCurve) { _, _ in commitExitFade(enabled: true) }
+                }
+            }
         }
         .formStyle(.grouped)
         .onAppear {
@@ -215,6 +275,22 @@ public struct ContainerInspector: View {
             loopCountMode = .count
             loopCountValue = n
         }
+
+        if let fade = container.enterFade {
+            enterFadeEnabled = true
+            enterFadeDuration = fade.duration
+            enterFadeCurve = fade.curve
+        } else {
+            enterFadeEnabled = false
+        }
+
+        if let fade = container.exitFade {
+            exitFadeEnabled = true
+            exitFadeDuration = fade.duration
+            exitFadeCurve = fade.curve
+        } else {
+            exitFadeEnabled = false
+        }
     }
 
     private func commitLoopSettings() {
@@ -225,6 +301,32 @@ public struct ContainerInspector: View {
             crossfadeDurationMs: crossfadeDuration
         )
         onUpdateLoopSettings?(settings)
+    }
+
+    private func commitEnterFade(enabled: Bool) {
+        if enabled {
+            onSetEnterFade?(FadeSettings(duration: enterFadeDuration, curve: enterFadeCurve))
+        } else {
+            onSetEnterFade?(nil)
+        }
+    }
+
+    private func commitExitFade(enabled: Bool) {
+        if enabled {
+            onSetExitFade?(FadeSettings(duration: exitFadeDuration, curve: exitFadeCurve))
+        } else {
+            onSetExitFade?(nil)
+        }
+    }
+}
+
+extension CurveType {
+    public var displayName: String {
+        switch self {
+        case .linear: return "Linear"
+        case .exponential: return "Exponential"
+        case .sCurve: return "S-Curve"
+        }
     }
 }
 

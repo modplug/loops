@@ -171,6 +171,39 @@ struct ModelSerializationTests {
         #expect(decoded.instrumentOverride == nil)
     }
 
+    @Test("Container with enter and exit fades round-trips")
+    func containerWithFadesRoundTrip() throws {
+        let container = Container(
+            name: "Bridge",
+            startBar: 9,
+            lengthBars: 4,
+            loopSettings: LoopSettings(loopCount: .fill),
+            enterFade: FadeSettings(duration: 2.0, curve: .exponential),
+            exitFade: FadeSettings(duration: 1.5, curve: .sCurve)
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.enterFade != nil)
+        #expect(decoded.enterFade?.duration == 2.0)
+        #expect(decoded.enterFade?.curve == .exponential)
+        #expect(decoded.exitFade != nil)
+        #expect(decoded.exitFade?.duration == 1.5)
+        #expect(decoded.exitFade?.curve == .sCurve)
+    }
+
+    @Test("Container without fades round-trips with nil")
+    func containerWithoutFadesRoundTrip() throws {
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            loopSettings: LoopSettings(loopCount: .fill)
+        )
+        let decoded = try roundTrip(container)
+        #expect(decoded.enterFade == nil)
+        #expect(decoded.exitFade == nil)
+    }
+
     @Test("Container decodes from legacy JSON without effect fields")
     func containerLegacyDecoding() throws {
         let legacyJSON = """
@@ -193,6 +226,8 @@ struct ModelSerializationTests {
         #expect(decoded.insertEffects.isEmpty)
         #expect(decoded.isEffectChainBypassed == false)
         #expect(decoded.instrumentOverride == nil)
+        #expect(decoded.enterFade == nil)
+        #expect(decoded.exitFade == nil)
     }
 
     // MARK: - Track
@@ -311,6 +346,79 @@ struct ModelSerializationTests {
         let setlist = Setlist(name: "Friday Gig", entries: entries)
         let decoded = try roundTrip(setlist)
         #expect(setlist == decoded)
+    }
+
+    // MARK: - FadeSettings
+
+    @Test("FadeSettings round-trips")
+    func fadeSettingsRoundTrip() throws {
+        let settings = FadeSettings(duration: 2.5, curve: .sCurve)
+        let decoded = try roundTrip(settings)
+        #expect(settings == decoded)
+    }
+
+    @Test("CurveType all cases round-trip")
+    func curveTypeRoundTrip() throws {
+        for curve in CurveType.allCases {
+            let decoded = try roundTrip(curve)
+            #expect(curve == decoded)
+        }
+    }
+
+    @Test("CurveType.linear produces correct gain values")
+    func linearCurveGainValues() {
+        let curve = CurveType.linear
+        #expect(curve.gain(at: 0.0) == 0.0)
+        #expect(curve.gain(at: 0.5) == 0.5)
+        #expect(curve.gain(at: 1.0) == 1.0)
+        // Clamping
+        #expect(curve.gain(at: -0.5) == 0.0)
+        #expect(curve.gain(at: 1.5) == 1.0)
+    }
+
+    @Test("CurveType.exponential produces correct gain values")
+    func exponentialCurveGainValues() {
+        let curve = CurveType.exponential
+        #expect(curve.gain(at: 0.0) == 0.0)
+        #expect(curve.gain(at: 1.0) == 1.0)
+        // t^3: 0.5^3 = 0.125
+        #expect(abs(curve.gain(at: 0.5) - 0.125) < 1e-10)
+        // At midpoint, exponential should be below linear
+        #expect(curve.gain(at: 0.5) < 0.5)
+    }
+
+    @Test("CurveType.sCurve produces correct gain values")
+    func sCurveGainValues() {
+        let curve = CurveType.sCurve
+        #expect(curve.gain(at: 0.0) == 0.0)
+        #expect(curve.gain(at: 1.0) == 1.0)
+        // smoothstep at 0.5: 3*(0.25) - 2*(0.125) = 0.75 - 0.25 = 0.5
+        #expect(abs(curve.gain(at: 0.5) - 0.5) < 1e-10)
+        // S-curve should be below 0.5 before midpoint
+        #expect(curve.gain(at: 0.25) < 0.25)
+        // S-curve should be above 0.5 after midpoint
+        #expect(curve.gain(at: 0.75) > 0.75)
+    }
+
+    @Test("All curve types start at 0 and end at 1")
+    func curveTypeEndpoints() {
+        for curve in CurveType.allCases {
+            #expect(curve.gain(at: 0.0) == 0.0, "Curve \(curve) should start at 0")
+            #expect(curve.gain(at: 1.0) == 1.0, "Curve \(curve) should end at 1")
+        }
+    }
+
+    @Test("All curve types are monotonically increasing")
+    func curveTypeMonotonicity() {
+        for curve in CurveType.allCases {
+            var previous = curve.gain(at: 0.0)
+            for i in 1...100 {
+                let t = Double(i) / 100.0
+                let current = curve.gain(at: t)
+                #expect(current >= previous, "Curve \(curve) should be monotonically increasing at t=\(t)")
+                previous = current
+            }
+        }
     }
 
     // MARK: - InsertEffect

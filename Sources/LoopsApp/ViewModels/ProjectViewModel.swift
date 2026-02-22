@@ -549,6 +549,34 @@ public final class ProjectViewModel {
         }
     }
 
+    // MARK: - Container Fade Settings
+
+    /// Sets or clears the enter fade on a container.
+    public func setContainerEnterFade(containerID: ID<Container>, fade: FadeSettings?) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: fade != nil ? "Set Enter Fade" : "Remove Enter Fade")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].enterFade = fade
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Sets or clears the exit fade on a container.
+    public func setContainerExitFade(containerID: ID<Container>, fade: FadeSettings?) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: fade != nil ? "Set Exit Fade" : "Remove Exit Fade")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].exitFade = fade
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
     /// Returns the selected container if one is selected.
     public var selectedContainer: Container? {
         guard let id = selectedContainerID, let song = currentSong else { return nil }

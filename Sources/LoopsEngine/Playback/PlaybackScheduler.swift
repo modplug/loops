@@ -110,23 +110,53 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
                 guard frameCount > 0 else { continue }
 
+                let hasFades = container.enterFade != nil || container.exitFade != nil
+
                 // For fill loop mode: schedule repeating segments
                 if container.loopSettings.loopCount == .fill {
-                    scheduleLoopingPlayback(
-                        player: subgraph.playerNode,
-                        audioFile: audioFile,
-                        containerStartSample: containerStartSample,
-                        containerEndSample: containerEndSample,
-                        playheadSample: playheadSample,
-                        samplesPerBar: samplesPerBar
-                    )
+                    if hasFades {
+                        scheduleFadingLoopPlayback(
+                            player: subgraph.playerNode,
+                            audioFile: audioFile,
+                            containerStartSample: containerStartSample,
+                            containerEndSample: containerEndSample,
+                            playheadSample: playheadSample,
+                            samplesPerBar: samplesPerBar,
+                            enterFade: container.enterFade,
+                            exitFade: container.exitFade
+                        )
+                    } else {
+                        scheduleLoopingPlayback(
+                            player: subgraph.playerNode,
+                            audioFile: audioFile,
+                            containerStartSample: containerStartSample,
+                            containerEndSample: containerEndSample,
+                            playheadSample: playheadSample,
+                            samplesPerBar: samplesPerBar
+                        )
+                    }
                 } else {
-                    subgraph.playerNode.scheduleSegment(
-                        audioFile,
-                        startingFrame: startOffset,
-                        frameCount: frameCount,
-                        at: nil
-                    )
+                    if hasFades {
+                        scheduleFadingPlayback(
+                            player: subgraph.playerNode,
+                            audioFile: audioFile,
+                            startOffset: startOffset,
+                            frameCount: frameCount,
+                            containerPosition: playheadSample >= containerStartSample
+                                ? playheadSample - containerStartSample : Int64(0),
+                            containerLengthSamples: containerEndSample - containerStartSample,
+                            samplesPerBar: samplesPerBar,
+                            enterFade: container.enterFade,
+                            exitFade: container.exitFade
+                        )
+                    } else {
+                        subgraph.playerNode.scheduleSegment(
+                            audioFile,
+                            startingFrame: startOffset,
+                            frameCount: frameCount,
+                            at: nil
+                        )
+                    }
                 }
 
                 subgraph.playerNode.play()
@@ -270,6 +300,149 @@ public final class PlaybackScheduler: @unchecked Sendable {
             )
 
             position += framesToPlay
+        }
+    }
+
+    // MARK: - Fade Scheduling
+
+    /// Schedules a single (non-looping) segment with enter/exit fades applied.
+    private func scheduleFadingPlayback(
+        player: AVAudioPlayerNode,
+        audioFile: AVAudioFile,
+        startOffset: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount,
+        containerPosition: Int64,
+        containerLengthSamples: Int64,
+        samplesPerBar: Double,
+        enterFade: FadeSettings?,
+        exitFade: FadeSettings?
+    ) {
+        let format = audioFile.processingFormat
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+
+        audioFile.framePosition = startOffset
+        do { try audioFile.read(into: buffer, frameCount: frameCount) } catch { return }
+
+        applyContainerFades(
+            to: buffer,
+            containerPosition: containerPosition,
+            containerLengthSamples: containerLengthSamples,
+            samplesPerBar: samplesPerBar,
+            enterFade: enterFade,
+            exitFade: exitFade
+        )
+
+        player.scheduleBuffer(buffer)
+    }
+
+    /// Schedules looping playback with enter/exit fades applied at container boundaries.
+    private func scheduleFadingLoopPlayback(
+        player: AVAudioPlayerNode,
+        audioFile: AVAudioFile,
+        containerStartSample: Int64,
+        containerEndSample: Int64,
+        playheadSample: Int64,
+        samplesPerBar: Double,
+        enterFade: FadeSettings?,
+        exitFade: FadeSettings?
+    ) {
+        let containerLengthSamples = containerEndSample - containerStartSample
+        let fileLengthSamples = audioFile.length
+
+        guard fileLengthSamples > 0, containerLengthSamples > 0 else { return }
+
+        let enterFadeSamples = enterFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeSamples = exitFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeStart = containerLengthSamples - exitFadeSamples
+
+        var position = max(playheadSample, containerStartSample) - containerStartSample
+        let endPosition = containerLengthSamples
+        let format = audioFile.processingFormat
+
+        while position < endPosition {
+            let positionInLoop = position % fileLengthSamples
+            let remainingInLoop = fileLengthSamples - positionInLoop
+            let remainingInContainer = endPosition - position
+            let framesToPlay = min(remainingInLoop, remainingInContainer)
+
+            guard framesToPlay > 0 else { break }
+
+            let needsFade = (enterFade != nil && position < enterFadeSamples) ||
+                            (exitFade != nil && position + framesToPlay > exitFadeStart)
+
+            if needsFade {
+                guard let buffer = AVAudioPCMBuffer(
+                    pcmFormat: format,
+                    frameCapacity: AVAudioFrameCount(framesToPlay)
+                ) else { break }
+
+                audioFile.framePosition = AVAudioFramePosition(positionInLoop)
+                do {
+                    try audioFile.read(into: buffer, frameCount: AVAudioFrameCount(framesToPlay))
+                } catch { break }
+
+                applyContainerFades(
+                    to: buffer,
+                    containerPosition: position,
+                    containerLengthSamples: containerLengthSamples,
+                    samplesPerBar: samplesPerBar,
+                    enterFade: enterFade,
+                    exitFade: exitFade
+                )
+
+                player.scheduleBuffer(buffer)
+            } else {
+                player.scheduleSegment(
+                    audioFile,
+                    startingFrame: AVAudioFramePosition(positionInLoop),
+                    frameCount: AVAudioFrameCount(framesToPlay),
+                    at: nil
+                )
+            }
+
+            position += framesToPlay
+        }
+    }
+
+    /// Applies enter/exit fade gain envelopes to a buffer based on its position
+    /// within the overall container timeline.
+    private func applyContainerFades(
+        to buffer: AVAudioPCMBuffer,
+        containerPosition: Int64,
+        containerLengthSamples: Int64,
+        samplesPerBar: Double,
+        enterFade: FadeSettings?,
+        exitFade: FadeSettings?
+    ) {
+        let channelCount = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+
+        let enterFadeSamples = enterFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeSamples = exitFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeStart = containerLengthSamples - exitFadeSamples
+
+        for channel in 0..<channelCount {
+            guard let channelData = buffer.floatChannelData?[channel] else { continue }
+            for frame in 0..<frameLength {
+                let pos = containerPosition + Int64(frame)
+                var gain: Float = 1.0
+
+                // Apply enter fade (gain ramp 0→1)
+                if let fade = enterFade, pos < enterFadeSamples, enterFadeSamples > 0 {
+                    let t = Double(pos) / Double(enterFadeSamples)
+                    gain *= Float(fade.curve.gain(at: t))
+                }
+
+                // Apply exit fade (gain ramp 1→0)
+                if let fade = exitFade, pos >= exitFadeStart, exitFadeSamples > 0 {
+                    let t = Double(pos - exitFadeStart) / Double(exitFadeSamples)
+                    gain *= Float(fade.curve.gain(at: 1.0 - t))
+                }
+
+                if gain < 1.0 {
+                    channelData[frame] *= gain
+                }
+            }
         }
     }
 }

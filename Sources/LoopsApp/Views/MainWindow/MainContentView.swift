@@ -169,6 +169,12 @@ public struct MainContentView: View {
                         },
                         onSetInstrumentOverride: { override in
                             projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
+                        },
+                        onSetEnterFade: { fade in
+                            projectViewModel.setContainerEnterFade(containerID: container.id, fade: fade)
+                        },
+                        onSetExitFade: { fade in
+                            projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
                         }
                     )
                 } else {
