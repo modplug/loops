@@ -145,4 +145,82 @@ struct TransportManagerTests {
         transport.setPlayheadPosition(5.0)
         #expect(callbackFired)
     }
+
+    // MARK: - Count-in
+
+    @Test("Count-in timing: N bars at given BPM gives correct delay")
+    func countInTimingCalculation() {
+        let transport = TransportManager()
+        // At 120 BPM, 4/4 time: bar = 4 beats * 0.5s = 2.0s
+        transport.bpm = 120.0
+        transport.timeSignature = TimeSignature(beatsPerBar: 4, beatUnit: 4)
+        #expect(transport.countInDuration(bars: 0) == 0.0)
+        #expect(transport.countInDuration(bars: 1) == 2.0)
+        #expect(transport.countInDuration(bars: 2) == 4.0)
+        #expect(transport.countInDuration(bars: 4) == 8.0)
+
+        // At 60 BPM, 4/4: bar = 4 beats * 1.0s = 4.0s
+        transport.bpm = 60.0
+        #expect(transport.countInDuration(bars: 2) == 8.0)
+
+        // At 180 BPM, 3/4: bar = 3 beats * (60/180)s = 3 * 1/3 = 1.0s
+        transport.bpm = 180.0
+        transport.timeSignature = TimeSignature(beatsPerBar: 3, beatUnit: 4)
+        #expect(abs(transport.countInDuration(bars: 4) - 4.0) < 1e-10)
+    }
+
+    @Test("Count-in = 0 starts recording immediately")
+    func countInZeroStartsImmediately() {
+        let transport = TransportManager()
+        transport.toggleRecordArm()
+        transport.countInBars = 0
+        transport.play()
+        #expect(transport.state == .recording)
+        transport.stop()
+    }
+
+    @Test("Count-in > 0 with record arm enters countingIn state")
+    func countInEntersCountingInState() {
+        let transport = TransportManager()
+        transport.toggleRecordArm()
+        transport.countInBars = 2
+        transport.play()
+        #expect(transport.state == .countingIn)
+        #expect(transport.countInBarsRemaining > 0)
+        transport.stop()
+    }
+
+    @Test("Count-in without record arm starts normal playback")
+    func countInWithoutRecordArmPlaysNormally() {
+        let transport = TransportManager()
+        transport.countInBars = 4
+        transport.play()
+        #expect(transport.state == .playing)
+        transport.stop()
+    }
+
+    @Test("Stop during count-in returns to stopped")
+    func stopDuringCountIn() {
+        let transport = TransportManager()
+        transport.toggleRecordArm()
+        transport.countInBars = 4
+        transport.play()
+        #expect(transport.state == .countingIn)
+        transport.stop()
+        #expect(transport.state == .stopped)
+        #expect(transport.countInBarsRemaining == 0)
+        #expect(transport.playheadBar == 1.0)
+    }
+
+    @Test("Pause during count-in returns to stopped")
+    func pauseDuringCountIn() {
+        let transport = TransportManager()
+        transport.toggleRecordArm()
+        transport.countInBars = 2
+        transport.play()
+        #expect(transport.state == .countingIn)
+        transport.pause()
+        #expect(transport.state == .stopped)
+        #expect(transport.countInBarsRemaining == 0)
+    }
 }

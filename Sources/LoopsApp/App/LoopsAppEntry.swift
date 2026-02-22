@@ -46,11 +46,21 @@ public struct LoopsRootView: View {
         .onChange(of: transportViewModel.playheadBar) { _, newValue in
             timelineViewModel.playheadBar = newValue
         }
+        .onChange(of: viewModel.currentSong?.countInBars) { _, newValue in
+            transportViewModel.countInBars = newValue ?? 0
+        }
+        .onChange(of: transportViewModel.countInBars) { _, newValue in
+            if let songID = viewModel.currentSongID {
+                viewModel.setCountInBars(songID: songID, bars: newValue)
+            }
+        }
         .onAppear {
             transportViewModel.songProvider = { [weak viewModel] in
                 guard let vm = viewModel, let song = vm.currentSong else { return nil }
                 return (song: song, recordings: vm.project.sourceRecordings, audioDir: vm.audioDirectory)
             }
+            // Sync count-in bars from the current song
+            transportViewModel.countInBars = viewModel.currentSong?.countInBars ?? 0
         }
         .sheet(isPresented: $viewModel.isExportSheetPresented) {
             ExportAudioView(viewModel: viewModel)

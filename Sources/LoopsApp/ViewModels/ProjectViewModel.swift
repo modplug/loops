@@ -158,6 +158,15 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    /// Sets the count-in bars for a song.
+    public func setCountInBars(songID: ID<Song>, bars: Int) {
+        guard let index = project.songs.firstIndex(where: { $0.id == songID }) else { return }
+        guard project.songs[index].countInBars != bars else { return }
+        registerUndo(actionName: "Set Count-In")
+        project.songs[index].countInBars = bars
+        hasUnsavedChanges = true
+    }
+
     /// Duplicates a song and selects the copy.
     public func duplicateSong(id: ID<Song>) {
         guard let index = project.songs.firstIndex(where: { $0.id == id }) else { return }
@@ -191,7 +200,8 @@ public final class ProjectViewModel {
                     isRecordArmed: track.isRecordArmed,
                     orderIndex: track.orderIndex
                 )
-            }
+            },
+            countInBars: original.countInBars
         )
         project.songs.insert(copy, at: index + 1)
         currentSongID = copy.id

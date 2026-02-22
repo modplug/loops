@@ -12,6 +12,9 @@ public final class TransportViewModel {
     public var playheadBar: Double = 1.0
     public var bpm: Double = 120.0
     public var timeSignature: TimeSignature = TimeSignature()
+    public var countInBars: Int = 0
+    public var isCountingIn: Bool = false
+    public var countInBarsRemaining: Int = 0
 
     private let transport: TransportManager
     private let engineManager: AudioEngineManager?
@@ -30,11 +33,46 @@ public final class TransportViewModel {
                 self?.playheadBar = bar
             }
         }
+        transport.onCountInComplete = { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isCountingIn = false
+                self.countInBarsRemaining = 0
+
+                // Now start actual audio playback and recording
+                if let engine = self.engineManager, let context = self.songProvider?() {
+                    let scheduler = self.playbackScheduler
+                    let bar = self.playheadBar
+                    let currentBPM = self.bpm
+                    let ts = self.timeSignature
+                    let sr = engine.currentSampleRate
+                    let song = context.song
+                    let recordings = context.recordings
+                    Task {
+                        await scheduler?.prepare(song: song, sourceRecordings: recordings)
+                        scheduler?.play(
+                            song: song,
+                            fromBar: bar,
+                            bpm: currentBPM,
+                            timeSignature: ts,
+                            sampleRate: sr
+                        )
+                    }
+                }
+                self.syncFromTransport()
+            }
+        }
+        transport.onCountInTick = { [weak self] remaining in
+            Task { @MainActor [weak self] in
+                self?.countInBarsRemaining = remaining
+            }
+        }
     }
 
     public func play() {
         transport.bpm = bpm
         transport.timeSignature = timeSignature
+        transport.countInBars = countInBars
 
         // Start audio engine when playing (needed for metronome and future playback)
         if let engine = engineManager {
@@ -48,34 +86,54 @@ public final class TransportViewModel {
                 sampleRate: engine.currentSampleRate
             )
             engine.metronome?.reset()
-            engine.metronome?.setEnabled(isMetronomeEnabled)
 
-            // Prepare and schedule audio playback with latest song data
-            if let context = songProvider?() {
-                if playbackScheduler == nil {
-                    let scheduler = PlaybackScheduler(engine: engine.engine, audioDirURL: context.audioDir)
-                    let dispatcher = ActionDispatcher(midiOutput: CoreMIDIOutput())
-                    dispatcher.triggerDelegate = scheduler
-                    dispatcher.parameterResolver = scheduler
-                    scheduler.actionDispatcher = dispatcher
-                    playbackScheduler = scheduler
+            // If count-in is active, always enable metronome during count-in
+            if isRecordArmed && countInBars > 0 {
+                engine.metronome?.setEnabled(true)
+            } else {
+                engine.metronome?.setEnabled(isMetronomeEnabled)
+            }
+
+            // Only schedule audio playback immediately if NOT counting in
+            if !(isRecordArmed && countInBars > 0) {
+                if let context = songProvider?() {
+                    if playbackScheduler == nil {
+                        let scheduler = PlaybackScheduler(engine: engine.engine, audioDirURL: context.audioDir)
+                        let dispatcher = ActionDispatcher(midiOutput: CoreMIDIOutput())
+                        dispatcher.triggerDelegate = scheduler
+                        dispatcher.parameterResolver = scheduler
+                        scheduler.actionDispatcher = dispatcher
+                        playbackScheduler = scheduler
+                    }
+                    let scheduler = playbackScheduler
+                    let bar = playheadBar
+                    let currentBPM = bpm
+                    let ts = timeSignature
+                    let sr = engine.currentSampleRate
+                    let song = context.song
+                    let recordings = context.recordings
+                    Task {
+                        await scheduler?.prepare(song: song, sourceRecordings: recordings)
+                        scheduler?.play(
+                            song: song,
+                            fromBar: bar,
+                            bpm: currentBPM,
+                            timeSignature: ts,
+                            sampleRate: sr
+                        )
+                    }
                 }
-                let scheduler = playbackScheduler
-                let bar = playheadBar
-                let currentBPM = bpm
-                let ts = timeSignature
-                let sr = engine.currentSampleRate
-                let song = context.song
-                let recordings = context.recordings
-                Task {
-                    await scheduler?.prepare(song: song, sourceRecordings: recordings)
-                    scheduler?.play(
-                        song: song,
-                        fromBar: bar,
-                        bpm: currentBPM,
-                        timeSignature: ts,
-                        sampleRate: sr
-                    )
+            } else {
+                // Ensure scheduler exists for when count-in completes
+                if let context = songProvider?() {
+                    if playbackScheduler == nil {
+                        let scheduler = PlaybackScheduler(engine: engine.engine, audioDirURL: context.audioDir)
+                        let dispatcher = ActionDispatcher(midiOutput: CoreMIDIOutput())
+                        dispatcher.triggerDelegate = scheduler
+                        dispatcher.parameterResolver = scheduler
+                        scheduler.actionDispatcher = dispatcher
+                        playbackScheduler = scheduler
+                    }
                 }
             }
         }
@@ -100,7 +158,7 @@ public final class TransportViewModel {
     }
 
     public func togglePlayPause() {
-        if isPlaying {
+        if isPlaying || isCountingIn {
             pause()
         } else {
             play()
@@ -141,9 +199,11 @@ public final class TransportViewModel {
     }
 
     private func syncFromTransport() {
-        isPlaying = transport.state != .stopped
+        isPlaying = transport.state == .playing || transport.state == .recording
+        isCountingIn = transport.state == .countingIn
         isRecordArmed = transport.isRecordArmed
         isMetronomeEnabled = transport.isMetronomeEnabled
         playheadBar = transport.playheadBar
+        countInBarsRemaining = transport.countInBarsRemaining
     }
 }

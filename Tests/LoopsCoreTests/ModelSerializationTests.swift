@@ -570,6 +570,37 @@ struct ModelSerializationTests {
         #expect(song == decoded)
     }
 
+    @Test("Song with countInBars round-trips")
+    func songCountInBarsRoundTrip() throws {
+        let song = Song(
+            name: "Live Song",
+            tempo: Tempo(bpm: 140.0),
+            timeSignature: TimeSignature(beatsPerBar: 4, beatUnit: 4),
+            tracks: [Track(name: "Guitar", kind: .audio)],
+            countInBars: 4
+        )
+        let decoded = try roundTrip(song)
+        #expect(song == decoded)
+        #expect(decoded.countInBars == 4)
+    }
+
+    @Test("Song decodes from legacy JSON without countInBars")
+    func songLegacyWithoutCountInBars() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Old Song",
+            "tempo": { "bpm": 120.0 },
+            "timeSignature": { "beatsPerBar": 4, "beatUnit": 4 },
+            "tracks": []
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Song.self, from: data)
+        #expect(decoded.name == "Old Song")
+        #expect(decoded.countInBars == 0)
+    }
+
     // MARK: - MIDIMapping
 
     @Test("MIDIMapping with CC round-trips")

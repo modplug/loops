@@ -901,4 +901,45 @@ struct ProjectViewModelTests {
         let allTracks = vm.allTracksInCurrentSong
         #expect(allTracks.count == 3)
     }
+
+    // MARK: - Count-In
+
+    @Test("setCountInBars updates song")
+    @MainActor
+    func setCountInBars() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+        #expect(vm.project.songs[0].countInBars == 0)
+        vm.setCountInBars(songID: songID, bars: 4)
+        #expect(vm.project.songs[0].countInBars == 4)
+        vm.setCountInBars(songID: songID, bars: 2)
+        #expect(vm.project.songs[0].countInBars == 2)
+    }
+
+    @Test("setCountInBars undo/redo")
+    @MainActor
+    func setCountInBarsUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+        vm.setCountInBars(songID: songID, bars: 4)
+        #expect(vm.project.songs[0].countInBars == 4)
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].countInBars == 0)
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].countInBars == 4)
+    }
+
+    @Test("duplicateSong copies countInBars")
+    @MainActor
+    func duplicateSongCopiesCountInBars() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+        vm.setCountInBars(songID: songID, bars: 2)
+        vm.duplicateSong(id: songID)
+        #expect(vm.project.songs.count == 2)
+        #expect(vm.project.songs[1].countInBars == 2)
+    }
 }

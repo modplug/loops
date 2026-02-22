@@ -1,10 +1,12 @@
 import SwiftUI
 import LoopsCore
 
-/// Transport bar with play, stop, record arm, BPM, time signature, and metronome controls.
+/// Transport bar with play, stop, record arm, BPM, time signature, metronome, and count-in controls.
 public struct ToolbarView: View {
     @Bindable var viewModel: TransportViewModel
     @State private var bpmText: String = "120.0"
+
+    private static let countInOptions = [0, 1, 2, 4]
 
     public init(viewModel: TransportViewModel) {
         self.viewModel = viewModel
@@ -79,7 +81,40 @@ public struct ToolbarView: View {
             .buttonStyle(.plain)
             .help("Metronome")
 
+            // Count-in picker
+            Menu {
+                ForEach(Self.countInOptions, id: \.self) { bars in
+                    Button(action: { viewModel.countInBars = bars }) {
+                        HStack {
+                            Text(bars == 0 ? "Off" : "\(bars) bars")
+                            if viewModel.countInBars == bars {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.caption)
+                    Text(viewModel.countInBars > 0 ? "\(viewModel.countInBars)" : "—")
+                        .font(.system(.caption, design: .monospaced))
+                }
+                .foregroundStyle(viewModel.countInBars > 0 ? Color.accentColor : Color.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Count-in: \(viewModel.countInBars == 0 ? "Off" : "\(viewModel.countInBars) bars")")
+
             Spacer()
+
+            // Count-in countdown display
+            if viewModel.isCountingIn {
+                Text("Count: \(viewModel.countInBarsRemaining)...")
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.red)
+                    .bold()
+            }
 
             // Position display
             Text("Bar \(String(format: "%.1f", viewModel.playheadBar))")

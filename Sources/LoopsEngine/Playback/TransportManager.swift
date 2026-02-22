@@ -2,22 +2,29 @@ import Foundation
 import AVFoundation
 import LoopsCore
 
-/// Transport state: stopped, playing, or recording (playing + record armed).
+/// Transport state: stopped, playing, recording, or counting in before recording.
 public enum TransportState: Sendable, Equatable {
     case stopped
     case playing
     case recording
+    case countingIn
 }
 
-/// Manages transport state machine: play, pause, stop, record arm.
+/// Manages transport state machine: play, pause, stop, record arm, count-in.
 /// Tracks playhead position based on BPM and drives the metronome.
 public final class TransportManager: @unchecked Sendable {
     public private(set) var state: TransportState = .stopped
     public var isRecordArmed: Bool = false
     public var isMetronomeEnabled: Bool = false
 
+    /// Number of count-in bars before recording (0, 1, 2, or 4).
+    public var countInBars: Int = 0
+
     /// Current playhead position in bars (1-based, fractional).
     public private(set) var playheadBar: Double = 1.0
+
+    /// Remaining count-in bars (counts down during count-in phase).
+    public private(set) var countInBarsRemaining: Int = 0
 
     /// Tempo in BPM.
     public var bpm: Double = 120.0 {
@@ -30,9 +37,17 @@ public final class TransportManager: @unchecked Sendable {
     /// Callback fired on each position update (called from timer thread).
     public var onPositionUpdate: ((Double) -> Void)?
 
+    /// Callback fired when count-in completes and recording begins.
+    public var onCountInComplete: (() -> Void)?
+
+    /// Callback fired each tick during count-in with bars remaining.
+    public var onCountInTick: ((Int) -> Void)?
+
     private var displayLink: Timer?
     private var playbackStartTime: CFAbsoluteTime = 0
     private var playbackStartBar: Double = 1.0
+    private var countInStartTime: CFAbsoluteTime = 0
+    private var countInDurationSeconds: Double = 0
 
     public init() {}
 
@@ -40,21 +55,30 @@ public final class TransportManager: @unchecked Sendable {
         stop()
     }
 
-    /// Starts or resumes playback.
+    /// Starts or resumes playback. If record-armed with countInBars > 0,
+    /// enters count-in phase first.
     public func play() {
         guard state == .stopped else { return }
-        state = isRecordArmed ? .recording : .playing
-        playbackStartTime = CFAbsoluteTimeGetCurrent()
-        playbackStartBar = playheadBar
-        startTimer()
+        if isRecordArmed && countInBars > 0 {
+            state = .countingIn
+            countInBarsRemaining = countInBars
+            countInDurationSeconds = Double(countInBars) * barDurationSeconds
+            countInStartTime = CFAbsoluteTimeGetCurrent()
+            startTimer()
+        } else {
+            state = isRecordArmed ? .recording : .playing
+            playbackStartTime = CFAbsoluteTimeGetCurrent()
+            playbackStartBar = playheadBar
+            startTimer()
+        }
     }
 
     /// Pauses playback at the current position.
     public func pause() {
-        guard state == .playing || state == .recording else { return }
+        guard state == .playing || state == .recording || state == .countingIn else { return }
         stopTimer()
-        // Keep playheadBar at current position
         state = .stopped
+        countInBarsRemaining = 0
     }
 
     /// Stops playback and returns playhead to bar 1.
@@ -62,6 +86,7 @@ public final class TransportManager: @unchecked Sendable {
         stopTimer()
         state = .stopped
         playheadBar = 1.0
+        countInBarsRemaining = 0
         onPositionUpdate?(playheadBar)
     }
 
@@ -83,7 +108,7 @@ public final class TransportManager: @unchecked Sendable {
 
     /// Sets the playhead position (1-based bars).
     public func setPlayheadPosition(_ bar: Double) {
-        let wasPlaying = state != .stopped
+        let wasPlaying = state == .playing || state == .recording
         if wasPlaying {
             playbackStartTime = CFAbsoluteTimeGetCurrent()
             playbackStartBar = max(bar, 1.0)
@@ -97,6 +122,11 @@ public final class TransportManager: @unchecked Sendable {
         let beatsPerBar = Double(timeSignature.beatsPerBar)
         let beatDuration = 60.0 / bpm
         return beatsPerBar * beatDuration
+    }
+
+    /// Returns the count-in duration in seconds for N bars at current BPM/time signature.
+    public func countInDuration(bars: Int) -> Double {
+        return Double(bars) * barDurationSeconds
     }
 
     // MARK: - Timer
@@ -118,6 +148,25 @@ public final class TransportManager: @unchecked Sendable {
 
     private func tick() {
         guard state != .stopped else { return }
+
+        if state == .countingIn {
+            let elapsed = CFAbsoluteTimeGetCurrent() - countInStartTime
+            let barsElapsed = elapsed / barDurationSeconds
+            let remaining = countInBars - Int(barsElapsed)
+            countInBarsRemaining = max(remaining, 0)
+            onCountInTick?(countInBarsRemaining)
+
+            if elapsed >= countInDurationSeconds {
+                // Count-in complete — transition to recording
+                state = .recording
+                countInBarsRemaining = 0
+                playbackStartTime = CFAbsoluteTimeGetCurrent()
+                playbackStartBar = playheadBar
+                onCountInComplete?()
+            }
+            return
+        }
+
         let elapsed = CFAbsoluteTimeGetCurrent() - playbackStartTime
         let barsElapsed = elapsed / barDurationSeconds
         playheadBar = playbackStartBar + barsElapsed
