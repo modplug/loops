@@ -342,7 +342,12 @@ public struct MainContentView: View {
             midiChannelLabel: midiChannelLabel(for: track.midiInputChannel),
             onMuteToggle: { projectViewModel.toggleMute(trackID: track.id) },
             onSoloToggle: { projectViewModel.toggleSolo(trackID: track.id) },
-            onRecordArmToggle: { projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed) }
+            onRecordArmToggle: { projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed) },
+            onMonitorToggle: {
+                let newState = !track.isMonitoring
+                projectViewModel.setTrackMonitoring(trackID: track.id, monitoring: newState)
+                transportViewModel?.setInputMonitoring(track: track, enabled: newState)
+            }
         )
         .contextMenu {
             Button("Rename...") {

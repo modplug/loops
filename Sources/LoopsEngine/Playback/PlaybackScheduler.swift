@@ -22,6 +22,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// Parameters: containerID, armed.
     public var onRecordArmedChanged: ((ID<Container>, Bool) -> Void)?
 
+    /// Optional input monitor for auto-suppressing monitoring during playback.
+    public var inputMonitor: InputMonitor?
+
     /// Per-container audio subgraph.
     private struct ContainerSubgraph {
         let playerNode: AVAudioPlayerNode
@@ -38,6 +41,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
     /// Containers currently playing, for firing exit actions on stop.
     private var activeContainers: [Container] = []
+
+    /// Maps container IDs to the track they belong to, for monitoring suppression.
+    private var containerToTrack: [ID<Container>: ID<Track>] = [:]
+
+    /// Tracks that have at least one active container playing.
+    private var tracksWithActiveContainers: Set<ID<Track>> = []
 
     /// Stored playback state for trigger-based scheduling.
     private var currentSong: Song?
@@ -102,6 +111,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         let samplesPerBar = self.samplesPerBar(bpm: bpm, timeSignature: timeSignature, sampleRate: sampleRate)
 
+        // Build container → track mapping for monitoring suppression
+        for track in song.tracks {
+            for container in track.containers {
+                containerToTrack[container.id] = track.id
+            }
+        }
+
         for track in song.tracks {
             if track.isMuted { continue }
 
@@ -113,6 +129,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     samplesPerBar: samplesPerBar
                 )
             }
+        }
+
+        // Suppress input monitoring on tracks that have active containers
+        for trackID in tracksWithActiveContainers {
+            inputMonitor?.suppressMonitoring(trackID: trackID)
         }
 
         startAutomationTimer(song: song, fromBar: fromBar, bpm: bpm, timeSignature: timeSignature)
@@ -127,7 +148,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
         for container in activeContainers {
             actionDispatcher?.containerDidExit(container)
         }
+        // Unsuppress monitoring on tracks that had active containers
+        for trackID in tracksWithActiveContainers {
+            inputMonitor?.unsuppressMonitoring(trackID: trackID)
+        }
         activeContainers.removeAll()
+        tracksWithActiveContainers.removeAll()
+        containerToTrack.removeAll()
         currentSong = nil
     }
 
@@ -149,6 +176,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
         containerSubgraphs.removeAll()
         activeContainers.removeAll()
+        tracksWithActiveContainers.removeAll()
+        containerToTrack.removeAll()
 
         for (_, mixer) in trackMixers {
             engine.disconnectNodeOutput(mixer)
@@ -256,6 +285,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         subgraph.playerNode.play()
         activeContainers.append(container)
+        if let trackID = containerToTrack[container.id] {
+            tracksWithActiveContainers.insert(trackID)
+        }
         actionDispatcher?.containerDidEnter(container)
     }
 
@@ -601,6 +633,15 @@ extension PlaybackScheduler: ContainerTriggerDelegate {
             let container = activeContainers[index]
             actionDispatcher?.containerDidExit(container)
             activeContainers.remove(at: index)
+
+            // If no more active containers on this track, unsuppress monitoring
+            if let trackID = containerToTrack[containerID] {
+                let hasOtherActive = activeContainers.contains { containerToTrack[$0.id] == trackID }
+                if !hasOtherActive {
+                    tracksWithActiveContainers.remove(trackID)
+                    inputMonitor?.unsuppressMonitoring(trackID: trackID)
+                }
+            }
         }
     }
 

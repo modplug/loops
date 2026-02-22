@@ -103,6 +103,7 @@ public final class TransportViewModel {
                         dispatcher.triggerDelegate = scheduler
                         dispatcher.parameterResolver = scheduler
                         scheduler.actionDispatcher = dispatcher
+                        scheduler.inputMonitor = engine.inputMonitor
                         playbackScheduler = scheduler
                     }
                     let scheduler = playbackScheduler
@@ -132,6 +133,7 @@ public final class TransportViewModel {
                         dispatcher.triggerDelegate = scheduler
                         dispatcher.parameterResolver = scheduler
                         scheduler.actionDispatcher = dispatcher
+                        scheduler.inputMonitor = engine.inputMonitor
                         playbackScheduler = scheduler
                     }
                 }
@@ -195,6 +197,27 @@ public final class TransportViewModel {
                 beatsPerBar: timeSignature.beatsPerBar,
                 sampleRate: engineManager?.currentSampleRate ?? 44100.0
             )
+        }
+    }
+
+    /// Enables or disables input monitoring for a track through the audio engine.
+    public func setInputMonitoring(track: Track, enabled: Bool) {
+        guard let engine = engineManager else { return }
+        if !engine.isRunning {
+            try? engine.start()
+        }
+        guard let monitor = engine.inputMonitor else { return }
+        if enabled {
+            Task {
+                await monitor.enableMonitoring(
+                    trackID: track.id,
+                    insertEffects: track.insertEffects,
+                    volume: track.volume,
+                    pan: track.pan
+                )
+            }
+        } else {
+            monitor.disableMonitoring(trackID: track.id)
         }
     }
 

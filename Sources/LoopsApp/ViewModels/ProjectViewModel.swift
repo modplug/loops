@@ -200,6 +200,7 @@ public final class ProjectViewModel {
                     midiInputDeviceID: track.midiInputDeviceID,
                     midiInputChannel: track.midiInputChannel,
                     isRecordArmed: track.isRecordArmed,
+                    isMonitoring: track.isMonitoring,
                     orderIndex: track.orderIndex
                 )
             },
@@ -277,6 +278,16 @@ public final class ProjectViewModel {
         guard project.songs[currentSongIndex].tracks[index].isRecordArmed != armed else { return }
         registerUndo(actionName: armed ? "Arm Track" : "Disarm Track")
         project.songs[currentSongIndex].tracks[index].isRecordArmed = armed
+        hasUnsavedChanges = true
+    }
+
+    /// Sets the input monitoring state on a track.
+    public func setTrackMonitoring(trackID: ID<Track>, monitoring: Bool) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard project.songs[currentSongIndex].tracks[index].isMonitoring != monitoring else { return }
+        registerUndo(actionName: monitoring ? "Enable Input Monitor" : "Disable Input Monitor")
+        project.songs[currentSongIndex].tracks[index].isMonitoring = monitoring
         hasUnsavedChanges = true
     }
 

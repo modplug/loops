@@ -609,6 +609,42 @@ struct ModelSerializationTests {
         #expect(decoded.midiInputChannel == nil)
     }
 
+    @Test("Track with isMonitoring round-trips")
+    func trackMonitoringRoundTrip() throws {
+        let track = Track(
+            name: "Guitar",
+            kind: .audio,
+            isMonitoring: true,
+            orderIndex: 0
+        )
+        let decoded = try roundTrip(track)
+        #expect(track == decoded)
+        #expect(decoded.isMonitoring == true)
+    }
+
+    @Test("Track decodes from legacy JSON without isMonitoring")
+    func trackLegacyWithoutMonitoring() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Drums",
+            "kind": "audio",
+            "volume": 1.0,
+            "pan": 0.0,
+            "isMuted": false,
+            "isSoloed": false,
+            "containers": [],
+            "insertEffects": [],
+            "sendLevels": [],
+            "orderIndex": 0
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Track.self, from: data)
+        #expect(decoded.isMonitoring == false)
+        #expect(decoded.name == "Drums")
+    }
+
     // MARK: - Song
 
     @Test("Song round-trips")

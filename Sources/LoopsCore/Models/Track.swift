@@ -37,6 +37,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     /// MIDI channel filter: nil = omni (all channels), 1-16 = specific channel.
     public var midiInputChannel: UInt8?
     public var isRecordArmed: Bool
+    public var isMonitoring: Bool
     public var orderIndex: Int
 
     public init(
@@ -56,6 +57,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         midiInputDeviceID: String? = nil,
         midiInputChannel: UInt8? = nil,
         isRecordArmed: Bool = false,
+        isMonitoring: Bool = false,
         orderIndex: Int = 0
     ) {
         self.id = id
@@ -74,6 +76,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.midiInputDeviceID = midiInputDeviceID
         self.midiInputChannel = midiInputChannel
         self.isRecordArmed = isRecordArmed
+        self.isMonitoring = isMonitoring
         self.orderIndex = orderIndex
     }
 
@@ -86,6 +89,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         case inputPortID, outputPortID
         case midiInputDeviceID, midiInputChannel
         case isRecordArmed
+        case isMonitoring
         case orderIndex
         // Legacy key
         case inputDeviceUID
@@ -108,6 +112,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         midiInputDeviceID = try c.decodeIfPresent(String.self, forKey: .midiInputDeviceID)
         midiInputChannel = try c.decodeIfPresent(UInt8.self, forKey: .midiInputChannel)
         isRecordArmed = try c.decodeIfPresent(Bool.self, forKey: .isRecordArmed) ?? false
+        isMonitoring = try c.decodeIfPresent(Bool.self, forKey: .isMonitoring) ?? false
         orderIndex = try c.decode(Int.self, forKey: .orderIndex)
 
         // Migrate legacy inputDeviceUID → inputPortID
@@ -138,6 +143,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(midiInputDeviceID, forKey: .midiInputDeviceID)
         try c.encodeIfPresent(midiInputChannel, forKey: .midiInputChannel)
         try c.encode(isRecordArmed, forKey: .isRecordArmed)
+        try c.encode(isMonitoring, forKey: .isMonitoring)
         try c.encode(orderIndex, forKey: .orderIndex)
     }
 }

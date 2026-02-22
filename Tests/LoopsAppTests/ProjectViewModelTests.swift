@@ -126,6 +126,20 @@ struct ProjectViewModelTests {
         #expect(!vm.project.songs[0].tracks[0].isRecordArmed)
     }
 
+    @Test("Set track monitoring")
+    @MainActor
+    func setTrackMonitoring() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(!vm.project.songs[0].tracks[0].isMonitoring)
+        vm.setTrackMonitoring(trackID: trackID, monitoring: true)
+        #expect(vm.project.songs[0].tracks[0].isMonitoring)
+        vm.setTrackMonitoring(trackID: trackID, monitoring: false)
+        #expect(!vm.project.songs[0].tracks[0].isMonitoring)
+    }
+
     @Test("Set track MIDI input device and channel")
     @MainActor
     func setTrackMIDIInput() {
@@ -582,6 +596,24 @@ struct ProjectViewModelTests {
 
         vm.undoManager?.redo()
         #expect(vm.project.songs[0].tracks[0].isRecordArmed)
+    }
+
+    @Test("Undo/redo set track monitoring")
+    @MainActor
+    func undoSetTrackMonitoring() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackMonitoring(trackID: trackID, monitoring: true)
+        #expect(vm.project.songs[0].tracks[0].isMonitoring)
+
+        vm.undoManager?.undo()
+        #expect(!vm.project.songs[0].tracks[0].isMonitoring)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].isMonitoring)
     }
 
     @Test("Undo add container restores empty track")

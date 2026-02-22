@@ -10,6 +10,7 @@ public final class AudioEngineManager: @unchecked Sendable {
     public let deviceManager: DeviceManager
     public let midiManager: MIDIManager
     public private(set) var metronome: MetronomeGenerator?
+    public private(set) var inputMonitor: InputMonitor?
 
     public private(set) var isRunning: Bool = false
     public private(set) var currentSampleRate: Double = 44100.0
@@ -57,6 +58,7 @@ public final class AudioEngineManager: @unchecked Sendable {
             try engine.start()
             isRunning = true
             currentSampleRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+            inputMonitor = InputMonitor(engine: engine)
             installDeviceChangeObserver()
         } catch {
             // Clean up on failure
@@ -74,6 +76,8 @@ public final class AudioEngineManager: @unchecked Sendable {
     public func stop() {
         guard isRunning else { return }
         engine.stop()
+        inputMonitor?.cleanup()
+        inputMonitor = nil
         if let met = metronome {
             engine.detach(met.sourceNode)
             metronome = nil
