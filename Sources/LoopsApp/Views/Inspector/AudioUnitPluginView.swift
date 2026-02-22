@@ -3,109 +3,90 @@ import AVFoundation
 import LoopsCore
 import LoopsEngine
 
-/// Wraps an AUAudioUnit's native NSViewController as a SwiftUI view.
-struct AudioUnitNSViewControllerRepresentable: NSViewControllerRepresentable {
-    let viewController: NSViewController
+/// Manages floating NSWindows for Audio Unit plugin UIs.
+/// Each plugin gets its own resizable window that fits the plugin's preferred content size.
+@MainActor
+final class PluginWindowManager {
+    static let shared = PluginWindowManager()
 
-    func makeNSViewController(context: Context) -> NSViewController {
-        viewController
+    private var windows: [String: NSWindow] = [:]
+
+    /// Opens (or brings to front) a plugin window for the given component.
+    func open(
+        component: AudioComponentInfo,
+        displayName: String,
+        presetData: Data?,
+        onPresetChanged: ((Data?) -> Void)?
+    ) {
+        let key = "\(component.componentType)-\(component.componentSubType)-\(component.componentManufacturer)"
+
+        // If a window for this component is already open, bring it to front
+        if let existing = windows[key], existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let window = PluginWindow(
+            component: component,
+            displayName: displayName,
+            presetData: presetData,
+            onPresetChanged: onPresetChanged,
+            onClose: { [weak self] in
+                self?.windows.removeValue(forKey: key)
+            }
+        )
+        windows[key] = window
+        window.makeKeyAndOrderFront(nil)
     }
-
-    func updateNSViewController(_ nsViewController: NSViewController, context: Context) {}
 }
 
-/// Sheet that loads and displays an Audio Unit's native plugin UI.
-/// Shows a loading spinner while the AU is being instantiated.
-struct AudioUnitPluginView: View {
-    let component: AudioComponentInfo
-    let displayName: String
-    let presetData: Data?
-    var onPresetChanged: ((Data?) -> Void)?
-    var onDismiss: (() -> Void)?
+/// A resizable NSWindow that hosts an Audio Unit's native plugin UI.
+@MainActor
+private final class PluginWindow: NSWindow, NSWindowDelegate {
+    private var avAudioUnit: AVAudioUnit?
+    private var onPresetChanged: ((Data?) -> Void)?
+    private var onClose: (() -> Void)?
 
-    @State private var auViewController: NSViewController?
-    @State private var avAudioUnit: AVAudioUnit?
-    @State private var isLoading = true
-    @State private var errorMessage: String?
+    convenience init(
+        component: AudioComponentInfo,
+        displayName: String,
+        presetData: Data?,
+        onPresetChanged: ((Data?) -> Void)?,
+        onClose: (() -> Void)?
+    ) {
+        let loadingRect = NSRect(x: 0, y: 0, width: 400, height: 300)
+        self.init(
+            contentRect: loadingRect,
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        self.onPresetChanged = onPresetChanged
+        self.onClose = onClose
+        self.title = displayName
+        self.isReleasedWhenClosed = false
+        self.delegate = self
+        self.center()
 
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text(displayName)
-                    .font(.headline)
-                Spacer()
-                Button("Save & Close") {
-                    savePresetAndDismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-            .padding()
+        // Show a loading spinner while the AU loads
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.startAnimation(nil)
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        let loadingView = NSView(frame: loadingRect)
+        loadingView.addSubview(spinner)
+        NSLayoutConstraint.activate([
+            spinner.centerXAnchor.constraint(equalTo: loadingView.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: loadingView.centerYAnchor),
+        ])
+        self.contentView = loadingView
 
-            Divider()
-
-            // Plugin UI content
-            Group {
-                if isLoading {
-                    VStack(spacing: 12) {
-                        ProgressView()
-                        Text("Loading plugin...")
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let error = errorMessage {
-                    VStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.largeTitle)
-                            .foregroundStyle(.yellow)
-                        Text(error)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let vc = auViewController {
-                    AudioUnitNSViewControllerRepresentable(viewController: vc)
-                        .frame(minWidth: 400, minHeight: 300)
-                } else {
-                    VStack(spacing: 12) {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                        Text("This plugin has no custom UI")
-                            .foregroundStyle(.secondary)
-                        if let au = avAudioUnit {
-                            genericParameterList(au: au)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-        }
-        .frame(minWidth: 500, idealWidth: 700, minHeight: 400, idealHeight: 500)
-        .task {
-            await loadPlugin()
+        Task { @MainActor in
+            await self.loadPlugin(component: component, presetData: presetData, displayName: displayName)
         }
     }
 
-    @ViewBuilder
-    private func genericParameterList(au: AVAudioUnit) -> some View {
-        let params = au.auAudioUnit.parameterTree?.allParameters ?? []
-        if params.isEmpty {
-            Text("No parameters available")
-                .foregroundStyle(.secondary)
-                .font(.callout)
-        } else {
-            ScrollView {
-                VStack(spacing: 4) {
-                    ForEach(Array(params.enumerated()), id: \.offset) { _, param in
-                        GenericParameterRow(parameter: param)
-                    }
-                }
-                .padding()
-            }
-        }
-    }
-
-    private func loadPlugin() async {
+    private func loadPlugin(component: AudioComponentInfo, presetData: Data?, displayName: String) async {
         let description = AudioComponentDescription(
             componentType: component.componentType,
             componentSubType: component.componentSubType,
@@ -135,21 +116,100 @@ struct AudioUnitPluginView: View {
 
             // Request the plugin's custom view controller
             let vc = await AudioUnitUIHost.requestViewController(for: au.auAudioUnit)
-            self.auViewController = vc
-            self.isLoading = false
+
+            if let vc {
+                // Use the plugin's native view controller
+                self.contentViewController = vc
+
+                // Size window to fit the plugin's preferred content size
+                let preferred = vc.preferredContentSize
+                if preferred.width > 0 && preferred.height > 0 {
+                    self.setContentSize(preferred)
+                } else {
+                    let viewSize = vc.view.fittingSize
+                    if viewSize.width > 0 && viewSize.height > 0 {
+                        self.setContentSize(viewSize)
+                    }
+                }
+                self.center()
+            } else {
+                // No custom UI — show generic parameter sliders in SwiftUI
+                let params = au.auAudioUnit.parameterTree?.allParameters ?? []
+                let hostingView = NSHostingView(rootView: GenericParameterListView(
+                    parameters: params,
+                    displayName: displayName
+                ))
+                self.contentView = hostingView
+                self.setContentSize(NSSize(width: 450, height: min(CGFloat(params.count * 32 + 80), 600)))
+                self.center()
+            }
         } catch {
-            self.errorMessage = "Failed to load plugin: \(error.localizedDescription)"
-            self.isLoading = false
+            let hostingView = NSHostingView(rootView: PluginErrorView(message: error.localizedDescription))
+            self.contentView = hostingView
+            self.setContentSize(NSSize(width: 350, height: 150))
+            self.center()
         }
     }
 
-    private func savePresetAndDismiss() {
+    func windowWillClose(_ notification: Notification) {
+        // Save preset before closing
         if let au = avAudioUnit {
             let host = AudioUnitHost(engine: AVAudioEngine())
             let data = host.saveState(audioUnit: au)
             onPresetChanged?(data)
         }
-        onDismiss?()
+        onClose?()
+    }
+}
+
+
+/// Generic parameter sliders shown when a plugin has no custom UI.
+private struct GenericParameterListView: View {
+    let parameters: [AUParameter]
+    let displayName: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if parameters.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("No parameters available")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(Array(parameters.enumerated()), id: \.offset) { _, param in
+                            GenericParameterRow(parameter: param)
+                        }
+                    }
+                    .padding()
+                }
+            }
+        }
+    }
+}
+
+/// Error view shown when plugin loading fails.
+private struct PluginErrorView: View {
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundStyle(.yellow)
+            Text("Failed to load plugin")
+                .font(.headline)
+            Text(message)
+                .foregroundStyle(.secondary)
+                .font(.callout)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

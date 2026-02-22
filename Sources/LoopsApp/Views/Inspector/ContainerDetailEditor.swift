@@ -51,8 +51,6 @@ struct ContainerDetailEditor: View {
     @State private var selectedTab: ContainerDetailTab = .effects
     @State private var availableEffects: [AudioUnitInfo] = []
     @State private var availableInstruments: [AudioUnitInfo] = []
-    @State private var showingPluginUI: InsertEffect?
-    @State private var showingInstrumentUI = false
     @State private var pendingAutomationLane: PendingEffectSelection?
     @State private var pendingParameterAction: PendingEffectSelection?
     @State private var enterFadeEnabled: Bool = false
@@ -111,28 +109,6 @@ struct ContainerDetailEditor: View {
             availableEffects = effects
             availableInstruments = instruments
         }
-        .sheet(item: $showingPluginUI) { effect in
-            AudioUnitPluginView(
-                component: effect.component,
-                displayName: effect.displayName,
-                presetData: effect.presetData,
-                onPresetChanged: { data in
-                    onUpdateEffectPreset?(effect.id, data)
-                },
-                onDismiss: { showingPluginUI = nil }
-            )
-        }
-        .sheet(isPresented: $showingInstrumentUI) {
-            if let override = container.instrumentOverride {
-                let name = availableInstruments.first(where: { $0.componentInfo == override })?.name ?? "Instrument"
-                AudioUnitPluginView(
-                    component: override,
-                    displayName: name,
-                    presetData: nil,
-                    onDismiss: { showingInstrumentUI = false }
-                )
-            }
-        }
         .sheet(item: $pendingAutomationLane) { pending in
             ParameterPickerView(
                 pending: pending,
@@ -177,7 +153,14 @@ struct ContainerDetailEditor: View {
                             Text(effect.displayName)
                             Spacer()
                             Button {
-                                showingPluginUI = effect
+                                PluginWindowManager.shared.open(
+                                    component: effect.component,
+                                    displayName: effect.displayName,
+                                    presetData: effect.presetData,
+                                    onPresetChanged: { data in
+                                        onUpdateEffectPreset?(effect.id, data)
+                                    }
+                                )
                             } label: {
                                 Image(systemName: "slider.horizontal.3")
                                     .foregroundStyle(Color.accentColor)
@@ -259,7 +242,12 @@ struct ContainerDetailEditor: View {
                     Text(name)
                     Spacer()
                     Button {
-                        showingInstrumentUI = true
+                        PluginWindowManager.shared.open(
+                            component: override,
+                            displayName: name,
+                            presetData: nil,
+                            onPresetChanged: nil
+                        )
                     } label: {
                         Image(systemName: "slider.horizontal.3")
                             .foregroundStyle(Color.accentColor)
