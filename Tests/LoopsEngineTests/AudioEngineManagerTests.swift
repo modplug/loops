@@ -3,16 +3,11 @@ import Foundation
 @testable import LoopsEngine
 @testable import LoopsCore
 
+/// Audio hardware tests are skipped on CI where no real audio device is available.
+private let isCI = ProcessInfo.processInfo.environment["CI"] != nil
+
 @Suite("AudioEngineManager Tests")
 struct AudioEngineManagerTests {
-
-    /// Helper: skips if running in CI where audio hardware is unavailable.
-    private func requireAudioHardware() throws {
-        try #require(
-            ProcessInfo.processInfo.environment["CI"] == nil,
-            "Audio hardware not available on CI"
-        )
-    }
 
     @Test("Engine can be created")
     func engineCreation() {
@@ -20,9 +15,8 @@ struct AudioEngineManagerTests {
         #expect(!manager.isRunning)
     }
 
-    @Test("Engine starts and stops cleanly")
+    @Test("Engine starts and stops cleanly", .disabled(if: isCI, "No audio hardware on CI"))
     func engineStartStop() throws {
-        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         #expect(manager.isRunning)
@@ -32,9 +26,8 @@ struct AudioEngineManagerTests {
         #expect(!manager.isRunning)
     }
 
-    @Test("Engine restarts cleanly")
+    @Test("Engine restarts cleanly", .disabled(if: isCI, "No audio hardware on CI"))
     func engineRestart() throws {
-        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         #expect(manager.isRunning)
@@ -46,9 +39,8 @@ struct AudioEngineManagerTests {
         #expect(!manager.isRunning)
     }
 
-    @Test("Engine start is idempotent")
+    @Test("Engine start is idempotent", .disabled(if: isCI, "No audio hardware on CI"))
     func engineStartIdempotent() throws {
-        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         try manager.start() // second start should be a no-op
@@ -63,9 +55,8 @@ struct AudioEngineManagerTests {
         #expect(!manager.isRunning)
     }
 
-    @Test("Engine reports output format")
+    @Test("Engine reports output format", .disabled(if: isCI, "No audio hardware on CI"))
     func engineOutputFormat() throws {
-        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         let format = manager.outputFormat()
@@ -99,9 +90,8 @@ struct AudioEngineManagerTests {
         let _ = deviceManager.defaultOutputDeviceID()
     }
 
-    @Test("Buffer size validation")
+    @Test("Buffer size validation", .disabled(if: isCI, "No audio hardware on CI"))
     func bufferSizeValidation() throws {
-        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         // Valid buffer size should not throw
@@ -111,9 +101,8 @@ struct AudioEngineManagerTests {
         manager.stop()
     }
 
-    @Test("Apply settings does not crash")
+    @Test("Apply settings does not crash", .disabled(if: isCI, "No audio hardware on CI"))
     func applySettings() throws {
-        try requireAudioHardware()
         let manager = AudioEngineManager()
         try manager.start()
         let settings = AudioDeviceSettings(bufferSize: 512)
