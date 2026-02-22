@@ -1907,4 +1907,143 @@ struct ProjectViewModelTests {
         #expect(vm.project.songs[0].tracks[0].containers.count == 2)
         #expect(vm.project.songs[0].tracks[1].containers.count == 2)
     }
+
+    // MARK: - Keyboard Shortcuts (#72)
+
+    @Test("Select all containers returns correct IDs")
+    @MainActor
+    func selectAllContainers() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        let track1ID = vm.project.songs[0].tracks[0].id
+        let track2ID = vm.project.songs[0].tracks[1].id
+        let _ = vm.addContainer(trackID: track1ID, startBar: 1, lengthBars: 2)
+        let _ = vm.addContainer(trackID: track1ID, startBar: 3, lengthBars: 2)
+        let _ = vm.addContainer(trackID: track2ID, startBar: 1, lengthBars: 4)
+
+        vm.selectAllContainers()
+        #expect(vm.selectedContainerIDs.count == 3)
+        // All three container IDs should be in the set
+        let allIDs = Set(vm.project.songs[0].tracks.flatMap(\.containers).map(\.id))
+        #expect(vm.selectedContainerIDs == allIDs)
+        // Single selection should be nil when multi-selecting
+        #expect(vm.selectedContainerID == nil)
+    }
+
+    @Test("Select all containers on empty song returns empty set")
+    @MainActor
+    func selectAllContainersEmpty() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.selectAllContainers()
+        #expect(vm.selectedContainerIDs.isEmpty)
+    }
+
+    @Test("Deselect all clears all selection state")
+    @MainActor
+    func deselectAll() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+        vm.addSection(startBar: 1, lengthBars: 4)
+        let sectionID = vm.project.songs[0].sections[0].id
+
+        vm.selectedContainerID = containerID
+        vm.selectedTrackID = trackID
+        vm.selectedSectionID = sectionID
+        vm.selectedContainerIDs = [containerID]
+
+        vm.deselectAll()
+        #expect(vm.selectedContainerID == nil)
+        #expect(vm.selectedTrackID == nil)
+        #expect(vm.selectedSectionID == nil)
+        #expect(vm.selectedContainerIDs.isEmpty)
+    }
+
+    @Test("Select track by index sets selectedTrackID")
+    @MainActor
+    func selectTrackByIndex() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        vm.addTrack(kind: .bus)
+
+        vm.selectTrackByIndex(0)
+        #expect(vm.selectedTrackID == vm.project.songs[0].tracks[0].id)
+
+        vm.selectTrackByIndex(2)
+        #expect(vm.selectedTrackID == vm.project.songs[0].tracks[2].id)
+    }
+
+    @Test("Select track by out-of-range index is no-op")
+    @MainActor
+    func selectTrackByIndexOutOfRange() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+
+        vm.selectTrackByIndex(5)
+        #expect(vm.selectedTrackID == nil)
+    }
+
+    @Test("Last bar with content returns correct value")
+    @MainActor
+    func lastBarWithContent() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        // Empty song → 1
+        #expect(vm.lastBarWithContent == 1)
+
+        // Add container at bars 5-8 → endBar = 9
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+        #expect(vm.lastBarWithContent == 9)
+
+        // Add section at bars 1-20 → endBar = 21
+        vm.addSection(startBar: 1, lengthBars: 20)
+        #expect(vm.lastBarWithContent == 21)
+    }
+
+    @Test("Last bar with content uses max of containers and sections")
+    @MainActor
+    func lastBarWithContentMaxOfBoth() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 100)
+        vm.addSection(startBar: 1, lengthBars: 4)
+
+        // Container endBar = 101 > section endBar = 5
+        #expect(vm.lastBarWithContent == 101)
+    }
+
+    @Test("Duplicate container undo/redo via shortcut")
+    @MainActor
+    func duplicateContainerUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let dupID = vm.duplicateContainer(trackID: trackID, containerID: containerID)
+        #expect(dupID != nil)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+    }
 }

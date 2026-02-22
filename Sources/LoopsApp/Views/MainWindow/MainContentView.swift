@@ -383,6 +383,77 @@ public struct MainContentView: View {
             handlePaste()
             return .handled
         }
+        // R: toggle record arm on selected track
+        .onKeyPress("r") {
+            guard let trackID = projectViewModel.selectedTrackID else { return .ignored }
+            if let track = currentSong?.tracks.first(where: { $0.id == trackID }) {
+                projectViewModel.setTrackRecordArmed(trackID: trackID, armed: !track.isRecordArmed)
+                return .handled
+            }
+            return .ignored
+        }
+        // M: toggle metronome
+        .onKeyPress("m") {
+            transportViewModel?.toggleMetronome()
+            return .handled
+        }
+        // Left arrow: nudge playhead -1 bar
+        .onKeyPress(.leftArrow) {
+            guard let tv = transportViewModel else { return .ignored }
+            tv.setPlayheadPosition(max(tv.playheadBar - 1.0, 1.0))
+            return .handled
+        }
+        // Right arrow: nudge playhead +1 bar
+        .onKeyPress(.rightArrow) {
+            guard let tv = transportViewModel else { return .ignored }
+            tv.setPlayheadPosition(tv.playheadBar + 1.0)
+            return .handled
+        }
+        // Home (Fn+Left): jump to bar 1
+        .onKeyPress(.home) {
+            transportViewModel?.setPlayheadPosition(1.0)
+            return .handled
+        }
+        // End (Fn+Right): jump to last bar with content
+        .onKeyPress(.end) {
+            let lastBar = Double(projectViewModel.lastBarWithContent)
+            transportViewModel?.setPlayheadPosition(lastBar)
+            return .handled
+        }
+        // 1-9: select track by index
+        .onKeyPress("1") { selectTrackByKeyIndex(0) }
+        .onKeyPress("2") { selectTrackByKeyIndex(1) }
+        .onKeyPress("3") { selectTrackByKeyIndex(2) }
+        .onKeyPress("4") { selectTrackByKeyIndex(3) }
+        .onKeyPress("5") { selectTrackByKeyIndex(4) }
+        .onKeyPress("6") { selectTrackByKeyIndex(5) }
+        .onKeyPress("7") { selectTrackByKeyIndex(6) }
+        .onKeyPress("8") { selectTrackByKeyIndex(7) }
+        .onKeyPress("9") { selectTrackByKeyIndex(8) }
+        // Cmd+D: duplicate selected container (or track if no container selected)
+        .onKeyPress("d", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) else { return .ignored }
+            handleDuplicate()
+            return .handled
+        }
+        // Cmd+A: select all containers
+        .onKeyPress("a", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) else { return .ignored }
+            projectViewModel.selectAllContainers()
+            return .handled
+        }
+        // Escape: deselect all
+        .onKeyPress(.escape) {
+            projectViewModel.deselectAll()
+            timelineViewModel.selectedTrackIDs = []
+            timelineViewModel.clearSelectedRange()
+            return .handled
+        }
+        // Tab: cycle inspector mode
+        .onKeyPress(.tab) {
+            cycleInspectorMode()
+            return .handled
+        }
     }
 
     @ViewBuilder
@@ -644,6 +715,34 @@ public struct MainContentView: View {
         guard !projectViewModel.clipboard.isEmpty || projectViewModel.clipboardSectionRegion != nil else { return }
         let playheadBar = Int(timelineViewModel.playheadBar)
         projectViewModel.pasteContainersToOriginalTracks(atBar: playheadBar)
+    }
+
+    private func selectTrackByKeyIndex(_ index: Int) -> KeyPress.Result {
+        projectViewModel.selectTrackByIndex(index)
+        return .handled
+    }
+
+    private func handleDuplicate() {
+        // Prefer duplicating selected container first
+        if let containerID = projectViewModel.selectedContainerID, let song = currentSong {
+            for track in song.tracks {
+                if track.containers.contains(where: { $0.id == containerID }) {
+                    projectViewModel.duplicateContainer(trackID: track.id, containerID: containerID)
+                    return
+                }
+            }
+        }
+        // Fall back to duplicating selected track
+        if let trackID = projectViewModel.selectedTrackID {
+            projectViewModel.duplicateTrack(trackID: trackID)
+        }
+    }
+
+    private func cycleInspectorMode() {
+        let allModes = InspectorMode.allCases
+        guard let currentIndex = allModes.firstIndex(of: inspectorMode) else { return }
+        let nextIndex = (currentIndex + 1) % allModes.count
+        inspectorMode = allModes[nextIndex]
     }
 
     private func commitSectionRename() {

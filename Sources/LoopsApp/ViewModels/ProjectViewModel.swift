@@ -368,6 +368,45 @@ public final class ProjectViewModel {
         }
     }
 
+    // MARK: - Selection State
+
+    /// The currently selected single track ID (for keyboard operations like record arm).
+    public var selectedTrackID: ID<Track>?
+
+    /// Set of all selected container IDs (populated by select-all; cleared on single-select or deselect).
+    public var selectedContainerIDs: Set<ID<Container>> = []
+
+    /// Selects all containers in the current song.
+    public func selectAllContainers() {
+        guard let song = currentSong else { return }
+        let allIDs = Set(song.tracks.flatMap(\.containers).map(\.id))
+        selectedContainerIDs = allIDs
+        // Also set single selection to nil since multiple are selected
+        selectedContainerID = nil
+    }
+
+    /// Clears all selection state (container, track, section, multi-select).
+    public func deselectAll() {
+        selectedContainerID = nil
+        selectedContainerIDs = []
+        selectedTrackID = nil
+        selectedSectionID = nil
+    }
+
+    /// Selects a track by 0-based index in the current song.
+    public func selectTrackByIndex(_ index: Int) {
+        guard let song = currentSong, song.tracks.indices.contains(index) else { return }
+        selectedTrackID = song.tracks[index].id
+    }
+
+    /// The last bar with content (containers or sections) in the current song. Returns 1 if empty.
+    public var lastBarWithContent: Int {
+        guard let song = currentSong else { return 1 }
+        let containerMax = song.tracks.flatMap(\.containers).map(\.endBar).max() ?? 1
+        let sectionMax = song.sections.map(\.endBar).max() ?? 1
+        return max(containerMax, sectionMax, 1)
+    }
+
     // MARK: - Container Management
 
     /// The currently selected container ID.
