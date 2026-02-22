@@ -42,9 +42,10 @@ struct TransportManagerTests {
         #expect(transport.playheadBar >= 5.0)
     }
 
-    @Test("Stop returns to bar 1")
+    @Test("Stop returns to bar 1 when return-to-start disabled")
     func stopReturnsToBar1() {
         let transport = TransportManager()
+        transport.returnToStartEnabled = false
         transport.setPlayheadPosition(10.0)
         transport.play()
         transport.stop()
@@ -391,5 +392,125 @@ struct TransportManagerTests {
         transport.completeAudioSync()
         #expect(!transport.isWaitingForAudioSync)
         transport.stop()
+    }
+
+    // MARK: - Return to Start Position (#103)
+
+    @Test("Stop returns to start position when enabled")
+    func stopReturnsToStartPosition() {
+        let transport = TransportManager()
+        // returnToStartEnabled defaults to true
+        #expect(transport.returnToStartEnabled)
+        transport.setPlayheadPosition(10.0)
+        transport.play()
+        // Simulate some playback advancement
+        transport.setPlayheadPosition(15.0)
+        transport.stop()
+        // First stop returns to where play was pressed (bar 10)
+        #expect(transport.playheadBar == 10.0)
+    }
+
+    @Test("Double-stop returns to bar 1 when return-to-start enabled")
+    func doubleStopReturnsToBar1() {
+        let transport = TransportManager()
+        transport.setPlayheadPosition(10.0)
+        transport.play()
+        transport.setPlayheadPosition(15.0)
+        transport.stop()
+        // First stop: returns to start position (bar 10)
+        #expect(transport.playheadBar == 10.0)
+        // Second stop: already at start position, returns to bar 1
+        transport.stop()
+        #expect(transport.playheadBar == 1.0)
+    }
+
+    @Test("Stop returns to bar 1 when return-to-start disabled (from any position)")
+    func stopReturnsToBar1WhenDisabled() {
+        let transport = TransportManager()
+        transport.returnToStartEnabled = false
+        transport.setPlayheadPosition(5.0)
+        transport.play()
+        transport.setPlayheadPosition(8.0)
+        transport.stop()
+        #expect(transport.playheadBar == 1.0)
+    }
+
+    @Test("Return-to-start default is true")
+    func returnToStartDefaultEnabled() {
+        let transport = TransportManager()
+        #expect(transport.returnToStartEnabled)
+    }
+
+    @Test("Stop from bar 1 with return-to-start always goes to bar 1")
+    func stopFromBar1WithReturnToStart() {
+        let transport = TransportManager()
+        // Play from bar 1 (default)
+        transport.play()
+        transport.stop()
+        // userPlayStartBar = 1.0, playhead already there → goes to bar 1
+        #expect(transport.playheadBar == 1.0)
+    }
+
+    @Test("userPlayStartBar set on play")
+    func userPlayStartBarSetOnPlay() {
+        let transport = TransportManager()
+        transport.setPlayheadPosition(7.0)
+        #expect(transport.userPlayStartBar == 1.0) // default
+        transport.play()
+        #expect(transport.userPlayStartBar == 7.0)
+        transport.stop()
+    }
+
+    @Test("Pause then play sets new userPlayStartBar")
+    func pauseThenPlaySetsNewStartBar() {
+        let transport = TransportManager()
+        transport.setPlayheadPosition(3.0)
+        transport.play()
+        #expect(transport.userPlayStartBar == 3.0)
+        transport.pause()
+        // Playhead stays at 3.0 after pause
+        #expect(transport.playheadBar == 3.0)
+        // Seek to new position while paused
+        transport.setPlayheadPosition(8.0)
+        transport.play()
+        #expect(transport.userPlayStartBar == 8.0)
+        // Advance playhead past start to trigger return-to-start
+        transport.setPlayheadPosition(12.0)
+        transport.stop()
+        #expect(transport.playheadBar == 8.0) // returns to new start
+    }
+
+    @Test("Return-to-start bypassed when disabled via property")
+    func returnToStartBypassedViaProperty() {
+        let transport = TransportManager()
+        transport.setPlayheadPosition(5.0)
+        transport.play()
+        transport.setPlayheadPosition(12.0)
+        // Disable before stopping
+        transport.returnToStartEnabled = false
+        transport.stop()
+        #expect(transport.playheadBar == 1.0)
+    }
+
+    @Test("Count-in records userPlayStartBar")
+    func countInRecordsUserPlayStartBar() {
+        let transport = TransportManager()
+        transport.setPlayheadPosition(4.0)
+        transport.toggleRecordArm()
+        transport.countInBars = 2
+        transport.play()
+        #expect(transport.state == .countingIn)
+        #expect(transport.userPlayStartBar == 4.0)
+        // Playhead hasn't advanced, so stop goes to bar 1 (same as start)
+        transport.stop()
+        #expect(transport.playheadBar == 1.0)
+        // Now test with advancement: play from bar 4, advance, stop returns to 4
+        transport.setPlayheadPosition(4.0)
+        transport.toggleRecordArm() // re-arm
+        transport.countInBars = 0   // skip count-in
+        transport.play()
+        transport.setPlayheadPosition(10.0) // advance playhead
+        transport.stop()
+        #expect(transport.playheadBar == 4.0) // returns to start position
     }
 }

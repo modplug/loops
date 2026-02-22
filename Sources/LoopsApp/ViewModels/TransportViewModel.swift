@@ -20,6 +20,16 @@ public final class TransportViewModel {
     public var metronomeSubdivision: MetronomeSubdivision = .quarter
     public var metronomeOutputPortID: String?
 
+    /// When true, stop returns playhead to where play was last pressed.
+    /// Persisted across sessions via UserDefaults.
+    public var returnToStartEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(returnToStartEnabled, forKey: "returnToStartEnabled") }
+    }
+
+    /// Set by the view layer when the setlist is in perform mode.
+    /// Return-to-start is bypassed during perform mode.
+    public var isPerformMode: Bool = false
+
     private let transport: TransportManager
     private let engineManager: AudioEngineManager?
     private var playbackScheduler: PlaybackScheduler?
@@ -49,6 +59,10 @@ public final class TransportViewModel {
     public init(transport: TransportManager, engineManager: AudioEngineManager? = nil) {
         self.transport = transport
         self.engineManager = engineManager
+        // Restore persisted return-to-start preference (defaults to true)
+        if UserDefaults.standard.object(forKey: "returnToStartEnabled") != nil {
+            self.returnToStartEnabled = UserDefaults.standard.bool(forKey: "returnToStartEnabled")
+        }
         syncFromTransport()
         transport.onPositionUpdate = { [weak self] bar in
             Task { @MainActor [weak self] in
@@ -192,6 +206,8 @@ public final class TransportViewModel {
         }
         engineManager?.metronome?.setEnabled(false)
         engineManager?.metronome?.reset()
+        // In perform mode, always return to bar 1 (bypass return-to-start)
+        transport.returnToStartEnabled = returnToStartEnabled && !isPerformMode
         transport.stop()
         syncFromTransport()
     }

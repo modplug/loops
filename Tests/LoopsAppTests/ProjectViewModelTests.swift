@@ -3166,4 +3166,61 @@ struct ProjectViewModelTests {
         #expect(transport.state == .stopped)
         #expect(transportVM.playheadBar == 1.0)
     }
+
+    // MARK: - Return to Start Position (#103)
+
+    @Test("TransportViewModel stop returns to start position when enabled")
+    @MainActor
+    func transportVMStopReturnsToStartPosition() {
+        let transport = TransportManager()
+        let transportVM = TransportViewModel(transport: transport)
+        transportVM.returnToStartEnabled = true
+        transport.setPlayheadPosition(5.0)
+        transport.play()
+        transport.setPlayheadPosition(12.0)
+        transportVM.stop()
+        #expect(transportVM.playheadBar == 5.0)
+    }
+
+    @Test("TransportViewModel stop returns to bar 1 when disabled")
+    @MainActor
+    func transportVMStopReturnsToBar1WhenDisabled() {
+        let transport = TransportManager()
+        let transportVM = TransportViewModel(transport: transport)
+        transportVM.returnToStartEnabled = false
+        transport.setPlayheadPosition(5.0)
+        transport.play()
+        transport.setPlayheadPosition(12.0)
+        transportVM.stop()
+        #expect(transportVM.playheadBar == 1.0)
+    }
+
+    @Test("TransportViewModel stop bypasses return-to-start in perform mode")
+    @MainActor
+    func transportVMStopBypassesInPerformMode() {
+        let transport = TransportManager()
+        let transportVM = TransportViewModel(transport: transport)
+        transportVM.returnToStartEnabled = true
+        transportVM.isPerformMode = true
+        transport.setPlayheadPosition(5.0)
+        transport.play()
+        transport.setPlayheadPosition(12.0)
+        transportVM.stop()
+        // In perform mode, return-to-start is bypassed — goes to bar 1
+        #expect(transportVM.playheadBar == 1.0)
+    }
+
+    @Test("TransportViewModel return-to-start works when perform mode off")
+    @MainActor
+    func transportVMReturnToStartWithPerformModeOff() {
+        let transport = TransportManager()
+        let transportVM = TransportViewModel(transport: transport)
+        transportVM.returnToStartEnabled = true
+        transportVM.isPerformMode = false
+        transport.setPlayheadPosition(8.0)
+        transport.play()
+        transport.setPlayheadPosition(15.0)
+        transportVM.stop()
+        #expect(transportVM.playheadBar == 8.0)
+    }
 }

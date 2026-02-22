@@ -82,6 +82,9 @@ public struct LoopsRootView: View {
         .onChange(of: viewModel.currentSong?.tracks) { _, newValue in
             midiActivityMonitor.updateTracks(newValue ?? [])
         }
+        .onChange(of: setlistViewModel?.isPerformMode) { _, newValue in
+            transportViewModel.isPerformMode = newValue ?? false
+        }
         .onAppear {
             transportViewModel.songProvider = { [weak viewModel] in
                 guard let vm = viewModel, let song = vm.currentSong else { return nil }

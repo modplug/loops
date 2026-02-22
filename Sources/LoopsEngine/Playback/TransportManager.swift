@@ -43,6 +43,14 @@ public final class TransportManager: @unchecked Sendable {
     /// Callback fired each tick during count-in with bars remaining.
     public var onCountInTick: ((Int) -> Void)?
 
+    /// When true, stopping returns playhead to where play was last pressed
+    /// instead of bar 1. A second stop at that position returns to bar 1.
+    public var returnToStartEnabled: Bool = true
+
+    /// The bar position where the user last pressed play.
+    /// Used by return-to-start to restore position on stop.
+    public private(set) var userPlayStartBar: Double = 1.0
+
     /// When true, the timer runs but the playhead holds at its current position
     /// until `completeAudioSync()` is called. This prevents the playhead from
     /// advancing before audio player nodes have actually started rendering.
@@ -69,6 +77,7 @@ public final class TransportManager: @unchecked Sendable {
     /// only advances once audio is actually rendering.
     public func play(waitForAudioSync: Bool = false) {
         guard state == .stopped else { return }
+        userPlayStartBar = playheadBar
         if isRecordArmed && countInBars > 0 {
             state = .countingIn
             countInBarsRemaining = countInBars
@@ -117,13 +126,21 @@ public final class TransportManager: @unchecked Sendable {
         isWaitingForAudioSync = false
     }
 
-    /// Stops playback and returns playhead to bar 1.
+    /// Stops playback. When `returnToStartEnabled` is true, returns playhead
+    /// to where play was last pressed; pressing stop again returns to bar 1.
+    /// When disabled, always returns to bar 1.
     public func stop() {
         stopTimer()
         state = .stopped
-        playheadBar = 1.0
         countInBarsRemaining = 0
         isWaitingForAudioSync = false
+
+        if returnToStartEnabled && abs(playheadBar - userPlayStartBar) > 0.001 {
+            playheadBar = userPlayStartBar
+        } else {
+            playheadBar = 1.0
+        }
+
         onPositionUpdate?(playheadBar)
     }
 
