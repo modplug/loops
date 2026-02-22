@@ -11,6 +11,7 @@ public struct LoopsRootView: View {
     @State private var timelineViewModel = TimelineViewModel()
     @State private var mixerViewModel = MixerViewModel()
     @State private var setlistViewModel: SetlistViewModel?
+    @State private var midiActivityMonitor = MIDIActivityMonitor()
 
     public init(viewModel: ProjectViewModel, transportViewModel: TransportViewModel, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
         self.viewModel = viewModel
@@ -46,7 +47,8 @@ public struct LoopsRootView: View {
                     setlistViewModel: setlistViewModel,
                     engineManager: engineManager,
                     settingsViewModel: settingsViewModel,
-                    mixerViewModel: mixerViewModel
+                    mixerViewModel: mixerViewModel,
+                    midiActivityMonitor: midiActivityMonitor
                 )
             }
 
@@ -76,6 +78,9 @@ public struct LoopsRootView: View {
         .onChange(of: viewModel.currentSong?.metronomeConfig) { _, newValue in
             let config = newValue ?? MetronomeConfig()
             transportViewModel.applyMetronomeConfig(config)
+        }
+        .onChange(of: viewModel.currentSong?.tracks) { _, newValue in
+            midiActivityMonitor.updateTracks(newValue ?? [])
         }
         .onAppear {
             transportViewModel.songProvider = { [weak viewModel] in
@@ -149,6 +154,17 @@ public struct LoopsRootView: View {
         // When mappings change (add/remove), rebuild the dispatcher
         viewModel.onMIDIParameterMappingsChanged = { [weak viewModel] in
             paramDispatcher.updateParameterMappings(viewModel?.project.midiParameterMappings ?? [])
+        }
+
+        // Wire MIDI activity monitor: raw message callback
+        let monitor = midiActivityMonitor
+        midiActivityMonitor.updateTracks(viewModel.currentSong?.tracks ?? [])
+        midiActivityMonitor.updateDeviceNames(midiManager.availableInputDevices())
+
+        midiManager.onRawMIDIMessage = { [weak monitor] word, deviceID in
+            Task { @MainActor [weak monitor] in
+                monitor?.recordMessage(word: word, deviceID: deviceID)
+            }
         }
     }
 }

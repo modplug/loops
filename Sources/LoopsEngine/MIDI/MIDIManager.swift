@@ -23,6 +23,10 @@ public final class MIDIManager: @unchecked Sendable {
     /// Parameters: (trigger, ccValue)
     public var onMIDICCWithValue: ((MIDITrigger, UInt8) -> Void)?
 
+    /// Callback for every received MIDI word with parsed status/channel/data and source device ID.
+    /// Parameters: (word, deviceID)
+    public var onRawMIDIMessage: ((UInt32, String?) -> Void)?
+
     public init() {}
 
     deinit {
@@ -148,19 +152,34 @@ public final class MIDIManager: @unchecked Sendable {
     }
 
     private func parseMessage(word: UInt32, deviceID: String?) {
+        // Fire raw callback for every message before parsing
+        onRawMIDIMessage?(word, deviceID)
+
         let status = UInt8((word >> 16) & 0xF0)
         let channel = UInt8((word >> 16) & 0x0F)
         let data1 = UInt8((word >> 8) & 0xFF)
         let data2 = UInt8(word & 0xFF)
 
         switch status {
+        case 0x80: // Note Off
+            let trigger = MIDITrigger.noteOn(channel: channel, note: data1)
+            onMIDIEvent?(trigger)
+            onMIDIEventFromDevice?(trigger, deviceID)
+        case 0x90: // Note On
+            let trigger = MIDITrigger.noteOn(channel: channel, note: data1)
+            onMIDIEvent?(trigger)
+            onMIDIEventFromDevice?(trigger, deviceID)
         case 0xB0: // Control Change
             let trigger = MIDITrigger.controlChange(channel: channel, controller: data1)
             onMIDIEvent?(trigger)
             onMIDIEventFromDevice?(trigger, deviceID)
             onMIDICCWithValue?(trigger, data2)
-        case 0x90: // Note On
-            let trigger = MIDITrigger.noteOn(channel: channel, note: data1)
+        case 0xC0: // Program Change
+            let trigger = MIDITrigger.controlChange(channel: channel, controller: data1)
+            onMIDIEvent?(trigger)
+            onMIDIEventFromDevice?(trigger, deviceID)
+        case 0xE0: // Pitch Bend
+            let trigger = MIDITrigger.controlChange(channel: channel, controller: data1)
             onMIDIEvent?(trigger)
             onMIDIEventFromDevice?(trigger, deviceID)
         default:

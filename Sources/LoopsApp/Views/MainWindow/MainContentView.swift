@@ -30,6 +30,7 @@ public struct MainContentView: View {
     var engineManager: AudioEngineManager?
     var settingsViewModel: SettingsViewModel?
     var mixerViewModel: MixerViewModel?
+    var midiActivityMonitor: MIDIActivityMonitor?
     @State private var contentMode: ContentMode = .timeline
     @State private var trackToDelete: Track?
     @State private var editingTrackID: ID<Track>?
@@ -45,7 +46,7 @@ public struct MainContentView: View {
     @FocusState private var isMainFocused: Bool
     // isMIDILearning and midiLearnTargetPath are on projectViewModel
 
-    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil) {
+    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil) {
         self.projectViewModel = projectViewModel
         self.timelineViewModel = timelineViewModel
         self.transportViewModel = transportViewModel
@@ -53,6 +54,7 @@ public struct MainContentView: View {
         self.engineManager = engineManager
         self.settingsViewModel = settingsViewModel
         self.mixerViewModel = mixerViewModel
+        self.midiActivityMonitor = midiActivityMonitor
     }
 
     private var currentSong: Song? {
@@ -303,6 +305,14 @@ public struct MainContentView: View {
         .onKeyPress("m", phases: .down) { keyPress in
             guard keyPress.modifiers.contains(.command) && keyPress.modifiers.contains(.shift) else { return .ignored }
             contentMode = contentMode == .timeline ? .mixer : .timeline
+            return .handled
+        }
+        // Cmd+Shift+L: toggle MIDI log window
+        .onKeyPress("l", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) && keyPress.modifiers.contains(.shift) else { return .ignored }
+            if let monitor = midiActivityMonitor {
+                MIDILogWindowManager.shared.toggle(monitor: monitor)
+            }
             return .handled
         }
     }
@@ -738,7 +748,12 @@ public struct MainContentView: View {
                         projectViewModel.selectedContainerID = parentID
                     }
                 } : nil,
-                parentContainer: container.parentContainerID.flatMap { projectViewModel.findContainer(id: $0) }
+                parentContainer: container.parentContainerID.flatMap { projectViewModel.findContainer(id: $0) },
+                isMIDIActive: {
+                    guard let track = projectViewModel.selectedContainerTrack else { return false }
+                    return midiActivityMonitor?.isTrackActive(track.id) ?? false
+                }(),
+                playheadBar: transportViewModel?.playheadBar ?? 1.0
             )
         } else if let track = projectViewModel.selectedTrack {
             trackInspectorContent(track: track)
@@ -879,7 +894,8 @@ public struct MainContentView: View {
             onAutomationToggle: {
                 timelineViewModel.toggleAutomationExpanded(trackID: track.id)
             },
-            isTrackSelected: isSelected
+            isTrackSelected: isSelected,
+            isMIDIActive: midiActivityMonitor?.isTrackActive(track.id) ?? false
         )
         .simultaneousGesture(
             TapGesture()

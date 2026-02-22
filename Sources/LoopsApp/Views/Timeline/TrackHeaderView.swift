@@ -22,6 +22,7 @@ public struct TrackHeaderView: View {
     var onMonitorToggle: (() -> Void)?
     var onAutomationToggle: (() -> Void)?
     var isTrackSelected: Bool
+    var isMIDIActive: Bool
 
     public init(
         track: Track,
@@ -37,7 +38,8 @@ public struct TrackHeaderView: View {
         onRecordArmToggle: (() -> Void)? = nil,
         onMonitorToggle: (() -> Void)? = nil,
         onAutomationToggle: (() -> Void)? = nil,
-        isTrackSelected: Bool = false
+        isTrackSelected: Bool = false,
+        isMIDIActive: Bool = false
     ) {
         self.track = track
         self.height = height
@@ -53,6 +55,7 @@ public struct TrackHeaderView: View {
         self.onMonitorToggle = onMonitorToggle
         self.onAutomationToggle = onAutomationToggle
         self.isTrackSelected = isTrackSelected
+        self.isMIDIActive = isMIDIActive
     }
 
     public var body: some View {
@@ -69,6 +72,15 @@ public struct TrackHeaderView: View {
                         .font(.caption)
                         .lineLimit(1)
                         .truncationMode(.tail)
+
+                    // MIDI activity dot (MIDI tracks only)
+                    if track.kind == .midi {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 6, height: 6)
+                            .opacity(isMIDIActive ? 1.0 : 0.0)
+                            .animation(.easeOut(duration: 0.3), value: isMIDIActive)
+                    }
 
                     Spacer()
 

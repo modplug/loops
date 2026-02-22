@@ -33,6 +33,8 @@ public struct ContainerInspector: View {
     var onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)?
     var onNavigateToParent: (() -> Void)?
     let parentContainer: Container?
+    var isMIDIActive: Bool
+    var playheadBar: Double
 
     @Binding var showDetailEditor: Bool
 
@@ -94,7 +96,9 @@ public struct ContainerInspector: View {
         onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)? = nil,
         onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)? = nil,
         onNavigateToParent: (() -> Void)? = nil,
-        parentContainer: Container? = nil
+        parentContainer: Container? = nil,
+        isMIDIActive: Bool = false,
+        playheadBar: Double = 1.0
     ) {
         self.container = container
         self.trackKind = trackKind
@@ -126,6 +130,8 @@ public struct ContainerInspector: View {
         self.onUpdateEffectPreset = onUpdateEffectPreset
         self.onNavigateToParent = onNavigateToParent
         self.parentContainer = parentContainer
+        self.isMIDIActive = isMIDIActive
+        self.playheadBar = playheadBar
     }
 
     public var body: some View {
@@ -141,8 +147,19 @@ public struct ContainerInspector: View {
 
             // Container info
             Section("Container") {
-                TextField("Name", text: $editingName)
-                    .onSubmit { onUpdateName?(editingName) }
+                HStack {
+                    TextField("Name", text: $editingName)
+                        .onSubmit { onUpdateName?(editingName) }
+
+                    if showMIDIBadge {
+                        Text("MIDI")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.green))
+                    }
+                }
 
                 LabeledContent("Position") {
                     Text("Bar \(container.startBar) — \(container.endBar)")
@@ -507,6 +524,13 @@ public struct ContainerInspector: View {
     }
 
     // MARK: - Action Menu Helpers
+
+    /// Shows MIDI badge when track has MIDI activity AND playhead is within this container's bar range.
+    private var showMIDIBadge: Bool {
+        guard trackKind == .midi, isMIDIActive else { return false }
+        let bar = Int(playheadBar)
+        return bar >= container.startBar && bar < container.endBar
+    }
 
     private var triggerTargets: [Container] {
         allContainers.filter { $0.id != container.id }
