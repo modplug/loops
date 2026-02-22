@@ -57,6 +57,11 @@ public struct EffectPath: Codable, Equatable, Sendable, Hashable {
         isTrackVolume || isTrackPan
     }
 
+    /// Whether this path targets a track-level effect parameter (not volume/pan, not container-level).
+    public var isTrackEffectParameter: Bool {
+        containerID == nil && effectIndex >= 0
+    }
+
     /// Creates an EffectPath targeting track volume automation.
     public static func trackVolume(trackID: ID<Track>) -> EffectPath {
         EffectPath(trackID: trackID, effectIndex: trackParameterEffectIndex, parameterAddress: volumeAddress)

@@ -219,7 +219,8 @@ public final class OfflineRenderer {
                 )
                 if let processed = await processTrackThroughEffects(
                     track: track,
-                    inputBuffer: trackBuf
+                    inputBuffer: trackBuf,
+                    samplesPerBar: spb
                 ) {
                     processedTrackBuffers[track.id] = processed
                 } else {
@@ -562,9 +563,11 @@ public final class OfflineRenderer {
     }
 
     /// Processes a track buffer through the track's insert effects using an offline AVAudioEngine.
+    /// When `samplesPerBar` is provided, evaluates track-level effect parameter automation per-chunk.
     private func processTrackThroughEffects(
         track: Track,
-        inputBuffer: AVAudioPCMBuffer
+        inputBuffer: AVAudioPCMBuffer,
+        samplesPerBar: Double = 0
     ) async -> AVAudioPCMBuffer? {
         let totalFrames = inputBuffer.frameLength
         let format = inputBuffer.format
@@ -578,25 +581,33 @@ public final class OfflineRenderer {
         engine.attach(player)
         let auHost = AudioUnitHost(engine: engine)
 
-        var effectUnits: [AVAudioUnit] = []
-        for effect in track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+        // Build the full sorted effect list to maintain index mapping for automation paths.
+        let sortedEffects = track.insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        // Map from sorted index to loaded AVAudioUnit (only for non-bypassed effects).
+        var allEffectUnits: [Int: AVAudioUnit] = [:]
+        var chainUnits: [AVAudioUnit] = []
+        for (index, effect) in sortedEffects.enumerated() {
             guard !effect.isBypassed else { continue }
             if let unit = try? await auHost.loadAudioUnit(component: effect.component) {
                 engine.attach(unit)
                 if let presetData = effect.presetData {
                     try? auHost.restoreState(audioUnit: unit, data: presetData)
                 }
-                effectUnits.append(unit)
+                allEffectUnits[index] = unit
+                chainUnits.append(unit)
             }
         }
 
-        guard !effectUnits.isEmpty else { return nil }
+        guard !chainUnits.isEmpty else { return nil }
 
-        engine.connect(player, to: effectUnits[0], format: format)
-        for i in 0..<(effectUnits.count - 1) {
-            engine.connect(effectUnits[i], to: effectUnits[i + 1], format: format)
+        engine.connect(player, to: chainUnits[0], format: format)
+        for i in 0..<(chainUnits.count - 1) {
+            engine.connect(chainUnits[i], to: chainUnits[i + 1], format: format)
         }
-        engine.connect(effectUnits.last!, to: engine.mainMixerNode, format: format)
+        engine.connect(chainUnits.last!, to: engine.mainMixerNode, format: format)
+
+        // Collect effect parameter automation lanes
+        let effectParamLanes = track.trackAutomationLanes.filter { $0.targetPath.isTrackEffectParameter }
 
         do { try engine.start() } catch { return nil }
         player.play()
@@ -608,6 +619,21 @@ public final class OfflineRenderer {
 
         while framesRendered < totalFrames {
             let framesToRender = min(chunkSize, totalFrames - framesRendered)
+
+            // Apply effect parameter automation before rendering this chunk
+            if samplesPerBar > 0 && !effectParamLanes.isEmpty {
+                let barOffset = Double(framesRendered) / samplesPerBar
+                for lane in effectParamLanes {
+                    guard let value = lane.interpolatedValue(atBar: barOffset) else { continue }
+                    let idx = lane.targetPath.effectIndex
+                    if let unit = allEffectUnits[idx] {
+                        unit.auAudioUnit.parameterTree?.parameter(
+                            withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
+                        )?.value = value
+                    }
+                }
+            }
+
             let chunkBuf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesToRender)!
             let status: AVAudioEngineManualRenderingStatus
             do { status = try engine.renderOffline(framesToRender, to: chunkBuf) } catch { break }

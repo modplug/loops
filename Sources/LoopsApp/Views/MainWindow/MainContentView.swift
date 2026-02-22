@@ -41,6 +41,7 @@ public struct MainContentView: View {
     @State private var editingSectionName: String = ""
     @State private var inspectorMode: InspectorMode = .container
     @State private var draggingTrackID: ID<Track>?
+    @State private var pendingTrackAutomationLane: PendingEffectSelection?
     @FocusState private var isMainFocused: Bool
     // isMIDILearning and midiLearnTargetPath are on projectViewModel
 
@@ -133,6 +134,18 @@ public struct MainContentView: View {
         mainSplitView
         .sheet(isPresented: $showContainerDetailEditor) {
             containerDetailEditorSheet
+        }
+        .sheet(item: $pendingTrackAutomationLane) { pending in
+            ParameterPickerView(
+                pending: pending,
+                onPick: { path in
+                    let lane = AutomationLane(targetPath: path)
+                    projectViewModel.addTrackAutomationLane(trackID: path.trackID, lane: lane)
+                    timelineViewModel.automationExpanded.insert(path.trackID)
+                    pendingTrackAutomationLane = nil
+                },
+                onCancel: { pendingTrackAutomationLane = nil }
+            )
         }
         .alert("Delete Track", isPresented: .init(
             get: { trackToDelete != nil },
@@ -991,6 +1004,43 @@ public struct MainContentView: View {
                         }
                     }
                 }
+                let sortedEffects = track.insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+                if !sortedEffects.isEmpty {
+                    Divider()
+                    ForEach(Array(sortedEffects.enumerated()), id: \.element.id) { index, effect in
+                        let hasLane = track.trackAutomationLanes.contains { $0.targetPath.effectIndex == index && $0.targetPath.isTrackEffectParameter }
+                        if hasLane {
+                            Menu(effect.displayName) {
+                                Button("Add Parameter...") {
+                                    pendingTrackAutomationLane = PendingEffectSelection(
+                                        trackID: track.id,
+                                        containerID: nil,
+                                        effectIndex: index,
+                                        component: effect.component,
+                                        effectName: effect.displayName
+                                    )
+                                }
+                                Divider()
+                                let effectLanes = track.trackAutomationLanes.filter { $0.targetPath.effectIndex == index && $0.targetPath.isTrackEffectParameter }
+                                ForEach(effectLanes) { lane in
+                                    Button("Remove \(automationPathLabel(lane.targetPath))") {
+                                        projectViewModel.removeTrackAutomationLane(trackID: track.id, laneID: lane.id)
+                                    }
+                                }
+                            }
+                        } else {
+                            Button("\(effect.displayName)...") {
+                                pendingTrackAutomationLane = PendingEffectSelection(
+                                    trackID: track.id,
+                                    containerID: nil,
+                                    effectIndex: index,
+                                    component: effect.component,
+                                    effectName: effect.displayName
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             if track.kind != .master {
@@ -1155,6 +1205,12 @@ public struct MainContentView: View {
     private func automationPathLabel(_ path: EffectPath) -> String {
         if path.isTrackVolume { return "Volume" }
         if path.isTrackPan { return "Pan" }
+        if path.isTrackEffectParameter, let track = currentSong?.tracks.first(where: { $0.id == path.trackID }) {
+            let sorted = track.insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+            if path.effectIndex >= 0 && path.effectIndex < sorted.count {
+                return "\(sorted[path.effectIndex].displayName) P\(path.parameterAddress)"
+            }
+        }
         let trackName = currentSong?.tracks.first(where: { $0.id == path.trackID })?.name ?? "?"
         if let containerID = path.containerID {
             let cName = currentSong?.tracks.flatMap(\.containers).first(where: { $0.id == containerID })?.name ?? "?"

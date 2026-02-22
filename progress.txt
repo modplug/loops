@@ -636,3 +636,29 @@
 - Mixer already had master strip fixed on the right (outside horizontal ScrollView) with Divider — no changes needed
 - 4 new tests: TimelineView with explicit tracks uses those tracks for height, song regular tracks exclude master, TimelineView defaults to all tracks, mixer separates regular and master
 - All 666 tests pass
+
+### Iteration 11 — #93 Container fade handles with visual overlay
+- `ContainerView`: new `FadeOverlayShape` (Shape) renders semi-transparent gain-reduction overlay on container body for enter/exit fades
+- `FadeOverlayShape`: draws filled paths representing the silence region above the fade curve for all three curve types (linear, exponential, s-curve)
+- `FadeOverlayShape`: supports live drag preview via `enterFadeDragWidth`/`exitFadeDragWidth` overrides
+- `ContainerView`: draggable fade handles at top-left (fade-in) and top-right (fade-out) corners — white circles with shadow
+- Handles appear on hover or when a fade is active; horizontal drag adjusts fade duration in bars (snapped to 0.25-bar increments)
+- Dragging below 0.125 bars removes the fade entirely; minimum settable duration is 0.25 bars
+- Drag preserves existing curve type; new fades default to linear
+- `ContainerView`: new `onSetEnterFade`/`onSetExitFade` callbacks wired through `TrackLaneView` → `TimelineView` → `ProjectViewModel`
+- Inspector and drag handles stay in sync: both call `setContainerEnterFade`/`setContainerExitFade` on ProjectViewModel
+- 10 new tests: fade handle enter/exit duration, drag-to-zero removes fade, preserve curve type, FadeOverlayShape paths for enter/exit/all curves/empty/drag override, FadeSettings serialization round-trip with various durations
+- All 676 tests pass
+
+### Iteration 12 — #94 Effect parameter automation on timeline
+- `EffectPath`: added `isTrackEffectParameter` computed property — true when containerID is nil and effectIndex >= 0 (distinguishes effect parameters from volume/pan sentinels)
+- `MainContentView`: extended "Track Automation" context menu with effect parameter entries grouped by effect name from track's insert chain
+- `MainContentView`: added `pendingTrackAutomationLane` state + `ParameterPickerView` sheet for async AU parameter discovery and selection
+- `MainContentView`: effect entries show "Add Parameter..." submenu when lanes already exist for that effect, with per-lane remove options
+- `MainContentView`: updated `automationPathLabel` to show effect display name + parameter address for track effect parameter paths
+- `PlaybackScheduler`: automation timer now evaluates track-level effect parameter automation at ~60 Hz — resolves EffectPath to captured `trackEffectUnits` and sets AU parameter values via `parameterTree`
+- `OfflineRenderer`: `processTrackThroughEffects` now accepts `samplesPerBar` and evaluates effect parameter automation lanes per-chunk during offline rendering
+- `OfflineRenderer`: maintains sorted effect index → AVAudioUnit mapping to correctly resolve automation paths to loaded AU instances
+- Automation sublanes for effect parameters render using existing `TrackAutomationSubLaneView` (full-timeline span) — no view changes needed
+- 10 new tests: isTrackEffectParameter identification (positive/negative cases), EffectPath Codable round-trip, effect parameter interpolation, ProjectViewModel add/remove/update breakpoints CRUD, undo/redo, Track Codable with mixed lanes, TimelineViewModel lane count, multiple effect lanes, duplicateTrack copies effect parameter lanes
+- All 686 tests pass

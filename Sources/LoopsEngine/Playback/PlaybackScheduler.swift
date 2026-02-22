@@ -979,6 +979,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         } else {
                             capturedTrackMixers[track.id]?.pan = panValue
                         }
+                    } else if lane.targetPath.isTrackEffectParameter {
+                        // Track-level effect parameter automation
+                        if let units = capturedTrackEffectUnits[track.id] {
+                            let idx = lane.targetPath.effectIndex
+                            if idx >= 0 && idx < units.count {
+                                units[idx].auAudioUnit.parameterTree?.parameter(
+                                    withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
+                                )?.value = value
+                            }
+                        }
                     }
                 }
             }
