@@ -137,6 +137,40 @@ struct ModelSerializationTests {
         #expect(decoded.isEffectChainBypassed == true)
     }
 
+    @Test("Container with instrument override round-trips")
+    func containerWithInstrumentOverrideRoundTrip() throws {
+        let override = AudioComponentInfo(
+            componentType: 0x61756D75, // 'aumu' (kAudioUnitType_MusicDevice)
+            componentSubType: 0x646C7332, // 'dls2'
+            componentManufacturer: 0x6170706C // 'appl'
+        )
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            loopSettings: LoopSettings(loopCount: .fill),
+            instrumentOverride: override
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.instrumentOverride != nil)
+        #expect(decoded.instrumentOverride?.componentType == 0x61756D75)
+        #expect(decoded.instrumentOverride?.componentSubType == 0x646C7332)
+        #expect(decoded.instrumentOverride?.componentManufacturer == 0x6170706C)
+    }
+
+    @Test("Container without instrument override round-trips with nil")
+    func containerWithoutInstrumentOverrideRoundTrip() throws {
+        let container = Container(
+            name: "Chorus",
+            startBar: 5,
+            lengthBars: 4,
+            loopSettings: LoopSettings(loopCount: .fill)
+        )
+        let decoded = try roundTrip(container)
+        #expect(decoded.instrumentOverride == nil)
+    }
+
     @Test("Container decodes from legacy JSON without effect fields")
     func containerLegacyDecoding() throws {
         let legacyJSON = """
@@ -158,6 +192,7 @@ struct ModelSerializationTests {
         #expect(decoded.name == "Intro")
         #expect(decoded.insertEffects.isEmpty)
         #expect(decoded.isEffectChainBypassed == false)
+        #expect(decoded.instrumentOverride == nil)
     }
 
     // MARK: - Track

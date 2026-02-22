@@ -148,6 +148,7 @@ public struct MainContentView: View {
                 if let container = projectViewModel.selectedContainer {
                     ContainerInspector(
                         container: container,
+                        trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
                         onUpdateLoopSettings: { settings in
                             projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)
                         },
@@ -165,6 +166,9 @@ public struct MainContentView: View {
                         },
                         onToggleChainBypass: {
                             projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
+                        },
+                        onSetInstrumentOverride: { override in
+                            projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
                         }
                     )
                 } else {

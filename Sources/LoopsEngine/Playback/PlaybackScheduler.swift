@@ -18,6 +18,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// Per-container audio subgraph.
     private struct ContainerSubgraph {
         let playerNode: AVAudioPlayerNode
+        let instrumentUnit: AVAudioUnit?
         let effectUnits: [AVAudioUnit]
         let trackMixer: AVAudioMixerNode
     }
@@ -146,6 +147,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
             subgraph.playerNode.stop()
             engine.disconnectNodeOutput(subgraph.playerNode)
             engine.detach(subgraph.playerNode)
+            if let inst = subgraph.instrumentUnit {
+                engine.disconnectNodeOutput(inst)
+                engine.detach(inst)
+            }
             for unit in subgraph.effectUnits {
                 engine.disconnectNodeOutput(unit)
                 engine.detach(unit)
@@ -172,10 +177,19 @@ public final class PlaybackScheduler: @unchecked Sendable {
     // MARK: - Private
 
     /// Builds the per-container audio subgraph:
-    /// `AVAudioPlayerNode → [AU Effects (if not bypassed)] → trackMixer`
+    /// `AVAudioPlayerNode → [Instrument Override] → [AU Effects (if not bypassed)] → trackMixer`
     private func buildContainerSubgraph(container: Container, trackMixer: AVAudioMixerNode) async {
         let player = AVAudioPlayerNode()
         engine.attach(player)
+
+        // Load instrument override if present
+        var instrumentUnit: AVAudioUnit?
+        if let override = container.instrumentOverride {
+            if let unit = try? await audioUnitHost.loadAudioUnit(component: override) {
+                engine.attach(unit)
+                instrumentUnit = unit
+            }
+        }
 
         var effectUnits: [AVAudioUnit] = []
 
@@ -194,19 +208,25 @@ public final class PlaybackScheduler: @unchecked Sendable {
             }
         }
 
-        // Build the chain: player → [effects...] → trackMixer
-        if effectUnits.isEmpty {
+        // Build the chain: player → [instrument] → [effects...] → trackMixer
+        // Collect all processing nodes in order
+        var chain: [AVAudioNode] = []
+        if let inst = instrumentUnit { chain.append(inst) }
+        chain.append(contentsOf: effectUnits)
+
+        if chain.isEmpty {
             engine.connect(player, to: trackMixer, format: nil)
         } else {
-            engine.connect(player, to: effectUnits[0], format: nil)
-            for i in 0..<(effectUnits.count - 1) {
-                engine.connect(effectUnits[i], to: effectUnits[i + 1], format: nil)
+            engine.connect(player, to: chain[0], format: nil)
+            for i in 0..<(chain.count - 1) {
+                engine.connect(chain[i], to: chain[i + 1], format: nil)
             }
-            engine.connect(effectUnits[effectUnits.count - 1], to: trackMixer, format: nil)
+            engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
         }
 
         containerSubgraphs[container.id] = ContainerSubgraph(
             playerNode: player,
+            instrumentUnit: instrumentUnit,
             effectUnits: effectUnits,
             trackMixer: trackMixer
         )

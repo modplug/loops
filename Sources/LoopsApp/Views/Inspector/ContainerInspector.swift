@@ -1,21 +1,25 @@
 import SwiftUI
 import LoopsCore
+import LoopsEngine
 
 /// Inspector panel for editing a selected container's loop settings.
 public struct ContainerInspector: View {
     let container: Container
+    let trackKind: TrackKind
     var onUpdateLoopSettings: ((LoopSettings) -> Void)?
     var onUpdateName: ((String) -> Void)?
     var onAddEffect: ((InsertEffect) -> Void)?
     var onRemoveEffect: ((ID<InsertEffect>) -> Void)?
     var onToggleEffectBypass: ((ID<InsertEffect>) -> Void)?
     var onToggleChainBypass: (() -> Void)?
+    var onSetInstrumentOverride: ((AudioComponentInfo?) -> Void)?
 
     @State private var editingName: String = ""
     @State private var selectedBoundaryMode: BoundaryMode = .hardCut
     @State private var loopCountMode: LoopCountMode = .fill
     @State private var loopCountValue: Int = 1
     @State private var crossfadeDuration: Double = 10.0
+    @State private var availableInstruments: [AudioUnitInfo] = []
 
     enum LoopCountMode: String, CaseIterable {
         case fill = "Fill"
@@ -24,20 +28,24 @@ public struct ContainerInspector: View {
 
     public init(
         container: Container,
+        trackKind: TrackKind = .audio,
         onUpdateLoopSettings: ((LoopSettings) -> Void)? = nil,
         onUpdateName: ((String) -> Void)? = nil,
         onAddEffect: ((InsertEffect) -> Void)? = nil,
         onRemoveEffect: ((ID<InsertEffect>) -> Void)? = nil,
         onToggleEffectBypass: ((ID<InsertEffect>) -> Void)? = nil,
-        onToggleChainBypass: (() -> Void)? = nil
+        onToggleChainBypass: (() -> Void)? = nil,
+        onSetInstrumentOverride: ((AudioComponentInfo?) -> Void)? = nil
     ) {
         self.container = container
+        self.trackKind = trackKind
         self.onUpdateLoopSettings = onUpdateLoopSettings
         self.onUpdateName = onUpdateName
         self.onAddEffect = onAddEffect
         self.onRemoveEffect = onRemoveEffect
         self.onToggleEffectBypass = onToggleEffectBypass
         self.onToggleChainBypass = onToggleChainBypass
+        self.onSetInstrumentOverride = onSetInstrumentOverride
     }
 
     public var body: some View {
@@ -115,6 +123,40 @@ public struct ContainerInspector: View {
                 }
             }
 
+            if trackKind == .midi {
+                Section("Instrument Override") {
+                    if let override = container.instrumentOverride {
+                        let name = availableInstruments.first(where: { $0.componentInfo == override })?.name ?? "Unknown AU"
+                        HStack {
+                            Image(systemName: "pianokeys")
+                                .foregroundStyle(.blue)
+                            Text(name)
+                                .font(.callout)
+                            Spacer()
+                            Button(role: .destructive) {
+                                onSetInstrumentOverride?(nil)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } else {
+                        Text("Using track instrument")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
+                    Menu("Set Instrument") {
+                        ForEach(availableInstruments) { instrument in
+                            Button(instrument.name) {
+                                onSetInstrumentOverride?(instrument.componentInfo)
+                            }
+                        }
+                    }
+                    .font(.caption)
+                }
+            }
+
             Section("Loop Settings") {
                 Picker("Loop Mode", selection: $loopCountMode) {
                     ForEach(LoopCountMode.allCases, id: \.self) { mode in
@@ -153,7 +195,12 @@ public struct ContainerInspector: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { loadFromContainer() }
+        .onAppear {
+            loadFromContainer()
+            if trackKind == .midi {
+                availableInstruments = AudioUnitDiscovery().instruments()
+            }
+        }
     }
 
     private func loadFromContainer() {

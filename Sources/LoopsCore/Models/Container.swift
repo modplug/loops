@@ -18,6 +18,9 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     public var panOverride: Float?
     public var insertEffects: [InsertEffect]
     public var isEffectChainBypassed: Bool
+    /// Optional AU instrument override. When set, this container routes through
+    /// this instrument instead of the track's default instrument.
+    public var instrumentOverride: AudioComponentInfo?
 
     public var endBar: Int { startBar + lengthBars }
 
@@ -33,7 +36,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         volumeOverride: Float? = nil,
         panOverride: Float? = nil,
         insertEffects: [InsertEffect] = [],
-        isEffectChainBypassed: Bool = false
+        isEffectChainBypassed: Bool = false,
+        instrumentOverride: AudioComponentInfo? = nil
     ) {
         self.id = id
         self.name = name
@@ -47,6 +51,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         self.panOverride = panOverride
         self.insertEffects = insertEffects
         self.isEffectChainBypassed = isEffectChainBypassed
+        self.instrumentOverride = instrumentOverride
     }
 
     // MARK: - Backward-compatible decoding
@@ -54,7 +59,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, name, startBar, lengthBars, sourceRecordingID, linkGroupID
         case loopSettings, isRecordArmed, volumeOverride, panOverride
-        case insertEffects, isEffectChainBypassed
+        case insertEffects, isEffectChainBypassed, instrumentOverride
     }
 
     public init(from decoder: Decoder) throws {
@@ -71,5 +76,6 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         panOverride = try c.decodeIfPresent(Float.self, forKey: .panOverride)
         insertEffects = try c.decodeIfPresent([InsertEffect].self, forKey: .insertEffects) ?? []
         isEffectChainBypassed = try c.decodeIfPresent(Bool.self, forKey: .isEffectChainBypassed) ?? false
+        instrumentOverride = try c.decodeIfPresent(AudioComponentInfo.self, forKey: .instrumentOverride)
     }
 }

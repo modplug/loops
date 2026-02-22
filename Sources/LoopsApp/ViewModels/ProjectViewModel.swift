@@ -534,12 +534,38 @@ public final class ProjectViewModel {
         }
     }
 
+    // MARK: - Container Instrument Override
+
+    /// Sets or clears the instrument override on a container.
+    public func setContainerInstrumentOverride(containerID: ID<Container>, override: AudioComponentInfo?) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: override != nil ? "Set Instrument Override" : "Remove Instrument Override")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].instrumentOverride = override
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
     /// Returns the selected container if one is selected.
     public var selectedContainer: Container? {
         guard let id = selectedContainerID, let song = currentSong else { return nil }
         for track in song.tracks {
             if let container = track.containers.first(where: { $0.id == id }) {
                 return container
+            }
+        }
+        return nil
+    }
+
+    /// Returns the track kind of the track containing the selected container.
+    public var selectedContainerTrackKind: TrackKind? {
+        guard let id = selectedContainerID, let song = currentSong else { return nil }
+        for track in song.tracks {
+            if track.containers.contains(where: { $0.id == id }) {
+                return track.kind
             }
         }
         return nil
