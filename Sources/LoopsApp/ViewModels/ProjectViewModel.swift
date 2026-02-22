@@ -137,11 +137,20 @@ public final class ProjectViewModel {
 
     // MARK: - Song Management
 
+    /// Called when the active song changes (e.g. sidebar click or setlist navigation).
+    /// The view layer wires this to TransportViewModel to reset the playhead
+    /// and restart playback for the new song.
+    public var onSongChanged: (() -> Void)?
+
     /// Selects a song by its ID.
     public func selectSong(id: ID<Song>) {
         guard project.songs.contains(where: { $0.id == id }) else { return }
+        let previousSongID = currentSongID
         currentSongID = id
         selectedContainerID = nil
+        if id != previousSongID {
+            onSongChanged?()
+        }
     }
 
     /// Adds a new song with default settings (including master track).

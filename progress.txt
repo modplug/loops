@@ -755,3 +755,28 @@
 - Highlighting clears automatically when exiting perform mode (progress update returns 0 when `isPerformMode` is false)
 - 7 new tests: advance updates index and resets progress, progress calculation at various positions (0/middle/end/beyond/before), progress zero outside perform mode, progress zero for empty song, active section ID tracks playhead, highlight clears on exit perform mode, previous song resets progress
 - All 768 tests pass
+
+### Iteration 19 — #101 AU effect plugin: live parameter updates to running engine
+- Root cause: `PluginWindow.loadPlugin()` created a separate `AVAudioUnit` via `AVAudioUnit.instantiate()` — this standalone instance was not connected to the engine's audio graph, so parameter changes had no effect on live audio
+- `PlaybackScheduler`: added `liveEffectUnit(containerID:effectIndex:)`, `liveTrackEffectUnit(trackID:effectIndex:)`, `liveMasterEffectUnit(effectIndex:)` — thread-safe lookups into `containerSubgraphs`, `trackEffectUnits`, and `masterEffectUnits` dictionaries
+- `TransportViewModel`: forwarding methods `liveEffectUnit`, `liveTrackEffectUnit`, `liveMasterEffectUnit` delegate to PlaybackScheduler
+- `PluginWindow`: refactored into two-path initialization — when `liveAudioUnit` is provided (engine's active instance), the window displays that AU's view controller directly; when nil, falls back to standalone instantiation with preset restore
+- `PluginWindow`: extracted `presentAudioUnit(_:displayName:)` (shared UI presentation) and `loadStandalonePlugin(component:presetData:displayName:)` (fallback creation)
+- `PluginWindowManager.open()`: added `liveAudioUnit: AVAudioUnit?` parameter (default nil) for backward compatibility
+- `ContainerInspector`: added `liveEffectUnit: ((Int) -> AVAudioUnit?)?` callback, passes live AU to `PluginWindowManager.shared.open()` for container effects
+- `ContainerDetailEditor`: added `liveEffectUnit: ((Int) -> AVAudioUnit?)?` callback, passes live AU for detail editor effect list
+- `TrackInspectorView`: added `liveTrackEffectUnit: ((Int) -> AVAudioUnit?)?` callback, passes live AU for track effects
+- `MainContentView`: wired `liveEffectUnit` (container effects via `transportViewModel?.liveEffectUnit`) and `liveTrackEffectUnit` (track effects via `transportViewModel?.liveTrackEffectUnit`) to inspector views
+- Preset saving works for both live and standalone instances (window close saves from whichever AU was used)
+- 9 new tests: PlaybackScheduler (liveEffectUnit returns container effect after prepare, liveTrackEffectUnit returns track effect, nil for invalid container ID, nil for out-of-bounds index, nil after cleanup, parameter change on live unit is reflected, preset data round-trips through engine instance), PluginWindow (live AU uses engine instance, fallback to standalone)
+- All 777 tests pass
+
+### Iteration 20 — #102 Song switching: reset playhead and apply song immediately
+- `ProjectViewModel`: added `onSongChanged` callback, fired in `selectSong(id:)` only when song ID actually changes (not on same-song re-selection)
+- `TransportViewModel`: added `handleSongChanged()` — pauses transport if playing/counting-in, resets playhead to bar 1, clears lastPreparedSong/lastPreparedRecordingIDs to force audio graph rebuild, calls `play()` to restart playback if it was active
+- `LoopsRootView`: wired `viewModel.onSongChanged` to `transportViewModel.handleSongChanged()` in onAppear
+- Sidebar song selection (SongListView tap) and setlist navigation (advanceToNextSong/goToPreviousSong) both trigger the same song-change flow via `selectSong(id:)`
+- Setlist perform mode transitions work correctly: transition modes (seamless, gap, manual) control when advance triggers; the playback restart is handled uniformly
+- If playback was stopped when switching songs, only the playhead resets to bar 1 (no playback starts)
+- 8 new tests: selectSong fires onSongChanged, same song no callback, handleSongChanged resets playhead, handleSongChanged restarts playback, handleSongChanged while stopped no playback, setlist advance triggers callback, setlist previous triggers callback, sidebar switch triggers callback
+- All 785 tests pass

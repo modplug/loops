@@ -533,6 +533,68 @@ struct SetlistViewModelTests {
         #expect(vm.currentSongProgress == 0.0)
     }
 
+    // MARK: - Song Switch (#102)
+
+    @Test("Advancing songs in perform mode triggers onSongChanged")
+    @MainActor
+    func advanceSongTriggersCallback() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        projectVM.addSong()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        vm.addEntry(songID: projectVM.project.songs[1].id)
+        vm.enterPerformMode()
+
+        var callbackCount = 0
+        projectVM.onSongChanged = { callbackCount += 1 }
+
+        vm.advanceToNextSong()
+        #expect(callbackCount == 1)
+        #expect(projectVM.currentSongID == projectVM.project.songs[1].id)
+    }
+
+    @Test("Going to previous song triggers onSongChanged")
+    @MainActor
+    func previousSongTriggersCallback() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        projectVM.addSong()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        vm.addEntry(songID: projectVM.project.songs[1].id)
+        vm.enterPerformMode()
+        vm.advanceToNextSong()
+
+        var callbackCount = 0
+        projectVM.onSongChanged = { callbackCount += 1 }
+
+        vm.goToPreviousSong()
+        #expect(callbackCount == 1)
+        #expect(projectVM.currentSongID == projectVM.project.songs[0].id)
+    }
+
+    @Test("Sidebar song switch triggers onSongChanged")
+    @MainActor
+    func sidebarSongSwitchTriggersCallback() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        projectVM.addSong()
+        let song1ID = projectVM.project.songs[0].id
+        let song2ID = projectVM.project.songs[1].id
+        projectVM.selectSong(id: song1ID)
+
+        var callbackFired = false
+        projectVM.onSongChanged = { callbackFired = true }
+
+        projectVM.selectSong(id: song2ID)
+        #expect(callbackFired)
+    }
+
     @Test("Going to previous song resets progress")
     @MainActor
     func previousSongResetsProgress() {

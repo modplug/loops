@@ -98,6 +98,10 @@ public struct LoopsRootView: View {
                     slVM.updateSongProgress(playheadBar: bar, songLengthBars: songLength)
                 }
             }
+            // Wire song change handler: reset playhead and restart playback
+            viewModel.onSongChanged = { [weak transportViewModel] in
+                transportViewModel?.handleSongChanged()
+            }
             // Sync count-in bars from the current song
             transportViewModel.countInBars = viewModel.currentSong?.countInBars ?? 0
             // Sync time signature from the current song

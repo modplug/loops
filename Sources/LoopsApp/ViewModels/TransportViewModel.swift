@@ -196,6 +196,40 @@ public final class TransportViewModel {
         syncFromTransport()
     }
 
+    /// Handles a song switch: resets playhead to bar 1 and, if playback was
+    /// active, stops the current audio graph and restarts playback on the new song.
+    public func handleSongChanged() {
+        let wasPlaying = isPlaying || isCountingIn
+
+        if wasPlaying {
+            // Stop current playback and scheduler
+            playbackGeneration += 1
+            stopContainerRecording()
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            let scheduler = playbackScheduler
+            playbackTask = Task {
+                _ = await previousTask?.value
+                scheduler?.stop()
+            }
+            engineManager?.metronome?.setEnabled(false)
+            engineManager?.metronome?.reset()
+            transport.pause()
+        }
+
+        // Reset playhead to bar 1
+        transport.setPlayheadPosition(1.0)
+        // Clear the last prepared song so the scheduler rebuilds the audio graph
+        lastPreparedSong = nil
+        lastPreparedRecordingIDs = []
+        syncFromTransport()
+
+        if wasPlaying {
+            // Restart playback on the new song from bar 1
+            play()
+        }
+    }
+
     public func togglePlayPause() {
         if isPlaying || isCountingIn {
             pause()

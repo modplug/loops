@@ -3,6 +3,7 @@ import Foundation
 import AVFoundation
 @testable import LoopsApp
 @testable import LoopsCore
+@testable import LoopsEngine
 
 @Suite("ProjectViewModel Tests")
 struct ProjectViewModelTests {
@@ -3087,5 +3088,82 @@ struct ProjectViewModelTests {
 
         let containerID = vm.importAudioAsync(url: sourceURL, trackID: trackID, startBar: 1, audioDirectory: audioDir)
         #expect(vm.selectedContainerID == containerID)
+    }
+
+    // MARK: - Song Switch (#102)
+
+    @Test("Switching songs fires onSongChanged callback")
+    @MainActor
+    func switchSongFiresCallback() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSong()
+        let song1ID = vm.project.songs[0].id
+        let song2ID = vm.project.songs[1].id
+
+        vm.selectSong(id: song1ID)
+
+        var callbackFired = false
+        vm.onSongChanged = { callbackFired = true }
+
+        vm.selectSong(id: song2ID)
+        #expect(callbackFired)
+        #expect(vm.currentSongID == song2ID)
+    }
+
+    @Test("Selecting same song does not fire onSongChanged")
+    @MainActor
+    func selectSameSongNoCallback() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+        vm.selectSong(id: songID)
+
+        var callbackFired = false
+        vm.onSongChanged = { callbackFired = true }
+
+        vm.selectSong(id: songID)
+        #expect(!callbackFired)
+    }
+
+    @Test("handleSongChanged resets playhead to bar 1")
+    @MainActor
+    func handleSongChangedResetsPlayhead() {
+        let transport = TransportManager()
+        let transportVM = TransportViewModel(transport: transport)
+        transport.setPlayheadPosition(5.0)
+        #expect(transport.playheadBar == 5.0)
+
+        transportVM.handleSongChanged()
+        #expect(transportVM.playheadBar == 1.0)
+    }
+
+    @Test("handleSongChanged during playback restarts playback")
+    @MainActor
+    func handleSongChangedRestartsPlayback() {
+        let transport = TransportManager()
+        let transportVM = TransportViewModel(transport: transport)
+
+        // Simulate playing state (no engine — transport.play() starts immediately)
+        transport.play()
+        #expect(transport.state == .playing)
+        transportVM.handleSongChanged()
+
+        // After handleSongChanged, transport should be playing again from bar 1
+        #expect(transport.state == .playing)
+        #expect(transportVM.playheadBar == 1.0)
+        transport.stop()
+    }
+
+    @Test("handleSongChanged while stopped does not start playback")
+    @MainActor
+    func handleSongChangedWhileStoppedNoPlayback() {
+        let transport = TransportManager()
+        let transportVM = TransportViewModel(transport: transport)
+        transport.setPlayheadPosition(8.0)
+
+        transportVM.handleSongChanged()
+        #expect(transport.state == .stopped)
+        #expect(transportVM.playheadBar == 1.0)
     }
 }
