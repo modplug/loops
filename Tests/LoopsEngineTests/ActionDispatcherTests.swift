@@ -199,6 +199,27 @@ struct ActionDispatcherTests {
     }
 }
 
+/// Mock parameter resolver that records all setParameter calls for verification.
+final class MockParameterResolver: ParameterResolver, @unchecked Sendable {
+    struct SetCall: Equatable {
+        let path: EffectPath
+        let value: Float
+    }
+
+    var calls: [SetCall] = []
+    /// Controls which paths are "resolvable". If nil, all paths succeed.
+    var resolvablePaths: Set<EffectPath>?
+
+    @discardableResult
+    func setParameter(at path: EffectPath, value: Float) -> Bool {
+        calls.append(SetCall(path: path, value: value))
+        if let resolvable = resolvablePaths {
+            return resolvable.contains(path)
+        }
+        return true
+    }
+}
+
 /// Mock trigger delegate that records all trigger calls for verification.
 final class MockTriggerDelegate: ContainerTriggerDelegate, @unchecked Sendable {
     enum TriggerCall: Equatable {
@@ -451,5 +472,187 @@ struct MIDIActionMessageBytesTests {
         let bytes = message.midiBytes
         // 18 & 0x0F = 2
         #expect(bytes[0] == 0xC2)
+    }
+}
+
+@Suite("ActionDispatcher Parameter Tests")
+struct ActionDispatcherParameterTests {
+
+    @Test("setParameter action dispatches to resolver")
+    func setParameterDispatches() {
+        let mock = MockMIDIOutput()
+        let paramMock = MockParameterResolver()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.parameterResolver = paramMock
+
+        let path = EffectPath(
+            trackID: ID<Track>(),
+            containerID: ID<Container>(),
+            effectIndex: 0,
+            parameterAddress: 42
+        )
+        let action = ContainerAction.makeSetParameter(target: path, value: 0.75)
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            onEnterActions: [action]
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(paramMock.calls.count == 1)
+        #expect(paramMock.calls[0].path == path)
+        #expect(paramMock.calls[0].value == 0.75)
+        #expect(mock.sentMessages.isEmpty)
+    }
+
+    @Test("setParameter on exit dispatches to resolver")
+    func setParameterOnExit() {
+        let mock = MockMIDIOutput()
+        let paramMock = MockParameterResolver()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.parameterResolver = paramMock
+
+        let path = EffectPath(
+            trackID: ID<Track>(),
+            containerID: ID<Container>(),
+            effectIndex: 1,
+            parameterAddress: 99
+        )
+        let action = ContainerAction.makeSetParameter(target: path, value: 0.0)
+        let container = Container(
+            name: "Chorus",
+            startBar: 5,
+            lengthBars: 4,
+            onExitActions: [action]
+        )
+
+        dispatcher.containerDidExit(container)
+
+        #expect(paramMock.calls.count == 1)
+        #expect(paramMock.calls[0].path == path)
+        #expect(paramMock.calls[0].value == 0.0)
+    }
+
+    @Test("setParameter without resolver does nothing (graceful)")
+    func setParameterWithoutResolverIsGraceful() {
+        let mock = MockMIDIOutput()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        // No parameterResolver set
+
+        let path = EffectPath(
+            trackID: ID<Track>(),
+            effectIndex: 0,
+            parameterAddress: 0
+        )
+        let action = ContainerAction.makeSetParameter(target: path, value: 0.5)
+        let container = Container(
+            name: "Test",
+            startBar: 1,
+            lengthBars: 4,
+            onEnterActions: [action]
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(mock.sentMessages.isEmpty)
+        // No crash = pass
+    }
+
+    @Test("Multiple setParameter actions fire in order")
+    func multipleSetParameterActions() {
+        let mock = MockMIDIOutput()
+        let paramMock = MockParameterResolver()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.parameterResolver = paramMock
+
+        let trackID = ID<Track>()
+        let containerID = ID<Container>()
+        let path1 = EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 10)
+        let path2 = EffectPath(trackID: trackID, containerID: containerID, effectIndex: 1, parameterAddress: 20)
+        let actions: [ContainerAction] = [
+            .makeSetParameter(target: path1, value: 0.3),
+            .makeSetParameter(target: path2, value: 0.9),
+        ]
+        let container = Container(
+            name: "Bridge",
+            startBar: 9,
+            lengthBars: 4,
+            onEnterActions: actions
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(paramMock.calls.count == 2)
+        #expect(paramMock.calls[0].path == path1)
+        #expect(paramMock.calls[0].value == 0.3)
+        #expect(paramMock.calls[1].path == path2)
+        #expect(paramMock.calls[1].value == 0.9)
+    }
+
+    @Test("Mixed MIDI, trigger, and parameter actions fire correctly")
+    func mixedAllActionTypes() {
+        let mock = MockMIDIOutput()
+        let triggerMock = MockTriggerDelegate()
+        let paramMock = MockParameterResolver()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.triggerDelegate = triggerMock
+        dispatcher.parameterResolver = paramMock
+
+        let targetID = ID<Container>()
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 42)
+        let actions: [ContainerAction] = [
+            .makeSendMIDI(
+                message: .programChange(channel: 0, program: 5),
+                destination: .externalPort(name: "Out")
+            ),
+            .makeTriggerContainer(targetID: targetID, action: .start),
+            .makeSetParameter(target: path, value: 0.8),
+        ]
+        let container = Container(
+            name: "Mixed",
+            startBar: 1,
+            lengthBars: 4,
+            onEnterActions: actions
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(mock.sentMessages.count == 1)
+        #expect(mock.sentMessages[0].message == .programChange(channel: 0, program: 5))
+        #expect(triggerMock.calls.count == 1)
+        #expect(triggerMock.calls[0] == .start(targetID))
+        #expect(paramMock.calls.count == 1)
+        #expect(paramMock.calls[0].path == path)
+        #expect(paramMock.calls[0].value == 0.8)
+    }
+
+    @Test("setParameter with track-level path dispatches correctly")
+    func setParameterTrackLevel() {
+        let mock = MockMIDIOutput()
+        let paramMock = MockParameterResolver()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.parameterResolver = paramMock
+
+        let path = EffectPath(
+            trackID: ID<Track>(),
+            containerID: nil,
+            effectIndex: 0,
+            parameterAddress: 100
+        )
+        let action = ContainerAction.makeSetParameter(target: path, value: 1.0)
+        let container = Container(
+            name: "Test",
+            startBar: 1,
+            lengthBars: 4,
+            onEnterActions: [action]
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(paramMock.calls.count == 1)
+        #expect(paramMock.calls[0].path.containerID == nil)
+        #expect(paramMock.calls[0].value == 1.0)
     }
 }

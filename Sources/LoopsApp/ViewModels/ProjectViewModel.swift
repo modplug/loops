@@ -648,6 +648,12 @@ public final class ProjectViewModel {
         return song.tracks.flatMap(\.containers)
     }
 
+    /// Returns all tracks in the current song.
+    public var allTracksInCurrentSong: [Track] {
+        guard let song = currentSong else { return [] }
+        return song.tracks
+    }
+
     /// Returns the track kind of the track containing the selected container.
     public var selectedContainerTrackKind: TrackKind? {
         guard let id = selectedContainerID, let song = currentSong else { return nil }

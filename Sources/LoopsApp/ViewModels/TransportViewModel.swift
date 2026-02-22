@@ -56,6 +56,7 @@ public final class TransportViewModel {
                     let scheduler = PlaybackScheduler(engine: engine.engine, audioDirURL: context.audioDir)
                     let dispatcher = ActionDispatcher(midiOutput: CoreMIDIOutput())
                     dispatcher.triggerDelegate = scheduler
+                    dispatcher.parameterResolver = scheduler
                     scheduler.actionDispatcher = dispatcher
                     playbackScheduler = scheduler
                 }

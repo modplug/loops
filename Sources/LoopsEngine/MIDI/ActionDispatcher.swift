@@ -12,6 +12,15 @@ public protocol ContainerTriggerDelegate: AnyObject, Sendable {
     func setRecordArmed(containerID: ID<Container>, armed: Bool)
 }
 
+/// Protocol for resolving an EffectPath to a live AU parameter and setting its value.
+/// Implemented by PlaybackScheduler (or a mock in tests).
+public protocol ParameterResolver: AnyObject, Sendable {
+    /// Resolves an EffectPath and sets the target parameter to the given value.
+    /// Returns true if the parameter was found and set, false otherwise.
+    @discardableResult
+    func setParameter(at path: EffectPath, value: Float) -> Bool
+}
+
 /// Receives container enter/exit events and executes the associated actions.
 /// Uses a `MIDIOutput` protocol for testability.
 public final class ActionDispatcher: @unchecked Sendable {
@@ -19,6 +28,9 @@ public final class ActionDispatcher: @unchecked Sendable {
 
     /// Delegate for handling container trigger actions (start/stop/arm).
     public weak var triggerDelegate: ContainerTriggerDelegate?
+
+    /// Delegate for resolving effect paths and setting AU parameter values.
+    public weak var parameterResolver: ParameterResolver?
 
     public init(midiOutput: MIDIOutput) {
         self.midiOutput = midiOutput
@@ -56,6 +68,8 @@ public final class ActionDispatcher: @unchecked Sendable {
                 case .disarmRecord:
                     delegate.setRecordArmed(containerID: targetID, armed: false)
                 }
+            case .setParameter(_, let target, let value):
+                parameterResolver?.setParameter(at: target, value: value)
             }
         }
     }

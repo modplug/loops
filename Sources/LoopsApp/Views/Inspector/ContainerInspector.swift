@@ -8,6 +8,8 @@ public struct ContainerInspector: View {
     let trackKind: TrackKind
     /// All containers in the current song, used for trigger target picking.
     let allContainers: [Container]
+    /// All tracks in the current song, used for parameter target picking.
+    let allTracks: [Track]
     var onUpdateLoopSettings: ((LoopSettings) -> Void)?
     var onUpdateName: ((String) -> Void)?
     var onAddEffect: ((InsertEffect) -> Void)?
@@ -44,6 +46,7 @@ public struct ContainerInspector: View {
         container: Container,
         trackKind: TrackKind = .audio,
         allContainers: [Container] = [],
+        allTracks: [Track] = [],
         onUpdateLoopSettings: ((LoopSettings) -> Void)? = nil,
         onUpdateName: ((String) -> Void)? = nil,
         onAddEffect: ((InsertEffect) -> Void)? = nil,
@@ -61,6 +64,7 @@ public struct ContainerInspector: View {
         self.container = container
         self.trackKind = trackKind
         self.allContainers = allContainers
+        self.allTracks = allTracks
         self.onUpdateLoopSettings = onUpdateLoopSettings
         self.onUpdateName = onUpdateName
         self.onAddEffect = onAddEffect
@@ -300,9 +304,35 @@ public struct ContainerInspector: View {
         allContainers.filter { $0.id != container.id }
     }
 
+    /// Tracks with effects that can be targeted by parameter actions.
+    private struct ParameterTarget {
+        let track: Track
+        let containers: [Container]
+    }
+
+    private var parameterTargets: [ParameterTarget] {
+        allTracks.compactMap { track in
+            let containersWithEffects = track.containers.filter { !$0.insertEffects.isEmpty }
+            let hasEffects = !track.insertEffects.isEmpty || !containersWithEffects.isEmpty
+            guard hasEffects else { return nil }
+            return ParameterTarget(track: track, containers: containersWithEffects)
+        }
+    }
+
     /// Look up a container name by ID from allContainers.
     private func containerName(for targetID: ID<Container>) -> String {
         allContainers.first(where: { $0.id == targetID })?.name ?? "Unknown"
+    }
+
+    /// Human-readable description for a parameter action target.
+    private func parameterTargetDescription(_ path: EffectPath) -> String {
+        let trackName = allTracks.first(where: { $0.id == path.trackID })?.name ?? "Unknown Track"
+        if let containerID = path.containerID {
+            let containerName = allContainers.first(where: { $0.id == containerID })?.name ?? "Unknown"
+            return "\(trackName) → \(containerName) [FX \(path.effectIndex)]"
+        } else {
+            return "\(trackName) [Track FX \(path.effectIndex)]"
+        }
     }
 
     @ViewBuilder
@@ -398,6 +428,49 @@ public struct ContainerInspector: View {
             }
             .font(.caption)
         }
+        if !parameterTargets.isEmpty {
+            Menu("Add Parameter Action") {
+                ForEach(parameterTargets, id: \.track.id) { target in
+                    Menu(target.track.name) {
+                        // Track-level effects
+                        if !target.track.insertEffects.isEmpty {
+                            Menu("Track Effects") {
+                                ForEach(Array(target.track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                    Button("\(effect.displayName) → 0.5") {
+                                        let path = EffectPath(
+                                            trackID: target.track.id,
+                                            containerID: nil,
+                                            effectIndex: index,
+                                            parameterAddress: 0
+                                        )
+                                        onAdd?(.makeSetParameter(target: path, value: 0.5))
+                                    }
+                                }
+                            }
+                        }
+                        // Container-level effects
+                        ForEach(target.containers, id: \.id) { cont in
+                            if !cont.insertEffects.isEmpty {
+                                Menu(cont.name) {
+                                    ForEach(Array(cont.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                        Button("\(effect.displayName) → 0.5") {
+                                            let path = EffectPath(
+                                                trackID: target.track.id,
+                                                containerID: cont.id,
+                                                effectIndex: index,
+                                                parameterAddress: 0
+                                            )
+                                            onAdd?(.makeSetParameter(target: path, value: 0.5))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .font(.caption)
+        }
     }
 
     @ViewBuilder
@@ -420,6 +493,16 @@ public struct ContainerInspector: View {
                 Text(triggerAction.summary)
                     .font(.callout)
                 Text(containerName(for: targetID))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .setParameter(_, let target, let value):
+            Image(systemName: "slider.horizontal.3")
+                .foregroundStyle(.purple)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Set param \(target.parameterAddress) → \(value, specifier: "%.2f")")
+                    .font(.callout)
+                Text(parameterTargetDescription(target))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

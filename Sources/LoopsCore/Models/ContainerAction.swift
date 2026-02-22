@@ -28,12 +28,15 @@ public enum TriggerAction: Codable, Equatable, Sendable, Hashable {
 public enum ContainerAction: Codable, Equatable, Sendable, Identifiable {
     case sendMIDI(id: ID<ContainerAction>, message: MIDIActionMessage, destination: MIDIDestination)
     case triggerContainer(id: ID<ContainerAction>, targetID: ID<Container>, action: TriggerAction)
+    case setParameter(id: ID<ContainerAction>, target: EffectPath, value: Float)
 
     public var id: ID<ContainerAction> {
         switch self {
         case .sendMIDI(let id, _, _):
             return id
         case .triggerContainer(let id, _, _):
+            return id
+        case .setParameter(let id, _, _):
             return id
         }
     }
@@ -52,5 +55,13 @@ public enum ContainerAction: Codable, Equatable, Sendable, Identifiable {
         action: TriggerAction
     ) -> ContainerAction {
         .triggerContainer(id: ID(), targetID: targetID, action: action)
+    }
+
+    /// Creates a new setParameter action with an auto-generated ID.
+    public static func makeSetParameter(
+        target: EffectPath,
+        value: Float
+    ) -> ContainerAction {
+        .setParameter(id: ID(), target: target, value: value)
     }
 }

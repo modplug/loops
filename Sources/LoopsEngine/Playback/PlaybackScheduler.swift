@@ -491,6 +491,28 @@ public final class PlaybackScheduler: @unchecked Sendable {
     }
 }
 
+// MARK: - ParameterResolver
+
+extension PlaybackScheduler: ParameterResolver {
+    public func setParameter(at path: EffectPath, value: Float) -> Bool {
+        if let containerID = path.containerID {
+            // Target is a container-level effect
+            guard let subgraph = containerSubgraphs[containerID] else { return false }
+            let units = subgraph.effectUnits
+            guard path.effectIndex >= 0, path.effectIndex < units.count else { return false }
+            let unit = units[path.effectIndex]
+            guard let param = unit.auAudioUnit.parameterTree?.parameter(
+                withAddress: AUParameterAddress(path.parameterAddress)
+            ) else { return false }
+            param.value = value
+            return true
+        } else {
+            // Track-level effect — not yet wired (track effects managed outside PlaybackScheduler)
+            return false
+        }
+    }
+}
+
 // MARK: - ContainerTriggerDelegate
 
 extension PlaybackScheduler: ContainerTriggerDelegate {

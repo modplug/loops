@@ -150,6 +150,7 @@ public struct MainContentView: View {
                         container: container,
                         trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
                         allContainers: projectViewModel.allContainersInCurrentSong,
+                        allTracks: projectViewModel.allTracksInCurrentSong,
                         onUpdateLoopSettings: { settings in
                             projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)
                         },

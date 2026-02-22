@@ -770,6 +770,126 @@ struct ModelSerializationTests {
         #expect(earlier < pos)
     }
 
+    // MARK: - EffectPath & setParameter
+
+    @Test("EffectPath with containerID round-trips")
+    func effectPathWithContainerRoundTrip() throws {
+        let trackID = ID<Track>()
+        let containerID = ID<Container>()
+        let path = EffectPath(
+            trackID: trackID,
+            containerID: containerID,
+            effectIndex: 2,
+            parameterAddress: 12345
+        )
+        let decoded = try roundTrip(path)
+        #expect(path == decoded)
+        #expect(decoded.trackID == trackID)
+        #expect(decoded.containerID == containerID)
+        #expect(decoded.effectIndex == 2)
+        #expect(decoded.parameterAddress == 12345)
+    }
+
+    @Test("EffectPath without containerID (track-level) round-trips")
+    func effectPathTrackLevelRoundTrip() throws {
+        let trackID = ID<Track>()
+        let path = EffectPath(
+            trackID: trackID,
+            containerID: nil,
+            effectIndex: 0,
+            parameterAddress: 42
+        )
+        let decoded = try roundTrip(path)
+        #expect(path == decoded)
+        #expect(decoded.containerID == nil)
+    }
+
+    @Test("ContainerAction setParameter round-trips")
+    func containerActionSetParameterRoundTrip() throws {
+        let trackID = ID<Track>()
+        let containerID = ID<Container>()
+        let path = EffectPath(
+            trackID: trackID,
+            containerID: containerID,
+            effectIndex: 1,
+            parameterAddress: 99
+        )
+        let action = ContainerAction.makeSetParameter(target: path, value: 0.75)
+        let decoded = try roundTrip(action)
+        #expect(action == decoded)
+        if case .setParameter(_, let decodedTarget, let decodedValue) = decoded {
+            #expect(decodedTarget == path)
+            #expect(decodedValue == 0.75)
+        } else {
+            Issue.record("Expected setParameter case")
+        }
+    }
+
+    @Test("ContainerAction setParameter track-level round-trips")
+    func containerActionSetParameterTrackLevelRoundTrip() throws {
+        let trackID = ID<Track>()
+        let path = EffectPath(
+            trackID: trackID,
+            effectIndex: 0,
+            parameterAddress: 0
+        )
+        let action = ContainerAction.makeSetParameter(target: path, value: 1.0)
+        let decoded = try roundTrip(action)
+        #expect(action == decoded)
+    }
+
+    @Test("Container with setParameter actions round-trips")
+    func containerWithSetParameterActionsRoundTrip() throws {
+        let trackID = ID<Track>()
+        let containerID = ID<Container>()
+        let path = EffectPath(
+            trackID: trackID,
+            containerID: containerID,
+            effectIndex: 0,
+            parameterAddress: 42
+        )
+        let enterAction = ContainerAction.makeSetParameter(target: path, value: 0.8)
+        let exitAction = ContainerAction.makeSetParameter(target: path, value: 0.0)
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            onEnterActions: [enterAction],
+            onExitActions: [exitAction]
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.onEnterActions.count == 1)
+        #expect(decoded.onExitActions.count == 1)
+        if case .setParameter(_, let t, let v) = decoded.onEnterActions[0] {
+            #expect(t == path)
+            #expect(v == 0.8)
+        } else {
+            Issue.record("Expected setParameter enter action")
+        }
+    }
+
+    @Test("Container with mixed MIDI, trigger, and parameter actions round-trips")
+    func containerMixedAllActionTypesRoundTrip() throws {
+        let targetContainerID = ID<Container>()
+        let trackID = ID<Track>()
+        let path = EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 10)
+        let actions: [ContainerAction] = [
+            .makeSendMIDI(message: .programChange(channel: 0, program: 5), destination: .externalPort(name: "Out")),
+            .makeTriggerContainer(targetID: targetContainerID, action: .start),
+            .makeSetParameter(target: path, value: 0.5),
+        ]
+        let container = Container(
+            name: "Mixed",
+            startBar: 1,
+            lengthBars: 4,
+            onEnterActions: actions
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.onEnterActions.count == 3)
+    }
+
     // MARK: - Full Project
 
     @Test("Full Project round-trips through JSON")
