@@ -235,9 +235,18 @@ public struct ToolbarView: View {
             }
 
             // Position display
-            Text("Bar \(String(format: "%.1f", viewModel.playheadBar))")
+            HStack(spacing: 8) {
+                Text("Bar \(String(format: "%.1f", viewModel.playheadBar))")
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text(WallTimeConverter.formattedTime(
+                    forBar: viewModel.playheadBar,
+                    bpm: viewModel.bpm,
+                    beatsPerBar: viewModel.timeSignature.beatsPerBar
+                ))
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

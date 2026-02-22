@@ -595,6 +595,8 @@ public struct MainContentView: View {
                 trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
                 allContainers: projectViewModel.allContainersInCurrentSong,
                 allTracks: projectViewModel.allTracksInCurrentSong,
+                bpm: transportViewModel?.bpm ?? 120.0,
+                beatsPerBar: transportViewModel?.timeSignature.beatsPerBar ?? 4,
                 showDetailEditor: $showContainerDetailEditor,
                 onUpdateLoopSettings: { settings in
                     projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)

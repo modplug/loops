@@ -9,6 +9,8 @@ public struct ContainerInspector: View {
     let trackKind: TrackKind
     let allContainers: [Container]
     let allTracks: [Track]
+    let bpm: Double
+    let beatsPerBar: Int
     var onUpdateLoopSettings: ((LoopSettings) -> Void)?
     var onUpdateName: ((String) -> Void)?
     var onAddEffect: ((InsertEffect) -> Void)?
@@ -47,6 +49,8 @@ public struct ContainerInspector: View {
         trackKind: TrackKind = .audio,
         allContainers: [Container] = [],
         allTracks: [Track] = [],
+        bpm: Double = 120.0,
+        beatsPerBar: Int = 4,
         showDetailEditor: Binding<Bool>,
         onUpdateLoopSettings: ((LoopSettings) -> Void)? = nil,
         onUpdateName: ((String) -> Void)? = nil,
@@ -72,6 +76,8 @@ public struct ContainerInspector: View {
         self.trackKind = trackKind
         self.allContainers = allContainers
         self.allTracks = allTracks
+        self.bpm = bpm
+        self.beatsPerBar = beatsPerBar
         self._showDetailEditor = showDetailEditor
         self.onUpdateLoopSettings = onUpdateLoopSettings
         self.onUpdateName = onUpdateName
@@ -103,6 +109,20 @@ public struct ContainerInspector: View {
 
                 LabeledContent("Position") {
                     Text("Bar \(container.startBar) — \(container.endBar)")
+                }
+                LabeledContent("Time") {
+                    let startTime = WallTimeConverter.formattedTime(
+                        forBar: Double(container.startBar),
+                        bpm: bpm,
+                        beatsPerBar: beatsPerBar
+                    )
+                    let endTime = WallTimeConverter.formattedTime(
+                        forBar: Double(container.endBar),
+                        bpm: bpm,
+                        beatsPerBar: beatsPerBar
+                    )
+                    Text("\(startTime) — \(endTime)")
+                        .font(.system(.body, design: .monospaced))
                 }
                 LabeledContent("Length") {
                     Text("\(container.lengthBars) bar\(container.lengthBars == 1 ? "" : "s")")
