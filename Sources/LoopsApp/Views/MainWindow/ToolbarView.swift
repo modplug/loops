@@ -12,6 +12,14 @@ public struct ToolbarView: View {
     /// Callback for when metronome config changes (volume, subdivision, output port).
     var onMetronomeConfigChange: ((MetronomeConfig) -> Void)?
 
+    /// Undo/redo callbacks wired to the project's UndoManager.
+    var onUndo: (() -> Void)?
+    var onRedo: (() -> Void)?
+    var canUndo: Bool
+    var canRedo: Bool
+    var undoActionName: String
+    var redoActionName: String
+
     /// Available output ports for metronome routing.
     var availableOutputPorts: [OutputPort]
 
@@ -25,11 +33,23 @@ public struct ToolbarView: View {
         viewModel: TransportViewModel,
         onTimeSignatureChange: ((Int, Int) -> Void)? = nil,
         onMetronomeConfigChange: ((MetronomeConfig) -> Void)? = nil,
+        onUndo: (() -> Void)? = nil,
+        onRedo: (() -> Void)? = nil,
+        canUndo: Bool = false,
+        canRedo: Bool = false,
+        undoActionName: String = "",
+        redoActionName: String = "",
         availableOutputPorts: [OutputPort] = []
     ) {
         self.viewModel = viewModel
         self.onTimeSignatureChange = onTimeSignatureChange
         self.onMetronomeConfigChange = onMetronomeConfigChange
+        self.onUndo = onUndo
+        self.onRedo = onRedo
+        self.canUndo = canUndo
+        self.canRedo = canRedo
+        self.undoActionName = undoActionName
+        self.redoActionName = redoActionName
         self.availableOutputPorts = availableOutputPorts
         _bpmText = State(initialValue: String(format: "%.1f", viewModel.bpm))
     }
@@ -73,6 +93,29 @@ public struct ToolbarView: View {
                 }
                 .buttonStyle(.plain)
                 .help(viewModel.returnToStartEnabled ? "Return to Start Position: On" : "Return to Start Position: Off")
+            }
+
+            Divider().frame(height: 24)
+
+            // Undo/Redo
+            HStack(spacing: 4) {
+                Button(action: { onUndo?() }) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.title3)
+                        .foregroundStyle(canUndo ? Color.primary : Color.secondary.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canUndo)
+                .help(undoActionName.isEmpty ? "Undo" : "Undo \(undoActionName)")
+
+                Button(action: { onRedo?() }) {
+                    Image(systemName: "arrow.uturn.forward")
+                        .font(.title3)
+                        .foregroundStyle(canRedo ? Color.primary : Color.secondary.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canRedo)
+                .help(redoActionName.isEmpty ? "Redo" : "Redo \(redoActionName)")
             }
 
             Divider().frame(height: 24)

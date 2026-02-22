@@ -35,6 +35,12 @@ public struct LoopsRootView: View {
                             viewModel.setMetronomeConfig(songID: songID, config: config)
                         }
                     },
+                    onUndo: { viewModel.undoManager?.undo() },
+                    onRedo: { viewModel.undoManager?.redo() },
+                    canUndo: viewModel.undoManager?.canUndo ?? false,
+                    canRedo: viewModel.undoManager?.canRedo ?? false,
+                    undoActionName: viewModel.undoManager?.undoActionName ?? "",
+                    redoActionName: viewModel.undoManager?.redoActionName ?? "",
                     availableOutputPorts: engineManager?.deviceManager.outputDevices().flatMap { device in
                         engineManager?.deviceManager.outputPorts(for: device) ?? []
                     } ?? []
