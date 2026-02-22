@@ -246,6 +246,8 @@ public final class ProjectViewModel {
                     isRecordArmed: track.isRecordArmed,
                     isMonitoring: track.isMonitoring,
                     trackAutomationLanes: track.trackAutomationLanes,
+                    expressionPedalCC: track.expressionPedalCC,
+                    expressionPedalTarget: track.expressionPedalTarget,
                     orderIndex: track.orderIndex
                 )
             },
@@ -1390,6 +1392,8 @@ public final class ProjectViewModel {
             isRecordArmed: source.isRecordArmed,
             isMonitoring: source.isMonitoring,
             trackAutomationLanes: source.trackAutomationLanes,
+            expressionPedalCC: source.expressionPedalCC,
+            expressionPedalTarget: source.expressionPedalTarget,
             orderIndex: project.songs[currentSongIndex].tracks.count
         )
         project.songs[currentSongIndex].tracks.insert(copy, at: trackIndex + 1)
@@ -1592,6 +1596,66 @@ public final class ProjectViewModel {
             }
         }
         return false
+    }
+
+    // MARK: - Expression Pedal Quick-Assign
+
+    /// Assigns an expression pedal CC to a track, creating the corresponding MIDIParameterMapping.
+    /// If `target` is nil, maps to track volume; otherwise maps to the specified effect parameter.
+    public func assignExpressionPedal(trackID: ID<Track>, cc: UInt8, target: EffectPath?) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Assign Expression Pedal")
+
+        // Remove any existing expression pedal mapping for this track
+        let oldCC = project.songs[currentSongIndex].tracks[trackIndex].expressionPedalCC
+        let oldTarget = project.songs[currentSongIndex].tracks[trackIndex].expressionPedalTarget
+        if let oldCC {
+            let oldTrigger = MIDITrigger.controlChange(channel: 0, controller: oldCC)
+            let oldPath = oldTarget ?? .trackVolume(trackID: trackID)
+            project.midiParameterMappings.removeAll { $0.trigger == oldTrigger && $0.targetPath == oldPath }
+        }
+
+        // Store pedal assignment on track
+        project.songs[currentSongIndex].tracks[trackIndex].expressionPedalCC = cc
+        project.songs[currentSongIndex].tracks[trackIndex].expressionPedalTarget = target
+
+        // Create MIDIParameterMapping
+        let trigger = MIDITrigger.controlChange(channel: 0, controller: cc)
+        let targetPath = target ?? .trackVolume(trackID: trackID)
+        let minValue: Float = targetPath.isTrackVolume ? 0.0 : 0.0
+        let maxValue: Float = targetPath.isTrackVolume ? 2.0 : 1.0
+        // Remove any existing mapping for this trigger or target to avoid conflicts
+        project.midiParameterMappings.removeAll { $0.trigger == trigger || $0.targetPath == targetPath }
+        let mapping = MIDIParameterMapping(
+            trigger: trigger,
+            targetPath: targetPath,
+            minValue: minValue,
+            maxValue: maxValue
+        )
+        project.midiParameterMappings.append(mapping)
+        hasUnsavedChanges = true
+        onMIDIParameterMappingsChanged?()
+    }
+
+    /// Removes the expression pedal assignment from a track, removing the corresponding MIDIParameterMapping.
+    public func removeExpressionPedal(trackID: ID<Track>) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        let track = project.songs[currentSongIndex].tracks[trackIndex]
+        guard track.expressionPedalCC != nil else { return }
+        registerUndo(actionName: "Remove Expression Pedal")
+
+        // Remove the mapping
+        let trigger = MIDITrigger.controlChange(channel: 0, controller: track.expressionPedalCC!)
+        let targetPath = track.expressionPedalTarget ?? .trackVolume(trackID: trackID)
+        project.midiParameterMappings.removeAll { $0.trigger == trigger && $0.targetPath == targetPath }
+
+        // Clear pedal assignment
+        project.songs[currentSongIndex].tracks[trackIndex].expressionPedalCC = nil
+        project.songs[currentSongIndex].tracks[trackIndex].expressionPedalTarget = nil
+        hasUnsavedChanges = true
+        onMIDIParameterMappingsChanged?()
     }
 
     // MARK: - MIDI Parameter Mappings

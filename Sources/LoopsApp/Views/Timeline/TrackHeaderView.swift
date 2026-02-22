@@ -117,6 +117,18 @@ public struct TrackHeaderView: View {
                     }
                 }
 
+                // Expression pedal indicator
+                if track.expressionPedalCC != nil {
+                    HStack(spacing: 2) {
+                        Image(systemName: "dial.low")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.teal)
+                        Text("Exp")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.teal)
+                    }
+                }
+
                 // Automation toggle
                 HStack(spacing: 2) {
                     Button(action: { onAutomationToggle?() }) {

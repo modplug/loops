@@ -49,6 +49,10 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     /// Track-level automation lanes (volume, pan, or track-level effect parameters).
     /// Breakpoint positions are in absolute bars (0-based from bar 1).
     public var trackAutomationLanes: [AutomationLane]
+    /// Expression pedal CC number (nil = not assigned, e.g. 7, 11).
+    public var expressionPedalCC: UInt8?
+    /// Expression pedal target (nil = track volume, set = specific effect parameter).
+    public var expressionPedalTarget: EffectPath?
     public var orderIndex: Int
 
     public init(
@@ -71,6 +75,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         isMonitoring: Bool = false,
         isEffectChainBypassed: Bool = false,
         trackAutomationLanes: [AutomationLane] = [],
+        expressionPedalCC: UInt8? = nil,
+        expressionPedalTarget: EffectPath? = nil,
         orderIndex: Int = 0
     ) {
         self.id = id
@@ -92,6 +98,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.isMonitoring = isMonitoring
         self.isEffectChainBypassed = isEffectChainBypassed
         self.trackAutomationLanes = trackAutomationLanes
+        self.expressionPedalCC = expressionPedalCC
+        self.expressionPedalTarget = expressionPedalTarget
         self.orderIndex = orderIndex
     }
 
@@ -107,6 +115,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         case isMonitoring
         case isEffectChainBypassed
         case trackAutomationLanes
+        case expressionPedalCC
+        case expressionPedalTarget
         case orderIndex
         // Legacy key
         case inputDeviceUID
@@ -132,6 +142,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         isMonitoring = try c.decodeIfPresent(Bool.self, forKey: .isMonitoring) ?? false
         isEffectChainBypassed = try c.decodeIfPresent(Bool.self, forKey: .isEffectChainBypassed) ?? false
         trackAutomationLanes = try c.decodeIfPresent([AutomationLane].self, forKey: .trackAutomationLanes) ?? []
+        expressionPedalCC = try c.decodeIfPresent(UInt8.self, forKey: .expressionPedalCC)
+        expressionPedalTarget = try c.decodeIfPresent(EffectPath.self, forKey: .expressionPedalTarget)
         orderIndex = try c.decode(Int.self, forKey: .orderIndex)
 
         // Migrate legacy inputDeviceUID → inputPortID
@@ -167,6 +179,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         if !trackAutomationLanes.isEmpty {
             try c.encode(trackAutomationLanes, forKey: .trackAutomationLanes)
         }
+        try c.encodeIfPresent(expressionPedalCC, forKey: .expressionPedalCC)
+        try c.encodeIfPresent(expressionPedalTarget, forKey: .expressionPedalTarget)
         try c.encode(orderIndex, forKey: .orderIndex)
     }
 }

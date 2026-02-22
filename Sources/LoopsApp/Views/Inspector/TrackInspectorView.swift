@@ -30,6 +30,10 @@ public struct TrackInspectorView: View {
     var onMIDILearn: ((EffectPath) -> Void)?
     var onRemoveMIDIMapping: ((EffectPath) -> Void)?
 
+    // Expression pedal callbacks
+    var onAssignExpressionPedal: ((UInt8, EffectPath?) -> Void)?
+    var onRemoveExpressionPedal: (() -> Void)?
+
     // MIDI parameter mappings for highlighting learned parameters
     var midiParameterMappings: [MIDIParameterMapping] = []
 
@@ -53,6 +57,7 @@ public struct TrackInspectorView: View {
             effectsSection
             routingSection
             mixSection
+            expressionPedalSection
             midiParameterMappingsSection
             automationSection
         }
@@ -273,6 +278,87 @@ public struct TrackInspectorView: View {
                 .foregroundStyle(.red)
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - Expression Pedal Section
+
+    @ViewBuilder
+    private var expressionPedalSection: some View {
+        Section("Expression Pedal") {
+            if let cc = track.expressionPedalCC {
+                let targetLabel = expressionPedalTargetLabel(track.expressionPedalTarget)
+                HStack(spacing: 6) {
+                    Image(systemName: "dial.low")
+                        .foregroundStyle(.teal)
+                    Text("CC #\(cc) → \(targetLabel)")
+                        .font(.callout)
+                    Spacer()
+                    Button(role: .destructive) {
+                        onRemoveExpressionPedal?()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove Expression Pedal")
+                }
+            } else {
+                HStack {
+                    Image(systemName: "dial.low")
+                        .foregroundStyle(.secondary)
+                    Text("Not assigned")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.callout)
+            }
+            expressionPedalAssignMenu
+        }
+    }
+
+    @ViewBuilder
+    private var expressionPedalAssignMenu: some View {
+        let commonCCs: [(String, UInt8)] = [
+            ("CC #7 (Volume)", 7),
+            ("CC #11 (Expression)", 11),
+            ("CC #1 (Mod Wheel)", 1),
+            ("CC #2 (Breath)", 2),
+            ("CC #4 (Foot)", 4),
+        ]
+        Menu {
+            Menu("Track Volume") {
+                ForEach(commonCCs, id: \.1) { label, cc in
+                    Button(label) {
+                        onAssignExpressionPedal?(cc, nil)
+                    }
+                }
+            }
+            let sortedEffects = track.insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+            if !sortedEffects.isEmpty {
+                ForEach(Array(sortedEffects.enumerated()), id: \.element.id) { effectIndex, effect in
+                    Menu(effect.displayName) {
+                        ForEach(commonCCs, id: \.1) { label, cc in
+                            Button(label) {
+                                let path = EffectPath(trackID: track.id, effectIndex: effectIndex, parameterAddress: 0)
+                                onAssignExpressionPedal?(cc, path)
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("Assign Expression Pedal", systemImage: "plus.circle")
+        }
+    }
+
+    private func expressionPedalTargetLabel(_ target: EffectPath?) -> String {
+        guard let target else { return "Volume" }
+        if target.isTrackVolume { return "Volume" }
+        if target.isTrackPan { return "Pan" }
+        let sortedEffects = track.insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        if target.effectIndex >= 0, target.effectIndex < sortedEffects.count {
+            return sortedEffects[target.effectIndex].displayName
+        }
+        return "FX\(target.effectIndex)"
     }
 
     // MARK: - MIDI Parameter Mappings Section

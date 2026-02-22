@@ -684,6 +684,12 @@ public struct MainContentView: View {
                 projectViewModel.removeMIDIParameterMapping(forTarget: targetPath)
                 projectViewModel.onMIDIParameterMappingsChanged?()
             },
+            onAssignExpressionPedal: { cc, target in
+                projectViewModel.assignExpressionPedal(trackID: track.id, cc: cc, target: target)
+            },
+            onRemoveExpressionPedal: {
+                projectViewModel.removeExpressionPedal(trackID: track.id)
+            },
             midiParameterMappings: projectViewModel.project.midiParameterMappings,
             isMIDILearning: projectViewModel.isMIDIParameterLearning,
             inputPortName: inputPortName(for: track.inputPortID),
