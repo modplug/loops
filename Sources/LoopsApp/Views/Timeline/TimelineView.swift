@@ -11,6 +11,8 @@ public struct TimelineView: View {
     let minHeight: CGFloat
     var onContainerDoubleClick: (() -> Void)?
 
+    @State private var selectedBreakpointID: ID<AutomationBreakpoint>?
+
     public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, onContainerDoubleClick: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.projectViewModel = projectViewModel
@@ -21,7 +23,9 @@ public struct TimelineView: View {
     }
 
     public var totalContentHeight: CGFloat {
-        CGFloat(max(song.tracks.count, 1)) * trackHeight
+        song.tracks.reduce(CGFloat(0)) { total, track in
+            total + viewModel.trackHeight(for: track, baseHeight: trackHeight)
+        }
     }
 
     /// The height used for the grid and playhead — fills available space.
@@ -42,11 +46,14 @@ public struct TimelineView: View {
             // Track lanes stacked vertically
             VStack(spacing: 0) {
                 ForEach(song.tracks) { track in
+                    let perTrackHeight = viewModel.trackHeight(for: track, baseHeight: trackHeight)
+                    let isExpanded = viewModel.automationExpanded.contains(track.id)
+                    let subLanePaths = uniqueAutomationPaths(for: track)
                     TrackLaneView(
                         track: track,
                         pixelsPerBar: viewModel.pixelsPerBar,
                         totalBars: viewModel.totalBars,
-                        height: trackHeight,
+                        height: perTrackHeight,
                         selectedContainerID: projectViewModel.selectedContainerID,
                         waveformPeaksForContainer: { container in
                             projectViewModel.waveformPeaks(for: container)
@@ -83,6 +90,24 @@ public struct TimelineView: View {
                         },
                         onCloneContainer: { containerID, newStartBar in
                             projectViewModel.cloneContainer(trackID: track.id, containerID: containerID, newStartBar: newStartBar)
+                        },
+                        isAutomationExpanded: isExpanded,
+                        automationSubLanePaths: subLanePaths,
+                        selectedBreakpointID: selectedBreakpointID,
+                        onAddBreakpoint: { containerID, laneID, breakpoint in
+                            projectViewModel.addAutomationBreakpoint(containerID: containerID, laneID: laneID, breakpoint: breakpoint)
+                        },
+                        onUpdateBreakpoint: { containerID, laneID, breakpoint in
+                            projectViewModel.updateAutomationBreakpoint(containerID: containerID, laneID: laneID, breakpoint: breakpoint)
+                        },
+                        onDeleteBreakpoint: { containerID, laneID, breakpointID in
+                            projectViewModel.removeAutomationBreakpoint(containerID: containerID, laneID: laneID, breakpointID: breakpointID)
+                            if selectedBreakpointID == breakpointID {
+                                selectedBreakpointID = nil
+                            }
+                        },
+                        onSelectBreakpoint: { bpID in
+                            selectedBreakpointID = bpID
                         }
                     )
                 }
@@ -107,6 +132,10 @@ public struct TimelineView: View {
             return .handled
         }
         .onKeyPress(.delete) {
+            if let bpID = selectedBreakpointID {
+                deleteSelectedBreakpoint(bpID)
+                return .handled
+            }
             deleteSelectedContainer()
             return .handled
         }
@@ -120,5 +149,33 @@ public struct TimelineView: View {
                 return
             }
         }
+    }
+
+    private func deleteSelectedBreakpoint(_ breakpointID: ID<AutomationBreakpoint>) {
+        for track in song.tracks {
+            for container in track.containers {
+                for lane in container.automationLanes {
+                    if lane.breakpoints.contains(where: { $0.id == breakpointID }) {
+                        projectViewModel.removeAutomationBreakpoint(containerID: container.id, laneID: lane.id, breakpointID: breakpointID)
+                        selectedBreakpointID = nil
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns unique automation target paths across all containers in a track.
+    private func uniqueAutomationPaths(for track: Track) -> [EffectPath] {
+        var seen = Set<EffectPath>()
+        var result: [EffectPath] = []
+        for container in track.containers {
+            for lane in container.automationLanes {
+                if seen.insert(lane.targetPath).inserted {
+                    result.append(lane.targetPath)
+                }
+            }
+        }
+        return result
     }
 }

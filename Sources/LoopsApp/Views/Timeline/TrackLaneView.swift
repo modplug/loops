@@ -21,6 +21,13 @@ public struct TrackLaneView: View {
     var onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)?
     var onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)?
     var onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)?
+    var isAutomationExpanded: Bool
+    var automationSubLanePaths: [EffectPath]
+    var selectedBreakpointID: ID<AutomationBreakpoint>?
+    var onAddBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    var onUpdateBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    var onDeleteBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
+    var onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)?
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
@@ -41,7 +48,14 @@ public struct TrackLaneView: View {
         onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)? = nil,
         onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil,
         onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)? = nil,
-        onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)? = nil
+        onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)? = nil,
+        isAutomationExpanded: Bool = false,
+        automationSubLanePaths: [EffectPath] = [],
+        selectedBreakpointID: ID<AutomationBreakpoint>? = nil,
+        onAddBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
+        onUpdateBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
+        onDeleteBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)? = nil,
+        onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)? = nil
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
@@ -58,47 +72,88 @@ public struct TrackLaneView: View {
         self.onDropAudioFile = onDropAudioFile
         self.onContainerDoubleClick = onContainerDoubleClick
         self.onCloneContainer = onCloneContainer
+        self.isAutomationExpanded = isAutomationExpanded
+        self.automationSubLanePaths = automationSubLanePaths
+        self.selectedBreakpointID = selectedBreakpointID
+        self.onAddBreakpoint = onAddBreakpoint
+        self.onUpdateBreakpoint = onUpdateBreakpoint
+        self.onDeleteBreakpoint = onDeleteBreakpoint
+        self.onSelectBreakpoint = onSelectBreakpoint
+    }
+
+    private var baseHeight: CGFloat {
+        let subLaneCount = isAutomationExpanded ? automationSubLanePaths.count : 0
+        return height - CGFloat(subLaneCount) * TimelineViewModel.automationSubLaneHeight
     }
 
     public var body: some View {
-        ZStack(alignment: .topLeading) {
-            // Track background — also handles drag-to-create
-            Rectangle()
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.3))
-                .contentShape(Rectangle())
-                .gesture(createContainerGesture)
+        VStack(spacing: 0) {
+            // Main track lane
+            ZStack(alignment: .topLeading) {
+                // Track background — also handles drag-to-create
+                Rectangle()
+                    .fill(Color(nsColor: .textBackgroundColor).opacity(0.3))
+                    .contentShape(Rectangle())
+                    .gesture(createContainerGesture)
 
-            // Draw-to-create preview
-            if isCreatingContainer, let startX = dragStartX, let currentX = dragCurrentX {
-                let minX = min(startX, currentX)
-                let maxX = max(startX, currentX)
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(trackColor.opacity(0.2))
-                    .strokeBorder(trackColor.opacity(0.5), lineWidth: 1, antialiased: true)
-                    .frame(width: maxX - minX, height: height - 4)
-                    .offset(x: minX, y: 2)
+                // Draw-to-create preview
+                if isCreatingContainer, let startX = dragStartX, let currentX = dragCurrentX {
+                    let minX = min(startX, currentX)
+                    let maxX = max(startX, currentX)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(trackColor.opacity(0.2))
+                        .strokeBorder(trackColor.opacity(0.5), lineWidth: 1, antialiased: true)
+                        .frame(width: maxX - minX, height: baseHeight - 4)
+                        .offset(x: minX, y: 2)
+                }
+
+                // Existing containers
+                ForEach(track.containers) { container in
+                    ContainerView(
+                        container: container,
+                        pixelsPerBar: pixelsPerBar,
+                        height: baseHeight - 4,
+                        isSelected: container.id == selectedContainerID,
+                        trackColor: trackColor,
+                        waveformPeaks: waveformPeaksForContainer?(container),
+                        isClone: container.parentContainerID != nil,
+                        overriddenFields: container.overriddenFields,
+                        onSelect: { onContainerSelect?(container.id) },
+                        onDelete: { onContainerDelete?(container.id) },
+                        onMove: { newStart in onContainerMove?(container.id, newStart) ?? false },
+                        onResizeLeft: { start, len in onContainerResizeLeft?(container.id, start, len) ?? false },
+                        onResizeRight: { len in onContainerResizeRight?(container.id, len) ?? false },
+                        onDoubleClick: { onContainerDoubleClick?(container.id) },
+                        onClone: { newStart in onCloneContainer?(container.id, newStart) }
+                    )
+                    .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
+                }
             }
+            .frame(width: CGFloat(totalBars) * pixelsPerBar, height: baseHeight)
 
-            // Existing containers
-            ForEach(track.containers) { container in
-                ContainerView(
-                    container: container,
-                    pixelsPerBar: pixelsPerBar,
-                    height: height - 4,
-                    isSelected: container.id == selectedContainerID,
-                    trackColor: trackColor,
-                    waveformPeaks: waveformPeaksForContainer?(container),
-                    isClone: container.parentContainerID != nil,
-                    overriddenFields: container.overriddenFields,
-                    onSelect: { onContainerSelect?(container.id) },
-                    onDelete: { onContainerDelete?(container.id) },
-                    onMove: { newStart in onContainerMove?(container.id, newStart) ?? false },
-                    onResizeLeft: { start, len in onContainerResizeLeft?(container.id, start, len) ?? false },
-                    onResizeRight: { len in onContainerResizeRight?(container.id, len) ?? false },
-                    onDoubleClick: { onContainerDoubleClick?(container.id) },
-                    onClone: { newStart in onCloneContainer?(container.id, newStart) }
-                )
-                .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
+            // Automation sub-lanes (when expanded)
+            if isAutomationExpanded {
+                ForEach(Array(automationSubLanePaths.enumerated()), id: \.element) { index, targetPath in
+                    AutomationSubLaneView(
+                        targetPath: targetPath,
+                        containers: track.containers,
+                        laneColorIndex: index,
+                        pixelsPerBar: pixelsPerBar,
+                        totalBars: totalBars,
+                        height: TimelineViewModel.automationSubLaneHeight,
+                        selectedBreakpointID: selectedBreakpointID,
+                        onAddBreakpoint: onAddBreakpoint,
+                        onUpdateBreakpoint: onUpdateBreakpoint,
+                        onDeleteBreakpoint: onDeleteBreakpoint,
+                        onSelectBreakpoint: onSelectBreakpoint
+                    )
+                    .overlay(
+                        Rectangle()
+                            .frame(height: 0.5)
+                            .foregroundStyle(Color.secondary.opacity(0.15)),
+                        alignment: .bottom
+                    )
+                }
             }
         }
         .frame(width: CGFloat(totalBars) * pixelsPerBar, height: height)

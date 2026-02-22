@@ -403,12 +403,18 @@ public struct MainContentView: View {
     }
 
     private func trackHeaderWithActions(track: Track) -> some View {
-        TrackHeaderView(
+        let isExpanded = timelineViewModel.automationExpanded.contains(track.id)
+        let laneLabels = automationLaneLabels(for: track)
+        let perTrackHeight = timelineViewModel.trackHeight(for: track, baseHeight: 80)
+        return TrackHeaderView(
             track: track,
+            height: perTrackHeight,
             inputPortName: inputPortName(for: track.inputPortID),
             outputPortName: outputPortName(for: track.outputPortID),
             midiDeviceName: midiDeviceName(for: track.midiInputDeviceID),
             midiChannelLabel: midiChannelLabel(for: track.midiInputChannel),
+            isAutomationExpanded: isExpanded,
+            automationLaneLabels: laneLabels,
             onMuteToggle: { projectViewModel.toggleMute(trackID: track.id) },
             onSoloToggle: { projectViewModel.toggleSolo(trackID: track.id) },
             onRecordArmToggle: { projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed) },
@@ -416,6 +422,9 @@ public struct MainContentView: View {
                 let newState = !track.isMonitoring
                 projectViewModel.setTrackMonitoring(trackID: track.id, monitoring: newState)
                 transportViewModel?.setInputMonitoring(track: track, enabled: newState)
+            },
+            onAutomationToggle: {
+                timelineViewModel.toggleAutomationExpanded(trackID: track.id)
             }
         )
         .contextMenu {
@@ -558,6 +567,28 @@ public struct MainContentView: View {
     func midiChannelLabel(for channel: UInt8?) -> String? {
         guard let ch = channel else { return nil }
         return "Ch \(ch)"
+    }
+
+    func automationLaneLabels(for track: Track) -> [String] {
+        var seen = Set<EffectPath>()
+        var labels: [String] = []
+        for container in track.containers {
+            for lane in container.automationLanes {
+                if seen.insert(lane.targetPath).inserted {
+                    labels.append(automationPathLabel(lane.targetPath))
+                }
+            }
+        }
+        return labels
+    }
+
+    private func automationPathLabel(_ path: EffectPath) -> String {
+        let trackName = currentSong?.tracks.first(where: { $0.id == path.trackID })?.name ?? "?"
+        if let containerID = path.containerID {
+            let cName = currentSong?.tracks.flatMap(\.containers).first(where: { $0.id == containerID })?.name ?? "?"
+            return "\(trackName)/\(cName) FX\(path.effectIndex)"
+        }
+        return "\(trackName) FX\(path.effectIndex)"
     }
 }
 

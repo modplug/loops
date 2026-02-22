@@ -90,6 +90,18 @@ public struct ContainerView: View {
                     .allowsHitTesting(false)
             }
 
+            // Automation overlay curves
+            if !container.automationLanes.isEmpty {
+                AutomationOverlayView(
+                    automationLanes: container.automationLanes,
+                    containerLengthBars: container.lengthBars,
+                    pixelsPerBar: pixelsPerBar,
+                    height: height
+                )
+                .padding(2)
+                .allowsHitTesting(false)
+            }
+
             // Container label
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 2) {

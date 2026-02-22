@@ -11,6 +11,12 @@ public final class TimelineViewModel {
     /// Horizontal scroll offset in points.
     public var scrollOffset: CGPoint = .zero
 
+    /// Tracks with automation sub-lanes expanded.
+    public var automationExpanded: Set<ID<Track>> = []
+
+    /// Height of each automation sub-lane row.
+    public static let automationSubLaneHeight: CGFloat = 40
+
     /// Current playhead position in bars (1-based).
     public var playheadBar: Double = 1.0
 
@@ -61,5 +67,33 @@ public final class TimelineViewModel {
     /// Zooms out by one step.
     public func zoomOut() {
         pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, Self.minPixelsPerBar)
+    }
+
+    /// Toggles automation sub-lane expansion for a track.
+    public func toggleAutomationExpanded(trackID: ID<Track>) {
+        if automationExpanded.contains(trackID) {
+            automationExpanded.remove(trackID)
+        } else {
+            automationExpanded.insert(trackID)
+        }
+    }
+
+    /// Returns the total height for a track including automation sub-lanes.
+    public func trackHeight(for track: Track, baseHeight: CGFloat) -> CGFloat {
+        guard automationExpanded.contains(track.id) else { return baseHeight }
+        let laneCount = automationLaneCount(for: track)
+        guard laneCount > 0 else { return baseHeight }
+        return baseHeight + CGFloat(laneCount) * Self.automationSubLaneHeight
+    }
+
+    /// Returns the number of unique automation lanes across all containers in a track.
+    public func automationLaneCount(for track: Track) -> Int {
+        var paths = Set<EffectPath>()
+        for container in track.containers {
+            for lane in container.automationLanes {
+                paths.insert(lane.targetPath)
+            }
+        }
+        return paths.count
     }
 }
