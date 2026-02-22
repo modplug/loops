@@ -343,4 +343,91 @@ struct TimelineViewModelTests {
         vm.ensureBarVisible(64)
         #expect(vm.totalBars == 64) // exactly at boundary, no expansion needed
     }
+
+    // MARK: - Per-Track Heights (#112)
+
+    @Test("Per-track height defaults to 80pt")
+    @MainActor
+    func perTrackHeightDefault() {
+        let vm = TimelineViewModel()
+        let trackID = ID<Track>()
+        #expect(vm.baseTrackHeight(for: trackID) == 80)
+        #expect(vm.trackHeights.isEmpty)
+    }
+
+    @Test("Set per-track height stores and retrieves custom height")
+    @MainActor
+    func setPerTrackHeight() {
+        let vm = TimelineViewModel()
+        let trackID = ID<Track>()
+        vm.setTrackHeight(120, for: trackID)
+        #expect(vm.baseTrackHeight(for: trackID) == 120)
+    }
+
+    @Test("Minimum track height enforced at 40pt")
+    @MainActor
+    func minimumTrackHeight() {
+        let vm = TimelineViewModel()
+        let trackID = ID<Track>()
+        vm.setTrackHeight(20, for: trackID)
+        #expect(vm.baseTrackHeight(for: trackID) == TimelineViewModel.minimumTrackHeight)
+        #expect(vm.baseTrackHeight(for: trackID) == 40)
+    }
+
+    @Test("Reset track height removes custom height")
+    @MainActor
+    func resetTrackHeight() {
+        let vm = TimelineViewModel()
+        let trackID = ID<Track>()
+        vm.setTrackHeight(150, for: trackID)
+        #expect(vm.baseTrackHeight(for: trackID) == 150)
+        vm.resetTrackHeight(for: trackID)
+        #expect(vm.baseTrackHeight(for: trackID) == TimelineViewModel.defaultTrackHeight)
+        #expect(vm.trackHeights[trackID] == nil)
+    }
+
+    @Test("Per-track heights are independent across tracks")
+    @MainActor
+    func perTrackHeightsIndependent() {
+        let vm = TimelineViewModel()
+        let trackA = ID<Track>()
+        let trackB = ID<Track>()
+        vm.setTrackHeight(60, for: trackA)
+        vm.setTrackHeight(140, for: trackB)
+        #expect(vm.baseTrackHeight(for: trackA) == 60)
+        #expect(vm.baseTrackHeight(for: trackB) == 140)
+    }
+
+    @Test("Track height with automation uses custom base height")
+    @MainActor
+    func trackHeightWithAutomationUsesCustomBase() {
+        let vm = TimelineViewModel()
+        var track = Track(name: "Audio", kind: .audio)
+        let lane = AutomationLane(targetPath: EffectPath(trackID: track.id, effectIndex: 0, parameterAddress: 0), breakpoints: [])
+        track.trackAutomationLanes = [lane]
+        vm.setTrackHeight(100, for: track.id)
+        vm.automationExpanded.insert(track.id)
+        // base 100 + 1 lane * 40 = 140
+        #expect(vm.trackHeight(for: track, baseHeight: vm.baseTrackHeight(for: track.id)) == 140)
+    }
+
+    @Test("TimelineView totalContentHeight uses per-track heights")
+    @MainActor
+    func timelineViewUsesPerTrackHeights() {
+        let vm = TimelineViewModel()
+        let pvm = ProjectViewModel()
+        let audio1 = Track(name: "Audio 1", kind: .audio)
+        let audio2 = Track(name: "Audio 2", kind: .audio)
+        let song = Song(tracks: [audio1, audio2])
+
+        // Default: 2 * 80 = 160
+        let view1 = TimelineView(viewModel: vm, projectViewModel: pvm, song: song)
+        #expect(view1.totalContentHeight == 160.0)
+
+        // Custom: 60 + 120 = 180
+        vm.setTrackHeight(60, for: audio1.id)
+        vm.setTrackHeight(120, for: audio2.id)
+        let view2 = TimelineView(viewModel: vm, projectViewModel: pvm, song: song)
+        #expect(view2.totalContentHeight == 180.0)
+    }
 }

@@ -14,6 +14,15 @@ public final class TimelineViewModel {
     /// Tracks with automation sub-lanes expanded.
     public var automationExpanded: Set<ID<Track>> = []
 
+    /// Per-track custom row heights. Tracks not in this dictionary use the default height.
+    public var trackHeights: [ID<Track>: CGFloat] = [:]
+
+    /// Default track row height.
+    public static let defaultTrackHeight: CGFloat = 80
+
+    /// Minimum track row height.
+    public static let minimumTrackHeight: CGFloat = 40
+
     /// Height of each automation sub-lane row.
     public static let automationSubLaneHeight: CGFloat = 40
 
@@ -113,6 +122,21 @@ public final class TimelineViewModel {
         } else {
             automationExpanded.insert(trackID)
         }
+    }
+
+    /// Returns the base row height for a track (custom or default).
+    public func baseTrackHeight(for trackID: ID<Track>) -> CGFloat {
+        trackHeights[trackID] ?? Self.defaultTrackHeight
+    }
+
+    /// Sets a custom height for a track, clamped to the minimum.
+    public func setTrackHeight(_ height: CGFloat, for trackID: ID<Track>) {
+        trackHeights[trackID] = max(height, Self.minimumTrackHeight)
+    }
+
+    /// Resets a track's height to the default.
+    public func resetTrackHeight(for trackID: ID<Track>) {
+        trackHeights.removeValue(forKey: trackID)
     }
 
     /// Returns the total height for a track including automation sub-lanes.

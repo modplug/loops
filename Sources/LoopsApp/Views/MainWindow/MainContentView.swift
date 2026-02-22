@@ -627,7 +627,8 @@ public struct MainContentView: View {
 
         // Master track — pinned at bottom, does not scroll vertically
         if let master = masterTrack {
-            let masterHeight = timelineViewModel.trackHeight(for: master, baseHeight: 80)
+            let masterBaseHeight = timelineViewModel.baseTrackHeight(for: master.id)
+            let masterHeight = timelineViewModel.trackHeight(for: master, baseHeight: masterBaseHeight)
             Divider()
             HStack(alignment: .top, spacing: 0) {
                 trackHeaderWithActions(track: master)
@@ -917,7 +918,8 @@ public struct MainContentView: View {
     private func trackHeaderWithActions(track: Track) -> some View {
         let isExpanded = timelineViewModel.automationExpanded.contains(track.id)
         let laneLabels = automationLaneLabels(for: track)
-        let perTrackHeight = timelineViewModel.trackHeight(for: track, baseHeight: 80)
+        let baseHeight = timelineViewModel.baseTrackHeight(for: track.id)
+        let perTrackHeight = timelineViewModel.trackHeight(for: track, baseHeight: baseHeight)
         let isSelected = projectViewModel.selectedTrackID == track.id
         return TrackHeaderView(
             track: track,
@@ -950,7 +952,13 @@ public struct MainContentView: View {
                 timelineViewModel.toggleAutomationExpanded(trackID: track.id)
             },
             isTrackSelected: isSelected,
-            isMIDIActive: midiActivityMonitor?.isTrackActive(track.id) ?? false
+            isMIDIActive: midiActivityMonitor?.isTrackActive(track.id) ?? false,
+            onResizeTrack: { newHeight in
+                timelineViewModel.setTrackHeight(newHeight, for: track.id)
+            },
+            onResetTrackHeight: {
+                timelineViewModel.resetTrackHeight(for: track.id)
+            }
         )
         .simultaneousGesture(
             TapGesture()
@@ -1331,7 +1339,7 @@ public struct MainContentView: View {
 
     private func regularTrackListContentHeight(song: Song) -> CGFloat {
         song.tracks.filter { $0.kind != .master }.reduce(CGFloat(0)) { total, track in
-            total + timelineViewModel.trackHeight(for: track, baseHeight: 80)
+            total + timelineViewModel.trackHeight(for: track, baseHeight: timelineViewModel.baseTrackHeight(for: track.id))
         }
     }
 }

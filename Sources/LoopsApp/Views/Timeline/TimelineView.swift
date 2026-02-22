@@ -28,7 +28,8 @@ public struct TimelineView: View {
 
     public var totalContentHeight: CGFloat {
         tracks.reduce(CGFloat(0)) { total, track in
-            total + viewModel.trackHeight(for: track, baseHeight: trackHeight)
+            let base = viewModel.baseTrackHeight(for: track.id)
+            return total + viewModel.trackHeight(for: track, baseHeight: base)
         }
     }
 
@@ -55,7 +56,8 @@ public struct TimelineView: View {
             // Track lanes stacked vertically
             VStack(spacing: 0) {
                 ForEach(tracks) { track in
-                    let perTrackHeight = viewModel.trackHeight(for: track, baseHeight: trackHeight)
+                    let base = viewModel.baseTrackHeight(for: track.id)
+                    let perTrackHeight = viewModel.trackHeight(for: track, baseHeight: base)
                     let isExpanded = viewModel.automationExpanded.contains(track.id)
                     let subLanePaths = uniqueAutomationPaths(for: track)
                     TrackLaneView(
@@ -120,8 +122,8 @@ public struct TimelineView: View {
                         onUnlinkContainer: { containerID in
                             projectViewModel.consolidateContainer(trackID: track.id, containerID: containerID)
                         },
-                        onArmToggle: {
-                            projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed)
+                        onContainerArmToggle: { containerID in
+                            projectViewModel.toggleContainerRecordArm(trackID: track.id, containerID: containerID)
                         },
                         onPasteAtBar: { bar in
                             projectViewModel.pasteContainers(trackID: track.id, atBar: bar)

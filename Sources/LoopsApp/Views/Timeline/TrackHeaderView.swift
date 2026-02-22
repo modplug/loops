@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import LoopsCore
 
 /// Displays the track header on the left side of the timeline:
@@ -23,6 +24,8 @@ public struct TrackHeaderView: View {
     var onAutomationToggle: (() -> Void)?
     var isTrackSelected: Bool
     var isMIDIActive: Bool
+    var onResizeTrack: ((CGFloat) -> Void)?
+    var onResetTrackHeight: (() -> Void)?
 
     public init(
         track: Track,
@@ -39,7 +42,9 @@ public struct TrackHeaderView: View {
         onMonitorToggle: (() -> Void)? = nil,
         onAutomationToggle: (() -> Void)? = nil,
         isTrackSelected: Bool = false,
-        isMIDIActive: Bool = false
+        isMIDIActive: Bool = false,
+        onResizeTrack: ((CGFloat) -> Void)? = nil,
+        onResetTrackHeight: (() -> Void)? = nil
     ) {
         self.track = track
         self.height = height
@@ -56,6 +61,8 @@ public struct TrackHeaderView: View {
         self.onAutomationToggle = onAutomationToggle
         self.isTrackSelected = isTrackSelected
         self.isMIDIActive = isMIDIActive
+        self.onResizeTrack = onResizeTrack
+        self.onResetTrackHeight = onResetTrackHeight
     }
 
     public var body: some View {
@@ -274,6 +281,15 @@ public struct TrackHeaderView: View {
                     .frame(width: 3)
             }
         }
+        .overlay(alignment: .bottom) {
+            if onResizeTrack != nil {
+                TrackResizeHandle(
+                    currentHeight: height,
+                    onResize: { onResizeTrack?($0) },
+                    onReset: { onResetTrackHeight?() }
+                )
+            }
+        }
     }
 
     private var hasAutomation: Bool {
@@ -288,5 +304,40 @@ public struct TrackHeaderView: View {
         case .backing: return .orange
         case .master: return .gray
         }
+    }
+}
+
+/// A drag handle at the bottom edge of a track header for resizing.
+struct TrackResizeHandle: View {
+    let currentHeight: CGFloat
+    let onResize: (CGFloat) -> Void
+    let onReset: () -> Void
+
+    @State private var dragStartHeight: CGFloat = 0
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(height: 6)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if dragStartHeight == 0 {
+                            dragStartHeight = currentHeight
+                        }
+                        let newHeight = dragStartHeight + value.translation.height
+                        onResize(newHeight)
+                    }
+                    .onEnded { _ in
+                        dragStartHeight = 0
+                    }
+            )
+            .onTapGesture(count: 2) {
+                onReset()
+            }
     }
 }
