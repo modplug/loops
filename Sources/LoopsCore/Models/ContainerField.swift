@@ -11,4 +11,17 @@ public enum ContainerField: String, Codable, Equatable, Sendable, CaseIterable, 
     case name
     case loopSettings
     case instrumentOverride
+
+    public var displayName: String {
+        switch self {
+        case .effects: return "Effects"
+        case .automation: return "Automation"
+        case .fades: return "Fades"
+        case .enterActions: return "Enter Actions"
+        case .exitActions: return "Exit Actions"
+        case .name: return "Name"
+        case .loopSettings: return "Loop Settings"
+        case .instrumentOverride: return "Instrument"
+        }
+    }
 }

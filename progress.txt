@@ -588,3 +588,27 @@
 - "Open Detail Editor" button retained for full-screen editing access
 - 8 new tests: toggle effect bypass, set enter fade, set exit fade, clear fade, fade undo/redo, add/remove enter action, add/remove automation lane, toggle effect chain bypass
 - All 636 tests pass
+
+### Iteration 7 — #89 Setlist entry inspector with transitions and fade-in
+- `SetlistEntry`: added `fadeIn: FadeSettings?` property with backward-compatible decoding (`decodeIfPresent`, defaults to nil)
+- `SetlistViewModel`: added `selectedSetlistEntryID: ID<SetlistEntry>?` for entry selection, `selectedSetlistEntry` computed property
+- `SetlistViewModel`: added `updateFadeIn(entryID:fadeIn:)` method to set/clear fade-in settings
+- New `SetlistEntryInspectorView`: Form-based inspector with three sections (Song info, Transition to Next, Fade In)
+- Transition section: mode picker (Manual / Automatic / Automatic with Delay) mapping to existing `TransitionMode` enum, delay duration slider visible for automatic-with-delay mode
+- Fade-in section: enable toggle, duration slider (0.25–16 bars), curve type picker (Linear/Exponential/S-Curve), `FadeCurvePreview` visualization
+- `TransitionModeKind` UI enum maps between UI picker values and model's `TransitionMode` (manual↔manualAdvance, automatic↔seamless, automaticWithDelay↔gap)
+- `SetlistEntryListView`: click-to-select on entry rows with accent highlight on selected entry
+- `MainContentView`: inspector panel shows `SetlistEntryInspectorView` when a setlist entry is selected (after container/track inspector fallthrough)
+- 9 new tests: SetlistEntry with fadeIn round-trip, backward-compat without fadeIn, all transition modes with fadeIn, selected setlist entry property, selected entry nil without setlist, update fade in, clear fade in, transition mode all cases, invalid entry ID no-op
+- All 645 tests pass
+
+### Iteration 8 — #90 Linked clip inspector: parent display and parameter diff
+- New `LinkedClipInspectorView`: shows parent container reference (name, bar position) and field-by-field override diff for linked clones
+- `ContainerField`: added `displayName` computed property returning human-readable names for all 8 field cases
+- `ContainerInspector`: added `parentContainer: Container?` and `onNavigateToParent` callback parameters; shows `LinkedClipInspectorView` section at top of form when container `isClone`
+- Parent reference row: link icon, parent name + bar range, clickable arrow button navigates to parent container
+- Parameter diff list: iterates `ContainerField.allCases`, shows override status with orange "Overridden" badge (pencil icon) or gray "Inherited" badge (arrow icon) for each field
+- Missing parent handled gracefully: warning icon + "Parent container not found" text
+- `MainContentView`: wired `onNavigateToParent` to set `selectedContainerID` to parent, passes resolved `parentContainer` via `findContainer(id:)`
+- 8 new tests: linked clip no overrides (all inherited), linked clip with overrides (correct diff), parent resolution (name/position), navigate to parent (selection), ContainerField displayNames, multiple overrides tracking, clone resolution inheritance, missing parent returns nil
+- All 653 tests pass

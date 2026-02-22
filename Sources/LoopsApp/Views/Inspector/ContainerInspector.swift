@@ -31,6 +31,8 @@ public struct ContainerInspector: View {
     var onRemoveBreakpoint: ((ID<AutomationLane>, ID<AutomationBreakpoint>) -> Void)?
     var onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)?
     var onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)?
+    var onNavigateToParent: (() -> Void)?
+    let parentContainer: Container?
 
     @Binding var showDetailEditor: Bool
 
@@ -90,7 +92,9 @@ public struct ContainerInspector: View {
         onAddBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)? = nil,
         onRemoveBreakpoint: ((ID<AutomationLane>, ID<AutomationBreakpoint>) -> Void)? = nil,
         onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)? = nil,
-        onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)? = nil
+        onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)? = nil,
+        onNavigateToParent: (() -> Void)? = nil,
+        parentContainer: Container? = nil
     ) {
         self.container = container
         self.trackKind = trackKind
@@ -120,10 +124,21 @@ public struct ContainerInspector: View {
         self.onRemoveBreakpoint = onRemoveBreakpoint
         self.onUpdateBreakpoint = onUpdateBreakpoint
         self.onUpdateEffectPreset = onUpdateEffectPreset
+        self.onNavigateToParent = onNavigateToParent
+        self.parentContainer = parentContainer
     }
 
     public var body: some View {
         Form {
+            // Linked clone info (shown only for clones)
+            if container.isClone {
+                LinkedClipInspectorView(
+                    container: container,
+                    parentContainer: parentContainer,
+                    onNavigateToParent: onNavigateToParent
+                )
+            }
+
             // Container info
             Section("Container") {
                 TextField("Name", text: $editingName)

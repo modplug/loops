@@ -658,7 +658,13 @@ public struct MainContentView: View {
                 },
                 onUpdateEffectPreset: { effectID, data in
                     projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effectID, presetData: data)
-                }
+                },
+                onNavigateToParent: container.parentContainerID != nil ? {
+                    if let parentID = container.parentContainerID {
+                        projectViewModel.selectedContainerID = parentID
+                    }
+                } : nil,
+                parentContainer: container.parentContainerID.flatMap { projectViewModel.findContainer(id: $0) }
             )
         } else if let track = projectViewModel.selectedTrack {
             trackInspectorContent(track: track)
