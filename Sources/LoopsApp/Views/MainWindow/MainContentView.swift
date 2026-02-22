@@ -21,6 +21,12 @@ public enum ContentMode: String, CaseIterable {
     case mixer = "Mixer"
 }
 
+/// Tracks whether the main content area has keyboard focus.
+/// When focus moves to a text field, `focusedField` becomes nil and shortcuts are suppressed.
+public enum FocusedField: Hashable {
+    case main
+}
+
 /// Main content area using HSplitView: sidebar + timeline/mixer + inspector.
 public struct MainContentView: View {
     @Bindable var projectViewModel: ProjectViewModel
@@ -43,8 +49,15 @@ public struct MainContentView: View {
     @State private var inspectorMode: InspectorMode = .container
     @State private var draggingTrackID: ID<Track>?
     @State private var pendingTrackAutomationLane: PendingEffectSelection?
-    @FocusState private var isMainFocused: Bool
+    @FocusState private var focusedField: FocusedField?
+    @Namespace private var inspectorNamespace
     // isMIDILearning and midiLearnTargetPath are on projectViewModel
+
+    /// Returns true when keyboard focus has moved away from the main content area
+    /// (e.g. to a text field in the inspector panel).
+    private var isTextFieldFocused: Bool {
+        focusedField != .main
+    }
 
     public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil) {
         self.projectViewModel = projectViewModel
@@ -210,13 +223,15 @@ public struct MainContentView: View {
         }
         .focusable()
         .focusEffectDisabled()
-        .focused($isMainFocused)
-        .onAppear { isMainFocused = true }
+        .focused($focusedField, equals: .main)
+        .onAppear { focusedField = .main }
         .onKeyPress(.space) {
+            guard !isTextFieldFocused else { return .ignored }
             transportViewModel?.togglePlayPause()
             return .handled
         }
         .onKeyPress(.return) {
+            guard !isTextFieldFocused else { return .ignored }
             if projectViewModel.selectedContainer != nil {
                 showContainerDetailEditor = true
                 return .handled
@@ -235,6 +250,7 @@ public struct MainContentView: View {
         }
         // R: toggle record arm on selected track
         .onKeyPress("r") {
+            guard !isTextFieldFocused else { return .ignored }
             guard let trackID = projectViewModel.selectedTrackID else { return .ignored }
             if let track = currentSong?.tracks.first(where: { $0.id == trackID }) {
                 projectViewModel.setTrackRecordArmed(trackID: trackID, armed: !track.isRecordArmed)
@@ -244,28 +260,33 @@ public struct MainContentView: View {
         }
         // M: toggle metronome
         .onKeyPress("m") {
+            guard !isTextFieldFocused else { return .ignored }
             transportViewModel?.toggleMetronome()
             return .handled
         }
         // Left arrow: nudge playhead -1 bar
         .onKeyPress(.leftArrow) {
+            guard !isTextFieldFocused else { return .ignored }
             guard let tv = transportViewModel else { return .ignored }
             tv.setPlayheadPosition(max(tv.playheadBar - 1.0, 1.0))
             return .handled
         }
         // Right arrow: nudge playhead +1 bar
         .onKeyPress(.rightArrow) {
+            guard !isTextFieldFocused else { return .ignored }
             guard let tv = transportViewModel else { return .ignored }
             tv.setPlayheadPosition(tv.playheadBar + 1.0)
             return .handled
         }
         // Home (Fn+Left): jump to bar 1
         .onKeyPress(.home) {
+            guard !isTextFieldFocused else { return .ignored }
             transportViewModel?.setPlayheadPosition(1.0)
             return .handled
         }
         // End (Fn+Right): jump to last bar with content
         .onKeyPress(.end) {
+            guard !isTextFieldFocused else { return .ignored }
             let lastBar = Double(projectViewModel.lastBarWithContent)
             transportViewModel?.setPlayheadPosition(lastBar)
             return .handled
@@ -292,8 +313,12 @@ public struct MainContentView: View {
             projectViewModel.selectAllContainers()
             return .handled
         }
-        // Escape: deselect all
+        // Escape: deselect all + restore focus to main area
         .onKeyPress(.escape) {
+            if isTextFieldFocused {
+                focusedField = .main
+                return .handled
+            }
             projectViewModel.deselectAll()
             timelineViewModel.selectedTrackIDs = []
             timelineViewModel.clearSelectedRange()
@@ -301,6 +326,7 @@ public struct MainContentView: View {
         }
         // Tab: cycle inspector mode
         .onKeyPress(.tab) {
+            guard !isTextFieldFocused else { return .ignored }
             cycleInspectorMode()
             return .handled
         }
@@ -416,6 +442,7 @@ public struct MainContentView: View {
             }
         }
         .frame(minWidth: 180, idealWidth: 250, maxWidth: 300)
+        .focusScope(inspectorNamespace)
     }
 
     // MARK: - Timeline Content
@@ -1174,6 +1201,7 @@ public struct MainContentView: View {
     }
 
     private func selectTrackByKeyIndex(_ index: Int) -> KeyPress.Result {
+        guard !isTextFieldFocused else { return .ignored }
         projectViewModel.selectTrackByIndex(index)
         return .handled
     }
