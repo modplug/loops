@@ -40,6 +40,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private var masterMixerNode: AVAudioMixerNode?
     private var masterEffectUnits: [AVAudioUnit] = []
 
+    /// Per-track effect chains (non-master tracks with insertEffects).
+    private var trackEffectUnits: [ID<Track>: [AVAudioUnit]] = [:]
+
     /// All active container subgraphs, keyed by container ID.
     private var containerSubgraphs: [ID<Container>: ContainerSubgraph] = [:]
 
@@ -125,17 +128,43 @@ public final class PlaybackScheduler: @unchecked Sendable {
             outputTarget = engine.mainMixerNode
         }
 
-        // Create a mixer node per track, connected to master mixer (or mainMixer if no master)
+        // Create a mixer node per track, connected through track effects to master mixer (or mainMixer)
         for track in song.tracks {
             // Skip master track — it has its own mixer
             if track.kind == .master { continue }
 
             let trackMixer = AVAudioMixerNode()
             engine.attach(trackMixer)
-            engine.connect(trackMixer, to: outputTarget, format: nil)
             trackMixer.volume = track.isMuted ? 0.0 : track.volume
             trackMixer.pan = track.pan
             trackMixers[track.id] = trackMixer
+
+            // Load track-level insert effects
+            var tEffectUnits: [AVAudioUnit] = []
+            if !track.isEffectChainBypassed {
+                for effect in track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                    guard !effect.isBypassed else { continue }
+                    if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
+                        engine.attach(unit)
+                        if let presetData = effect.presetData {
+                            try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
+                        }
+                        tEffectUnits.append(unit)
+                    }
+                }
+            }
+            trackEffectUnits[track.id] = tEffectUnits
+
+            // Route: trackMixer → [track effects] → outputTarget
+            if tEffectUnits.isEmpty {
+                engine.connect(trackMixer, to: outputTarget, format: nil)
+            } else {
+                engine.connect(trackMixer, to: tEffectUnits[0], format: nil)
+                for i in 0..<(tEffectUnits.count - 1) {
+                    engine.connect(tEffectUnits[i], to: tEffectUnits[i + 1], format: nil)
+                }
+                engine.connect(tEffectUnits[tEffectUnits.count - 1], to: outputTarget, format: nil)
+            }
 
             // Pre-instantiate per-container subgraphs (resolve clone fields)
             for container in track.containers {
@@ -234,6 +263,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
         activeContainers.removeAll()
         tracksWithActiveContainers.removeAll()
         containerToTrack.removeAll()
+
+        for (_, units) in trackEffectUnits {
+            for unit in units {
+                engine.disconnectNodeOutput(unit)
+                engine.detach(unit)
+            }
+        }
+        trackEffectUnits.removeAll()
 
         for (_, mixer) in trackMixers {
             engine.disconnectNodeOutput(mixer)
@@ -709,8 +746,15 @@ extension PlaybackScheduler: ParameterResolver {
             param.value = value
             return true
         } else {
-            // Track-level effect — not yet wired (track effects managed outside PlaybackScheduler)
-            return false
+            // Track-level effect
+            guard let units = trackEffectUnits[path.trackID] else { return false }
+            guard path.effectIndex >= 0, path.effectIndex < units.count else { return false }
+            let unit = units[path.effectIndex]
+            guard let param = unit.auAudioUnit.parameterTree?.parameter(
+                withAddress: AUParameterAddress(path.parameterAddress)
+            ) else { return false }
+            param.value = value
+            return true
         }
     }
 }

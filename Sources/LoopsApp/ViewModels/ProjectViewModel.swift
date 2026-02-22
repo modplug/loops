@@ -457,10 +457,75 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    // MARK: - Track Effect Management
+
+    /// Adds an insert effect to a track.
+    public func addTrackEffect(trackID: ID<Track>, effect: InsertEffect) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Add Track Effect")
+        var newEffect = effect
+        newEffect.orderIndex = project.songs[currentSongIndex].tracks[trackIndex].insertEffects.count
+        project.songs[currentSongIndex].tracks[trackIndex].insertEffects.append(newEffect)
+        hasUnsavedChanges = true
+    }
+
+    /// Removes an insert effect from a track.
+    public func removeTrackEffect(trackID: ID<Track>, effectID: ID<InsertEffect>) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Remove Track Effect")
+        project.songs[currentSongIndex].tracks[trackIndex].insertEffects.removeAll { $0.id == effectID }
+        for i in project.songs[currentSongIndex].tracks[trackIndex].insertEffects.indices {
+            project.songs[currentSongIndex].tracks[trackIndex].insertEffects[i].orderIndex = i
+        }
+        hasUnsavedChanges = true
+    }
+
+    /// Reorders a track's insert effects by moving from source indices to a destination index.
+    public func reorderTrackEffects(trackID: ID<Track>, from source: IndexSet, to destination: Int) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Reorder Track Effects")
+        project.songs[currentSongIndex].tracks[trackIndex].insertEffects.sort { $0.orderIndex < $1.orderIndex }
+        project.songs[currentSongIndex].tracks[trackIndex].insertEffects.move(fromOffsets: source, toOffset: destination)
+        for i in project.songs[currentSongIndex].tracks[trackIndex].insertEffects.indices {
+            project.songs[currentSongIndex].tracks[trackIndex].insertEffects[i].orderIndex = i
+        }
+        hasUnsavedChanges = true
+    }
+
+    /// Toggles bypass on a single effect within a track.
+    public func toggleTrackEffectBypass(trackID: ID<Track>, effectID: ID<InsertEffect>) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let effectIndex = project.songs[currentSongIndex].tracks[trackIndex].insertEffects.firstIndex(where: { $0.id == effectID }) else { return }
+        registerUndo(actionName: "Toggle Track Effect Bypass")
+        project.songs[currentSongIndex].tracks[trackIndex].insertEffects[effectIndex].isBypassed.toggle()
+        hasUnsavedChanges = true
+    }
+
+    /// Toggles bypass on a track's entire effect chain.
+    public func toggleTrackEffectChainBypass(trackID: ID<Track>) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Toggle Track Effect Chain Bypass")
+        project.songs[currentSongIndex].tracks[trackIndex].isEffectChainBypassed.toggle()
+        hasUnsavedChanges = true
+    }
+
     // MARK: - Selection State
 
     /// The currently selected single track ID (for keyboard operations like record arm).
-    public var selectedTrackID: ID<Track>?
+    /// Setting this clears selectedContainerID for mutual exclusion.
+    public var selectedTrackID: ID<Track>? {
+        didSet {
+            if selectedTrackID != nil {
+                selectedContainerID = nil
+                selectedContainerIDs = []
+            }
+        }
+    }
 
     /// Set of all selected container IDs (populated by select-all; cleared on single-select or deselect).
     public var selectedContainerIDs: Set<ID<Container>> = []
@@ -499,7 +564,14 @@ public final class ProjectViewModel {
     // MARK: - Container Management
 
     /// The currently selected container ID.
-    public var selectedContainerID: ID<Container>?
+    /// Setting this clears selectedTrackID for mutual exclusion.
+    public var selectedContainerID: ID<Container>? {
+        didSet {
+            if selectedContainerID != nil {
+                selectedTrackID = nil
+            }
+        }
+    }
 
     /// Adds a container to a track. Returns false if it would overlap an existing container.
     public func addContainer(trackID: ID<Track>, startBar: Int, lengthBars: Int) -> Bool {
@@ -1042,6 +1114,12 @@ public final class ProjectViewModel {
     /// Returns the track kind of the track containing the selected container.
     public var selectedContainerTrackKind: TrackKind? {
         selectedContainerTrack?.kind
+    }
+
+    /// Returns the currently selected track (via selectedTrackID).
+    public var selectedTrack: Track? {
+        guard let id = selectedTrackID, let song = currentSong else { return nil }
+        return song.tracks.first(where: { $0.id == id })
     }
 
     // MARK: - Container Clone Management

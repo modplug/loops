@@ -638,12 +638,49 @@ public struct MainContentView: View {
                     projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
                 }
             )
+        } else if let track = projectViewModel.selectedTrack {
+            trackInspectorContent(track: track)
         } else {
-            Text("Select a container")
+            Text("Select a container or track")
                 .foregroundStyle(.secondary)
                 .padding()
             Spacer()
         }
+    }
+
+    @ViewBuilder
+    private func trackInspectorContent(track: Track) -> some View {
+        TrackInspectorView(
+            track: track,
+            onRename: { name in
+                projectViewModel.renameTrack(id: track.id, newName: name)
+            },
+            onAddEffect: { effect in
+                projectViewModel.addTrackEffect(trackID: track.id, effect: effect)
+            },
+            onRemoveEffect: { effectID in
+                projectViewModel.removeTrackEffect(trackID: track.id, effectID: effectID)
+            },
+            onToggleEffectBypass: { effectID in
+                projectViewModel.toggleTrackEffectBypass(trackID: track.id, effectID: effectID)
+            },
+            onToggleChainBypass: {
+                projectViewModel.toggleTrackEffectChainBypass(trackID: track.id)
+            },
+            onReorderEffects: { source, destination in
+                projectViewModel.reorderTrackEffects(trackID: track.id, from: source, to: destination)
+            },
+            onSetVolume: { volume in
+                projectViewModel.setTrackVolume(trackID: track.id, volume: volume)
+            },
+            onSetPan: { pan in
+                projectViewModel.setTrackPan(trackID: track.id, pan: pan)
+            },
+            inputPortName: inputPortName(for: track.inputPortID),
+            outputPortName: outputPortName(for: track.outputPortID),
+            midiDeviceName: midiDeviceName(for: track.midiInputDeviceID),
+            midiChannelLabel: midiChannelLabel(for: track.midiInputChannel)
+        )
     }
 
     @ViewBuilder
@@ -695,6 +732,8 @@ public struct MainContentView: View {
                 .onEnded {
                     if NSEvent.modifierFlags.contains(.command) {
                         timelineViewModel.toggleTrackSelection(trackID: track.id)
+                    } else {
+                        projectViewModel.selectedTrackID = track.id
                     }
                 }
         )
