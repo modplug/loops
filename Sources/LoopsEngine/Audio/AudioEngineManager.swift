@@ -93,6 +93,7 @@ public final class AudioEngineManager: @unchecked Sendable {
     /// Stops the audio engine.
     public func stop() {
         guard isRunning else { return }
+        removeMasterLevelTap()
         engine.stop()
         inputMonitor?.cleanup()
         inputMonitor = nil
@@ -200,6 +201,58 @@ public final class AudioEngineManager: @unchecked Sendable {
             // Default: route to main mixer
             engine.connect(metMixer, to: engine.mainMixerNode, format: nil)
         }
+    }
+
+    // MARK: - Level Metering
+
+    /// Callback for delivering peak level readings from the main output.
+    /// Called on the audio render thread; dispatch to main for UI updates.
+    public var onMasterLevelUpdate: ((Float) -> Void)?
+
+    /// Whether the master level tap is currently installed.
+    private var isMasterTapInstalled = false
+
+    /// Installs an audio tap on the main mixer node to read peak levels.
+    /// The `onMasterLevelUpdate` callback fires with the peak value (0.0-1.0).
+    public func installMasterLevelTap() {
+        guard isRunning, !isMasterTapInstalled else { return }
+        let bufferSize: AVAudioFrameCount = 4096
+        let format = engine.mainMixerNode.outputFormat(forBus: 0)
+        guard format.channelCount > 0 else { return }
+
+        engine.mainMixerNode.installTap(onBus: 0, bufferSize: bufferSize, format: format) { [weak self] buffer, _ in
+            guard let self else { return }
+            let peak = Self.peakLevel(from: buffer)
+            self.onMasterLevelUpdate?(peak)
+        }
+        isMasterTapInstalled = true
+    }
+
+    /// Removes the master level tap.
+    public func removeMasterLevelTap() {
+        guard isMasterTapInstalled else { return }
+        engine.mainMixerNode.removeTap(onBus: 0)
+        isMasterTapInstalled = false
+    }
+
+    /// Extracts the peak sample value from an audio buffer (across all channels).
+    public static func peakLevel(from buffer: AVAudioPCMBuffer) -> Float {
+        guard let floatData = buffer.floatChannelData else { return 0.0 }
+        let channelCount = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0, channelCount > 0 else { return 0.0 }
+
+        var peak: Float = 0.0
+        for ch in 0..<channelCount {
+            let channelData = floatData[ch]
+            for frame in 0..<frameLength {
+                let sample = abs(channelData[frame])
+                if sample > peak {
+                    peak = sample
+                }
+            }
+        }
+        return min(peak, 1.0)
     }
 
     // MARK: - Private

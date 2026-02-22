@@ -9,6 +9,7 @@ public struct LoopsRootView: View {
     let engineManager: AudioEngineManager?
     var settingsViewModel: SettingsViewModel?
     @State private var timelineViewModel = TimelineViewModel()
+    @State private var mixerViewModel = MixerViewModel()
     @State private var setlistViewModel: SetlistViewModel?
 
     public init(viewModel: ProjectViewModel, transportViewModel: TransportViewModel, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
@@ -44,7 +45,8 @@ public struct LoopsRootView: View {
                     transportViewModel: transportViewModel,
                     setlistViewModel: setlistViewModel,
                     engineManager: engineManager,
-                    settingsViewModel: settingsViewModel
+                    settingsViewModel: settingsViewModel,
+                    mixerViewModel: mixerViewModel
                 )
             }
 
@@ -88,6 +90,14 @@ public struct LoopsRootView: View {
             // Sync metronome config from the current song
             let config = viewModel.currentSong?.metronomeConfig ?? MetronomeConfig()
             transportViewModel.applyMetronomeConfig(config)
+
+            // Set up master level metering
+            engineManager?.onMasterLevelUpdate = { [weak mixerViewModel] peak in
+                Task { @MainActor in
+                    mixerViewModel?.updateMasterLevel(peak)
+                }
+            }
+            engineManager?.installMasterLevelTap()
         }
         .sheet(isPresented: $viewModel.isExportSheetPresented) {
             ExportAudioView(viewModel: viewModel)

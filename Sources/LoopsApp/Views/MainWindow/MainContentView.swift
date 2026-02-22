@@ -14,7 +14,13 @@ public enum InspectorMode: String, CaseIterable {
     case storyline = "Storyline"
 }
 
-/// Main content area using HSplitView: sidebar + timeline + inspector.
+/// Content area mode: timeline (default) or mixer.
+public enum ContentMode: String, CaseIterable {
+    case timeline = "Timeline"
+    case mixer = "Mixer"
+}
+
+/// Main content area using HSplitView: sidebar + timeline/mixer + inspector.
 public struct MainContentView: View {
     @Bindable var projectViewModel: ProjectViewModel
     @Bindable var timelineViewModel: TimelineViewModel
@@ -22,6 +28,8 @@ public struct MainContentView: View {
     var setlistViewModel: SetlistViewModel?
     var engineManager: AudioEngineManager?
     var settingsViewModel: SettingsViewModel?
+    var mixerViewModel: MixerViewModel?
+    @State private var contentMode: ContentMode = .timeline
     @State private var trackToDelete: Track?
     @State private var editingTrackID: ID<Track>?
     @State private var editingTrackName: String = ""
@@ -32,285 +40,95 @@ public struct MainContentView: View {
     @State private var editingSectionName: String = ""
     @State private var inspectorMode: InspectorMode = .container
 
-    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
+    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil) {
         self.projectViewModel = projectViewModel
         self.timelineViewModel = timelineViewModel
         self.transportViewModel = transportViewModel
         self.setlistViewModel = setlistViewModel
         self.engineManager = engineManager
         self.settingsViewModel = settingsViewModel
+        self.mixerViewModel = mixerViewModel
     }
 
     private var currentSong: Song? {
         projectViewModel.currentSong
     }
 
-    public var body: some View {
-        HSplitView {
-            // Sidebar
-            if isSidebarVisible {
-                VStack(spacing: 0) {
-                    Picker("", selection: $sidebarTab) {
-                        ForEach(SidebarTab.allCases, id: \.self) { tab in
-                            Text(tab.rawValue).tag(tab)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(8)
-
-                    switch sidebarTab {
-                    case .songs:
-                        SongListView(viewModel: projectViewModel)
-                    case .setlists:
-                        if let setlistVM = setlistViewModel {
-                            SetlistSidebarView(viewModel: setlistVM)
-                        } else {
-                            Text("Setlists unavailable")
-                                .foregroundStyle(.secondary)
-                                .padding()
-                            Spacer()
-                        }
-                    }
+    @ViewBuilder
+    private var containerDetailEditorSheet: some View {
+        if let container = projectViewModel.selectedContainer,
+           let track = projectViewModel.selectedContainerTrack {
+            ContainerDetailEditor(
+                container: container,
+                trackKind: track.kind,
+                containerTrack: track,
+                allContainers: projectViewModel.allContainersInCurrentSong,
+                allTracks: projectViewModel.allTracksInCurrentSong,
+                onAddEffect: { effect in
+                    projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
+                },
+                onRemoveEffect: { effectID in
+                    projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
+                },
+                onToggleEffectBypass: { effectID in
+                    projectViewModel.toggleContainerEffectBypass(containerID: container.id, effectID: effectID)
+                },
+                onToggleChainBypass: {
+                    projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
+                },
+                onReorderEffects: { source, destination in
+                    projectViewModel.reorderContainerEffects(containerID: container.id, from: source, to: destination)
+                },
+                onSetInstrumentOverride: { override in
+                    projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
+                },
+                onAddEnterAction: { action in
+                    projectViewModel.addContainerEnterAction(containerID: container.id, action: action)
+                },
+                onRemoveEnterAction: { actionID in
+                    projectViewModel.removeContainerEnterAction(containerID: container.id, actionID: actionID)
+                },
+                onAddExitAction: { action in
+                    projectViewModel.addContainerExitAction(containerID: container.id, action: action)
+                },
+                onRemoveExitAction: { actionID in
+                    projectViewModel.removeContainerExitAction(containerID: container.id, actionID: actionID)
+                },
+                onAddAutomationLane: { lane in
+                    projectViewModel.addAutomationLane(containerID: container.id, lane: lane)
+                },
+                onRemoveAutomationLane: { laneID in
+                    projectViewModel.removeAutomationLane(containerID: container.id, laneID: laneID)
+                },
+                onAddBreakpoint: { laneID, breakpoint in
+                    projectViewModel.addAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+                },
+                onRemoveBreakpoint: { laneID, breakpointID in
+                    projectViewModel.removeAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpointID: breakpointID)
+                },
+                onUpdateBreakpoint: { laneID, breakpoint in
+                    projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+                },
+                onSetEnterFade: { fade in
+                    projectViewModel.setContainerEnterFade(containerID: container.id, fade: fade)
+                },
+                onSetExitFade: { fade in
+                    projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
+                },
+                onUpdateEffectPreset: { effectID, data in
+                    projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effectID, presetData: data)
+                },
+                onDismiss: {
+                    showContainerDetailEditor = false
                 }
-                .frame(minWidth: 150, idealWidth: 200, maxWidth: 250)
-            }
-
-            // Timeline center area
-            if let song = currentSong {
-                VStack(spacing: 0) {
-                    // Ruler row (fixed, not scrollable vertically)
-                    HStack(spacing: 0) {
-                        Color.clear.frame(width: 160, height: 20)
-                        Divider()
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            RulerView(
-                                totalBars: timelineViewModel.totalBars,
-                                pixelsPerBar: timelineViewModel.pixelsPerBar,
-                                timeSignature: song.timeSignature,
-                                selectedRange: timelineViewModel.selectedRange,
-                                onRangeSelect: { range in
-                                    timelineViewModel.selectedRange = range
-                                },
-                                onRangeDeselect: {
-                                    timelineViewModel.clearSelectedRange()
-                                },
-                                onPlayheadPosition: { bar in
-                                    transportViewModel?.seek(toBar: bar)
-                                }
-                            )
-                        }
-                    }
-                    .frame(height: 20)
-                    Divider()
-
-                    // Section lane row (fixed, not scrollable vertically)
-                    HStack(spacing: 0) {
-                        Text("Sections")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 160, height: 24)
-                            .background(Color(nsColor: .controlBackgroundColor))
-                        Divider()
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            SectionLaneView(
-                                sections: song.sections,
-                                pixelsPerBar: timelineViewModel.pixelsPerBar,
-                                totalBars: timelineViewModel.totalBars,
-                                selectedSectionID: projectViewModel.selectedSectionID,
-                                onSectionSelect: { sectionID in
-                                    projectViewModel.selectedSectionID = sectionID
-                                },
-                                onSectionCreate: { startBar, lengthBars in
-                                    projectViewModel.addSection(startBar: startBar, lengthBars: lengthBars)
-                                },
-                                onSectionMove: { sectionID, newStartBar in
-                                    projectViewModel.moveSection(sectionID: sectionID, newStartBar: newStartBar)
-                                },
-                                onSectionResizeLeft: { sectionID, newStart, newLength in
-                                    projectViewModel.resizeSection(sectionID: sectionID, newStartBar: newStart, newLengthBars: newLength)
-                                },
-                                onSectionResizeRight: { sectionID, newLength in
-                                    projectViewModel.resizeSection(sectionID: sectionID, newLengthBars: newLength)
-                                },
-                                onSectionDoubleClick: { sectionID in
-                                    editingSectionID = sectionID
-                                    if let section = song.sections.first(where: { $0.id == sectionID }) {
-                                        editingSectionName = section.name
-                                    }
-                                },
-                                onSectionNavigate: { bar in
-                                    transportViewModel?.setPlayheadPosition(Double(bar))
-                                },
-                                onSectionDelete: { sectionID in
-                                    projectViewModel.removeSection(sectionID: sectionID)
-                                },
-                                onSectionRecolor: { sectionID, color in
-                                    projectViewModel.recolorSection(sectionID: sectionID, color: color)
-                                },
-                                onSectionCopy: { sectionID in
-                                    projectViewModel.copySectionWithMetadata(sectionID: sectionID)
-                                },
-                                onSectionSplit: { sectionID, atBar in
-                                    projectViewModel.splitSection(sectionID: sectionID, atBar: atBar)
-                                },
-                                playheadBar: Int(timelineViewModel.playheadBar)
-                            )
-                        }
-                    }
-                    .frame(height: 24)
-                    Divider()
-
-                    // Track area — grid fills available space, scrollbar at bottom.
-                    GeometryReader { geo in
-                        ScrollView(.vertical, showsIndicators: true) {
-                            HStack(alignment: .top, spacing: 0) {
-                                // Track headers — fixed width, scroll vertically with tracks
-                                VStack(spacing: 0) {
-                                    ForEach(song.tracks) { track in
-                                        trackHeaderWithActions(track: track)
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                                .frame(width: 160)
-                                .frame(minHeight: geo.size.height)
-                                .background(Color(nsColor: .controlBackgroundColor))
-
-                                Divider()
-
-                                // Timeline — scrolls horizontally inside, vertically with parent
-                                ScrollView(.horizontal, showsIndicators: true) {
-                                    TimelineView(
-                                        viewModel: timelineViewModel,
-                                        projectViewModel: projectViewModel,
-                                        song: song,
-                                        minHeight: geo.size.height,
-                                        onContainerDoubleClick: {
-                                            showContainerDetailEditor = true
-                                        },
-                                        onPlayheadPosition: { bar in
-                                            transportViewModel?.seek(toBar: bar)
-                                        }
-                                    )
-                                }
-                            }
-                            .frame(minHeight: geo.size.height)
-                        }
-                    }
-                    .scrollWheelHandler(
-                        onCmdScroll: { delta in
-                            if delta > 0 {
-                                timelineViewModel.zoomIn()
-                            } else {
-                                timelineViewModel.zoomOut()
-                            }
-                        }
-                    )
-
-                    Divider()
-
-                    // Add Track button
-                    HStack {
-                        addTrackMenu
-                            .padding(4)
-                            .frame(width: 160)
-                        Spacer()
-                    }
-                }
-            } else {
-                Text("No song selected")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            // Inspector
-            VStack(spacing: 0) {
-                Text("Inspector")
-                    .font(.headline)
-                    .padding(.top, 8)
-
-                Picker("", selection: $inspectorMode) {
-                    ForEach(InspectorMode.allCases, id: \.self) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-
-                Divider()
-
-                switch inspectorMode {
-                case .container:
-                    containerInspectorContent
-                case .storyline:
-                    storylineInspectorContent
-                }
-            }
-            .frame(minWidth: 180, idealWidth: 250, maxWidth: 300)
+            )
         }
+    }
+
+    public var body: some View {
+        mainSplitView
         .sheet(isPresented: $showContainerDetailEditor) {
-            if let container = projectViewModel.selectedContainer {
-                ContainerDetailEditor(
-                    container: container,
-                    trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
-                    allContainers: projectViewModel.allContainersInCurrentSong,
-                    allTracks: projectViewModel.allTracksInCurrentSong,
-                    onAddEffect: { effect in
-                        projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
-                    },
-                    onRemoveEffect: { effectID in
-                        projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
-                    },
-                    onToggleEffectBypass: { effectID in
-                        projectViewModel.toggleContainerEffectBypass(containerID: container.id, effectID: effectID)
-                    },
-                    onToggleChainBypass: {
-                        projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
-                    },
-                    onReorderEffects: { source, destination in
-                        projectViewModel.reorderContainerEffects(containerID: container.id, from: source, to: destination)
-                    },
-                    onSetInstrumentOverride: { override in
-                        projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
-                    },
-                    onAddEnterAction: { action in
-                        projectViewModel.addContainerEnterAction(containerID: container.id, action: action)
-                    },
-                    onRemoveEnterAction: { actionID in
-                        projectViewModel.removeContainerEnterAction(containerID: container.id, actionID: actionID)
-                    },
-                    onAddExitAction: { action in
-                        projectViewModel.addContainerExitAction(containerID: container.id, action: action)
-                    },
-                    onRemoveExitAction: { actionID in
-                        projectViewModel.removeContainerExitAction(containerID: container.id, actionID: actionID)
-                    },
-                    onAddAutomationLane: { lane in
-                        projectViewModel.addAutomationLane(containerID: container.id, lane: lane)
-                    },
-                    onRemoveAutomationLane: { laneID in
-                        projectViewModel.removeAutomationLane(containerID: container.id, laneID: laneID)
-                    },
-                    onAddBreakpoint: { laneID, breakpoint in
-                        projectViewModel.addAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
-                    },
-                    onRemoveBreakpoint: { laneID, breakpointID in
-                        projectViewModel.removeAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpointID: breakpointID)
-                    },
-                    onUpdateBreakpoint: { laneID, breakpoint in
-                        projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
-                    },
-                    onSetEnterFade: { fade in
-                        projectViewModel.setContainerEnterFade(containerID: container.id, fade: fade)
-                    },
-                    onSetExitFade: { fade in
-                        projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
-                    },
-                    onDismiss: {
-                        showContainerDetailEditor = false
-                    }
-                )
-            }
+            containerDetailEditorSheet
         }
         .alert("Delete Track", isPresented: .init(
             get: { trackToDelete != nil },
@@ -460,7 +278,298 @@ public struct MainContentView: View {
             cycleInspectorMode()
             return .handled
         }
+        // Cmd+Shift+M: toggle mixer view
+        .onKeyPress("m", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) && keyPress.modifiers.contains(.shift) else { return .ignored }
+            contentMode = contentMode == .timeline ? .mixer : .timeline
+            return .handled
+        }
     }
+
+    // MARK: - Main Split View
+
+    private var mainSplitView: some View {
+        HSplitView {
+            if isSidebarVisible {
+                sidebarContent
+            }
+            centerContent
+            inspectorPanel
+        }
+    }
+
+    private var sidebarContent: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $sidebarTab) {
+                ForEach(SidebarTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(8)
+
+            switch sidebarTab {
+            case .songs:
+                SongListView(viewModel: projectViewModel)
+            case .setlists:
+                if let setlistVM = setlistViewModel {
+                    SetlistSidebarView(viewModel: setlistVM)
+                } else {
+                    Text("Setlists unavailable")
+                        .foregroundStyle(.secondary)
+                        .padding()
+                    Spacer()
+                }
+            }
+        }
+        .frame(minWidth: 150, idealWidth: 200, maxWidth: 250)
+    }
+
+    @ViewBuilder
+    private var centerContent: some View {
+        if let song = currentSong {
+            VStack(spacing: 0) {
+                HStack {
+                    Picker("", selection: $contentMode) {
+                        ForEach(ContentMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 160)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    Spacer()
+                }
+                Divider()
+
+                switch contentMode {
+                case .timeline:
+                    timelineContent(song: song)
+                case .mixer:
+                    mixerContent(song: song)
+                }
+            }
+        } else {
+            Text("No song selected")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var inspectorPanel: some View {
+        VStack(spacing: 0) {
+            Text("Inspector")
+                .font(.headline)
+                .padding(.top, 8)
+
+            Picker("", selection: $inspectorMode) {
+                ForEach(InspectorMode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+
+            Divider()
+
+            switch inspectorMode {
+            case .container:
+                containerInspectorContent
+            case .storyline:
+                storylineInspectorContent
+            }
+        }
+        .frame(minWidth: 180, idealWidth: 250, maxWidth: 300)
+    }
+
+    // MARK: - Timeline Content
+
+    @ViewBuilder
+    private func timelineContent(song: Song) -> some View {
+        // Ruler row (fixed, not scrollable vertically)
+        HStack(spacing: 0) {
+            Color.clear.frame(width: 160, height: 20)
+            Divider()
+            ScrollView(.horizontal, showsIndicators: false) {
+                RulerView(
+                    totalBars: timelineViewModel.totalBars,
+                    pixelsPerBar: timelineViewModel.pixelsPerBar,
+                    timeSignature: song.timeSignature,
+                    selectedRange: timelineViewModel.selectedRange,
+                    onRangeSelect: { range in
+                        timelineViewModel.selectedRange = range
+                    },
+                    onRangeDeselect: {
+                        timelineViewModel.clearSelectedRange()
+                    },
+                    onPlayheadPosition: { bar in
+                        transportViewModel?.seek(toBar: bar)
+                    }
+                )
+            }
+        }
+        .frame(height: 20)
+        Divider()
+
+        // Section lane row (fixed, not scrollable vertically)
+        HStack(spacing: 0) {
+            Text("Sections")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .frame(width: 160, height: 24)
+                .background(Color(nsColor: .controlBackgroundColor))
+            Divider()
+            ScrollView(.horizontal, showsIndicators: false) {
+                SectionLaneView(
+                    sections: song.sections,
+                    pixelsPerBar: timelineViewModel.pixelsPerBar,
+                    totalBars: timelineViewModel.totalBars,
+                    selectedSectionID: projectViewModel.selectedSectionID,
+                    onSectionSelect: { sectionID in
+                        projectViewModel.selectedSectionID = sectionID
+                    },
+                    onSectionCreate: { startBar, lengthBars in
+                        projectViewModel.addSection(startBar: startBar, lengthBars: lengthBars)
+                    },
+                    onSectionMove: { sectionID, newStartBar in
+                        projectViewModel.moveSection(sectionID: sectionID, newStartBar: newStartBar)
+                    },
+                    onSectionResizeLeft: { sectionID, newStart, newLength in
+                        projectViewModel.resizeSection(sectionID: sectionID, newStartBar: newStart, newLengthBars: newLength)
+                    },
+                    onSectionResizeRight: { sectionID, newLength in
+                        projectViewModel.resizeSection(sectionID: sectionID, newLengthBars: newLength)
+                    },
+                    onSectionDoubleClick: { sectionID in
+                        editingSectionID = sectionID
+                        if let section = song.sections.first(where: { $0.id == sectionID }) {
+                            editingSectionName = section.name
+                        }
+                    },
+                    onSectionNavigate: { bar in
+                        transportViewModel?.setPlayheadPosition(Double(bar))
+                    },
+                    onSectionDelete: { sectionID in
+                        projectViewModel.removeSection(sectionID: sectionID)
+                    },
+                    onSectionRecolor: { sectionID, color in
+                        projectViewModel.recolorSection(sectionID: sectionID, color: color)
+                    },
+                    onSectionCopy: { sectionID in
+                        projectViewModel.copySectionWithMetadata(sectionID: sectionID)
+                    },
+                    onSectionSplit: { sectionID, atBar in
+                        projectViewModel.splitSection(sectionID: sectionID, atBar: atBar)
+                    },
+                    playheadBar: Int(timelineViewModel.playheadBar)
+                )
+            }
+        }
+        .frame(height: 24)
+        Divider()
+
+        // Track area — grid fills available space, scrollbar at bottom.
+        GeometryReader { geo in
+            ScrollView(.vertical, showsIndicators: true) {
+                HStack(alignment: .top, spacing: 0) {
+                    // Track headers — fixed width, scroll vertically with tracks
+                    VStack(spacing: 0) {
+                        ForEach(song.tracks) { track in
+                            trackHeaderWithActions(track: track)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: 160)
+                    .frame(minHeight: geo.size.height)
+                    .background(Color(nsColor: .controlBackgroundColor))
+
+                    Divider()
+
+                    // Timeline — scrolls horizontally inside, vertically with parent
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        TimelineView(
+                            viewModel: timelineViewModel,
+                            projectViewModel: projectViewModel,
+                            song: song,
+                            minHeight: geo.size.height,
+                            onContainerDoubleClick: {
+                                showContainerDetailEditor = true
+                            },
+                            onPlayheadPosition: { bar in
+                                transportViewModel?.seek(toBar: bar)
+                            }
+                        )
+                    }
+                }
+                .frame(minHeight: geo.size.height)
+            }
+        }
+        .scrollWheelHandler(
+            onCmdScroll: { delta in
+                if delta > 0 {
+                    timelineViewModel.zoomIn()
+                } else {
+                    timelineViewModel.zoomOut()
+                }
+            }
+        )
+
+        Divider()
+
+        // Add Track button
+        HStack {
+            addTrackMenu
+                .padding(4)
+                .frame(width: 160)
+            Spacer()
+        }
+    }
+
+    // MARK: - Mixer Content
+
+    @ViewBuilder
+    private func mixerContent(song: Song) -> some View {
+        MixerView(
+            tracks: song.tracks,
+            mixerViewModel: mixerViewModel ?? MixerViewModel(),
+            onVolumeChange: { trackID, volume in
+                projectViewModel.setTrackVolume(trackID: trackID, volume: volume)
+            },
+            onPanChange: { trackID, pan in
+                projectViewModel.setTrackPan(trackID: trackID, pan: pan)
+            },
+            onMuteToggle: { trackID in
+                projectViewModel.toggleMute(trackID: trackID)
+            },
+            onSoloToggle: { trackID in
+                projectViewModel.toggleSolo(trackID: trackID)
+            },
+            onRecordArmToggle: { trackID, armed in
+                projectViewModel.setTrackRecordArmed(trackID: trackID, armed: armed)
+            },
+            onMonitorToggle: { trackID, monitoring in
+                projectViewModel.setTrackMonitoring(trackID: trackID, monitoring: monitoring)
+                if let track = song.tracks.first(where: { $0.id == trackID }) {
+                    transportViewModel?.setInputMonitoring(track: track, enabled: monitoring)
+                }
+            }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+        Divider()
+
+        // Add Track button
+        HStack {
+            addTrackMenu
+                .padding(4)
+                .frame(width: 160)
+            Spacer()
+        }
+    }
+
+    // MARK: - Inspector Content
 
     @ViewBuilder
     private var containerInspectorContent: some View {

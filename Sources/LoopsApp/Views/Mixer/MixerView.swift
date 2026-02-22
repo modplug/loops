@@ -1,0 +1,94 @@
+import SwiftUI
+import LoopsCore
+
+/// The main mixer panel showing all tracks as vertical mixer strips with a master fader on the right.
+public struct MixerView: View {
+    let tracks: [Track]
+    let mixerViewModel: MixerViewModel
+    var onVolumeChange: ((ID<Track>, Float) -> Void)?
+    var onPanChange: ((ID<Track>, Float) -> Void)?
+    var onMuteToggle: ((ID<Track>) -> Void)?
+    var onSoloToggle: ((ID<Track>) -> Void)?
+    var onRecordArmToggle: ((ID<Track>, Bool) -> Void)?
+    var onMonitorToggle: ((ID<Track>, Bool) -> Void)?
+
+    public init(
+        tracks: [Track],
+        mixerViewModel: MixerViewModel,
+        onVolumeChange: ((ID<Track>, Float) -> Void)? = nil,
+        onPanChange: ((ID<Track>, Float) -> Void)? = nil,
+        onMuteToggle: ((ID<Track>) -> Void)? = nil,
+        onSoloToggle: ((ID<Track>) -> Void)? = nil,
+        onRecordArmToggle: ((ID<Track>, Bool) -> Void)? = nil,
+        onMonitorToggle: ((ID<Track>, Bool) -> Void)? = nil
+    ) {
+        self.tracks = tracks
+        self.mixerViewModel = mixerViewModel
+        self.onVolumeChange = onVolumeChange
+        self.onPanChange = onPanChange
+        self.onMuteToggle = onMuteToggle
+        self.onSoloToggle = onSoloToggle
+        self.onRecordArmToggle = onRecordArmToggle
+        self.onMonitorToggle = onMonitorToggle
+    }
+
+    private var regularTracks: [Track] {
+        tracks.filter { $0.kind != .master }
+    }
+
+    private var masterTrack: Track? {
+        tracks.first { $0.kind == .master }
+    }
+
+    public var body: some View {
+        HStack(spacing: 0) {
+            // Regular tracks in a horizontal scroll view
+            ScrollView(.horizontal, showsIndicators: true) {
+                HStack(spacing: 4) {
+                    ForEach(regularTracks) { track in
+                        stripView(for: track)
+                    }
+                }
+                .padding(8)
+            }
+
+            // Divider between regular tracks and master
+            if masterTrack != nil {
+                Divider()
+            }
+
+            // Master strip (fixed on the right)
+            if let master = masterTrack {
+                stripView(for: master)
+                    .padding(8)
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    @ViewBuilder
+    private func stripView(for track: Track) -> some View {
+        MixerStripView(
+            track: track,
+            level: mixerViewModel.trackLevels[track.id] ?? 0.0,
+            onVolumeChange: { newVolume in
+                onVolumeChange?(track.id, newVolume)
+            },
+            onPanChange: { newPan in
+                onPanChange?(track.id, newPan)
+            },
+            onMuteToggle: {
+                onMuteToggle?(track.id)
+            },
+            onSoloToggle: {
+                onSoloToggle?(track.id)
+            },
+            onRecordArmToggle: {
+                onRecordArmToggle?(track.id, !track.isRecordArmed)
+            },
+            onMonitorToggle: {
+                onMonitorToggle?(track.id, !track.isMonitoring)
+            }
+        )
+    }
+}
