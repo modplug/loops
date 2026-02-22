@@ -9,8 +9,6 @@ on:
 jobs:
   build-and-test:
     runs-on: macos-14
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -21,44 +19,14 @@ jobs:
         run: swift --version
 
       - name: Build
-        id: build
-        continue-on-error: true
         run: |
           set -o pipefail
           swift build 2>&1 | tee build-output.txt
 
-      - name: Post build errors if failed
-        if: steps.build.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ERRORS=$(cat build-output.txt)
-          gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments \
-            -f "body=## CI Build Failed
-          \`\`\`
-          $ERRORS
-          \`\`\`" || true
-          exit 1
-
       - name: Run tests
-        id: test
-        continue-on-error: true
         run: |
           set -o pipefail
           swift test 2>&1 | tee test-output.txt
-
-      - name: Post test errors if failed
-        if: steps.test.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ERRORS=$(tail -100 test-output.txt)
-          gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments \
-            -f "body=## CI Tests Failed
-          \`\`\`
-          $ERRORS
-          \`\`\`" || true
-          exit 1
 
       - name: Upload build logs
         if: always()
