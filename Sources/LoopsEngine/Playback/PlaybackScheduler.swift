@@ -249,10 +249,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         // Track mixers and container subgraphs
+        let hasSolo = preloadedTracks.contains { $0.track.isSoloed }
         for preloaded in preloadedTracks {
             let trackMixer = AVAudioMixerNode()
             engine.attach(trackMixer)
-            trackMixer.volume = preloaded.track.isMuted ? 0.0 : preloaded.track.volume
+            let effectivelyMuted = preloaded.track.isMuted
+                || (hasSolo && !preloaded.track.isSoloed)
+            trackMixer.volume = effectivelyMuted ? 0.0 : preloaded.track.volume
             trackMixer.pan = preloaded.track.pan
 
             for unit in preloaded.effects {
@@ -339,11 +342,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
         lock.unlock()
 
         for track in song.tracks {
-            if track.isMuted { continue }
             // Master track has no playable containers
             if track.kind == .master { continue }
 
-            // Schedule each container that has a recording (resolve clone fields)
+            // Schedule all containers regardless of mute/solo — muting is
+            // handled by mixer volumes so tracks can be unmuted during playback.
             for container in track.containers {
                 let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
                 scheduleContainer(
@@ -381,9 +384,21 @@ public final class PlaybackScheduler: @unchecked Sendable {
         currentSong = nil
         lock.unlock()
 
-        for (_, subgraph) in subgraphs {
-            subgraph.playerNode.stop()
+        // Declick fade-out: ramp main mixer output volume to zero over ~8ms
+        // so the render thread picks up intermediate values before we stop nodes.
+        if !subgraphs.isEmpty {
+            let savedVolume = engine.mainMixerNode.outputVolume
+            let steps = 8
+            for i in 1...steps {
+                engine.mainMixerNode.outputVolume = savedVolume * Float(steps - i) / Float(steps)
+                usleep(1000)
+            }
+            for (_, subgraph) in subgraphs {
+                subgraph.playerNode.stop()
+            }
+            engine.mainMixerNode.outputVolume = savedVolume
         }
+
         for container in containers {
             actionDispatcher?.containerDidExit(container)
         }
@@ -564,15 +579,17 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     exitFade: container.exitFade
                 )
             } else {
-                subgraph.playerNode.scheduleSegment(
-                    audioFile,
+                scheduleDeclickedSegment(
+                    player: subgraph.playerNode,
+                    audioFile: audioFile,
                     startingFrame: startOffset,
-                    frameCount: frameCount,
-                    at: nil
+                    frameCount: frameCount
                 )
             }
         }
 
+        // Guard against concurrent cleanup detaching the node from the engine
+        guard subgraph.playerNode.engine != nil else { return }
         subgraph.playerNode.play()
 
         lock.lock()
@@ -591,6 +608,64 @@ public final class PlaybackScheduler: @unchecked Sendable {
         return beatsPerBar * secondsPerBeat * sampleRate
     }
 
+    // MARK: - Transport Declick
+
+    /// Number of frames for the transport declick fade (linear ramp).
+    /// ~256 samples ≈ 5.8 ms at 44.1 kHz — imperceptible but eliminates clicks.
+    private static let declickFrameCount: AVAudioFrameCount = 256
+
+    /// Applies a linear fade-in (0→1) over the first `declickFrameCount` frames of a buffer.
+    private static func applyDeclickFadeIn(to buffer: AVAudioPCMBuffer) {
+        let channelCount = Int(buffer.format.channelCount)
+        let rampLength = min(Int(declickFrameCount), Int(buffer.frameLength))
+        guard rampLength > 0 else { return }
+        for channel in 0..<channelCount {
+            guard let channelData = buffer.floatChannelData?[channel] else { continue }
+            for frame in 0..<rampLength {
+                channelData[frame] *= Float(frame) / Float(rampLength)
+            }
+        }
+    }
+
+    /// Schedules a segment with a declick fade-in on the first few frames.
+    /// Reads the initial samples into a buffer, applies a linear ramp from 0→1,
+    /// then schedules the remainder as a normal segment.
+    private func scheduleDeclickedSegment(
+        player: AVAudioPlayerNode,
+        audioFile: AVAudioFile,
+        startingFrame: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount
+    ) {
+        let declickFrames = min(Self.declickFrameCount, frameCount)
+        let format = audioFile.processingFormat
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: declickFrames) else {
+            player.scheduleSegment(audioFile, startingFrame: startingFrame, frameCount: frameCount, at: nil)
+            return
+        }
+
+        audioFile.framePosition = startingFrame
+        do {
+            try audioFile.read(into: buffer, frameCount: declickFrames)
+        } catch {
+            player.scheduleSegment(audioFile, startingFrame: startingFrame, frameCount: frameCount, at: nil)
+            return
+        }
+
+        Self.applyDeclickFadeIn(to: buffer)
+        player.scheduleBuffer(buffer)
+
+        let remainingFrames = frameCount - declickFrames
+        if remainingFrames > 0 {
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: startingFrame + AVAudioFramePosition(declickFrames),
+                frameCount: remainingFrames,
+                at: nil
+            )
+        }
+    }
+
     private func scheduleLoopingPlayback(
         player: AVAudioPlayerNode,
         audioFile: AVAudioFile,
@@ -606,6 +681,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         var position = max(playheadSample, containerStartSample) - containerStartSample
         let endPosition = containerLengthSamples
+        var isFirst = true
 
         while position < endPosition {
             let positionInLoop = position % fileLengthSamples
@@ -615,12 +691,22 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
             guard framesToPlay > 0 else { break }
 
-            player.scheduleSegment(
-                audioFile,
-                startingFrame: AVAudioFramePosition(positionInLoop),
-                frameCount: AVAudioFrameCount(framesToPlay),
-                at: nil
-            )
+            if isFirst {
+                scheduleDeclickedSegment(
+                    player: player,
+                    audioFile: audioFile,
+                    startingFrame: AVAudioFramePosition(positionInLoop),
+                    frameCount: AVAudioFrameCount(framesToPlay)
+                )
+                isFirst = false
+            } else {
+                player.scheduleSegment(
+                    audioFile,
+                    startingFrame: AVAudioFramePosition(positionInLoop),
+                    frameCount: AVAudioFrameCount(framesToPlay),
+                    at: nil
+                )
+            }
 
             position += framesToPlay
         }
@@ -655,6 +741,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
             exitFade: exitFade
         )
 
+        // Apply declick when starting outside the container's enter fade region
+        let enterFadeSamples = enterFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        if containerPosition >= enterFadeSamples {
+            Self.applyDeclickFadeIn(to: buffer)
+        }
+
         player.scheduleBuffer(buffer)
     }
 
@@ -681,6 +773,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         var position = max(playheadSample, containerStartSample) - containerStartSample
         let endPosition = containerLengthSamples
         let format = audioFile.processingFormat
+        var isFirst = true
 
         while position < endPosition {
             let positionInLoop = position % fileLengthSamples
@@ -713,16 +806,31 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     exitFade: exitFade
                 )
 
+                // Declick when starting outside the enter fade region
+                if isFirst && position >= enterFadeSamples {
+                    Self.applyDeclickFadeIn(to: buffer)
+                }
+
                 player.scheduleBuffer(buffer)
             } else {
-                player.scheduleSegment(
-                    audioFile,
-                    startingFrame: AVAudioFramePosition(positionInLoop),
-                    frameCount: AVAudioFrameCount(framesToPlay),
-                    at: nil
-                )
+                if isFirst {
+                    scheduleDeclickedSegment(
+                        player: player,
+                        audioFile: audioFile,
+                        startingFrame: AVAudioFramePosition(positionInLoop),
+                        frameCount: AVAudioFrameCount(framesToPlay)
+                    )
+                } else {
+                    player.scheduleSegment(
+                        audioFile,
+                        startingFrame: AVAudioFramePosition(positionInLoop),
+                        frameCount: AVAudioFrameCount(framesToPlay),
+                        at: nil
+                    )
+                }
             }
 
+            isFirst = false
             position += framesToPlay
         }
     }

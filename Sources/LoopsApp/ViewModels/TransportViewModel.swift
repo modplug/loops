@@ -226,6 +226,24 @@ public final class TransportViewModel {
         syncFromTransport()
     }
 
+    /// Pushes current mute/solo state to the live audio graph.
+    /// Call after toggling mute or solo on any track.
+    public func updateMuteSoloState(tracks: [Track]) {
+        guard let scheduler = playbackScheduler else { return }
+        let hasSolo = tracks.contains { $0.isSoloed }
+        for track in tracks {
+            guard track.kind != .master else { continue }
+            let effectivelyMuted = track.isMuted
+                || (hasSolo && !track.isSoloed)
+            scheduler.updateTrackMix(
+                trackID: track.id,
+                volume: track.volume,
+                pan: track.pan,
+                isMuted: effectivelyMuted
+            )
+        }
+    }
+
     /// Seeks to a new bar position. If currently playing, stops and restarts
     /// playback from the new position so audio is rescheduled.
     public func seek(toBar bar: Double) {

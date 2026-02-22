@@ -548,9 +548,15 @@ public struct MainContentView: View {
             },
             onMuteToggle: { trackID in
                 projectViewModel.toggleMute(trackID: trackID)
+                if let tracks = projectViewModel.currentSong?.tracks {
+                    transportViewModel?.updateMuteSoloState(tracks: tracks)
+                }
             },
             onSoloToggle: { trackID in
                 projectViewModel.toggleSolo(trackID: trackID)
+                if let tracks = projectViewModel.currentSong?.tracks {
+                    transportViewModel?.updateMuteSoloState(tracks: tracks)
+                }
             },
             onRecordArmToggle: { trackID, armed in
                 projectViewModel.setTrackRecordArmed(trackID: trackID, armed: armed)
@@ -738,8 +744,18 @@ public struct MainContentView: View {
             midiChannelLabel: midiChannelLabel(for: track.midiInputChannel),
             isAutomationExpanded: isExpanded,
             automationLaneLabels: laneLabels,
-            onMuteToggle: { projectViewModel.toggleMute(trackID: track.id) },
-            onSoloToggle: { projectViewModel.toggleSolo(trackID: track.id) },
+            onMuteToggle: {
+                projectViewModel.toggleMute(trackID: track.id)
+                if let tracks = projectViewModel.currentSong?.tracks {
+                    transportViewModel?.updateMuteSoloState(tracks: tracks)
+                }
+            },
+            onSoloToggle: {
+                projectViewModel.toggleSolo(trackID: track.id)
+                if let tracks = projectViewModel.currentSong?.tracks {
+                    transportViewModel?.updateMuteSoloState(tracks: tracks)
+                }
+            },
             onRecordArmToggle: { projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed) },
             onMonitorToggle: {
                 let newState = !track.isMonitoring
