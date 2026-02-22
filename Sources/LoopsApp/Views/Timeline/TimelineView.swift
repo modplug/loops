@@ -9,13 +9,15 @@ public struct TimelineView: View {
     let song: Song
     let trackHeight: CGFloat
     let minHeight: CGFloat
+    var onContainerDoubleClick: (() -> Void)?
 
-    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, trackHeight: CGFloat = 80, minHeight: CGFloat = 0) {
+    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, onContainerDoubleClick: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.projectViewModel = projectViewModel
         self.song = song
         self.trackHeight = trackHeight
         self.minHeight = minHeight
+        self.onContainerDoubleClick = onContainerDoubleClick
     }
 
     public var totalContentHeight: CGFloat {
@@ -74,6 +76,10 @@ public struct TimelineView: View {
                                 startBar: startBar,
                                 audioDirectory: projectViewModel.audioDirectory
                             )
+                        },
+                        onContainerDoubleClick: { containerID in
+                            projectViewModel.selectedContainerID = containerID
+                            onContainerDoubleClick?()
                         }
                     )
                 }

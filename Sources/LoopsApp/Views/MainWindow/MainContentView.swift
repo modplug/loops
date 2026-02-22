@@ -21,6 +21,7 @@ public struct MainContentView: View {
     @State private var editingTrackName: String = ""
     @State private var isSidebarVisible: Bool = true
     @State private var sidebarTab: SidebarTab = .songs
+    @State private var showContainerDetailEditor: Bool = false
 
     public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
         self.projectViewModel = projectViewModel
@@ -106,7 +107,10 @@ public struct MainContentView: View {
                                         viewModel: timelineViewModel,
                                         projectViewModel: projectViewModel,
                                         song: song,
-                                        minHeight: geo.size.height
+                                        minHeight: geo.size.height,
+                                        onContainerDoubleClick: {
+                                            showContainerDetailEditor = true
+                                        }
                                     )
                                 }
                             }
@@ -151,6 +155,7 @@ public struct MainContentView: View {
                         trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
                         allContainers: projectViewModel.allContainersInCurrentSong,
                         allTracks: projectViewModel.allTracksInCurrentSong,
+                        showDetailEditor: $showContainerDetailEditor,
                         onUpdateLoopSettings: { settings in
                             projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)
                         },
@@ -168,6 +173,9 @@ public struct MainContentView: View {
                         },
                         onToggleChainBypass: {
                             projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
+                        },
+                        onReorderEffects: { source, destination in
+                            projectViewModel.reorderContainerEffects(containerID: container.id, from: source, to: destination)
                         },
                         onSetInstrumentOverride: { override in
                             projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
@@ -215,6 +223,70 @@ public struct MainContentView: View {
             }
             .frame(minWidth: 180, idealWidth: 250, maxWidth: 300)
         }
+        .sheet(isPresented: $showContainerDetailEditor) {
+            if let container = projectViewModel.selectedContainer {
+                ContainerDetailEditor(
+                    container: container,
+                    trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
+                    allContainers: projectViewModel.allContainersInCurrentSong,
+                    allTracks: projectViewModel.allTracksInCurrentSong,
+                    onAddEffect: { effect in
+                        projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
+                    },
+                    onRemoveEffect: { effectID in
+                        projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
+                    },
+                    onToggleEffectBypass: { effectID in
+                        projectViewModel.toggleContainerEffectBypass(containerID: container.id, effectID: effectID)
+                    },
+                    onToggleChainBypass: {
+                        projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
+                    },
+                    onReorderEffects: { source, destination in
+                        projectViewModel.reorderContainerEffects(containerID: container.id, from: source, to: destination)
+                    },
+                    onSetInstrumentOverride: { override in
+                        projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
+                    },
+                    onAddEnterAction: { action in
+                        projectViewModel.addContainerEnterAction(containerID: container.id, action: action)
+                    },
+                    onRemoveEnterAction: { actionID in
+                        projectViewModel.removeContainerEnterAction(containerID: container.id, actionID: actionID)
+                    },
+                    onAddExitAction: { action in
+                        projectViewModel.addContainerExitAction(containerID: container.id, action: action)
+                    },
+                    onRemoveExitAction: { actionID in
+                        projectViewModel.removeContainerExitAction(containerID: container.id, actionID: actionID)
+                    },
+                    onAddAutomationLane: { lane in
+                        projectViewModel.addAutomationLane(containerID: container.id, lane: lane)
+                    },
+                    onRemoveAutomationLane: { laneID in
+                        projectViewModel.removeAutomationLane(containerID: container.id, laneID: laneID)
+                    },
+                    onAddBreakpoint: { laneID, breakpoint in
+                        projectViewModel.addAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+                    },
+                    onRemoveBreakpoint: { laneID, breakpointID in
+                        projectViewModel.removeAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpointID: breakpointID)
+                    },
+                    onUpdateBreakpoint: { laneID, breakpoint in
+                        projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+                    },
+                    onSetEnterFade: { fade in
+                        projectViewModel.setContainerEnterFade(containerID: container.id, fade: fade)
+                    },
+                    onSetExitFade: { fade in
+                        projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
+                    },
+                    onDismiss: {
+                        showContainerDetailEditor = false
+                    }
+                )
+            }
+        }
         .alert("Delete Track", isPresented: .init(
             get: { trackToDelete != nil },
             set: { if !$0 { trackToDelete = nil } }
@@ -251,6 +323,13 @@ public struct MainContentView: View {
         .onKeyPress(.space) {
             transportViewModel?.togglePlayPause()
             return .handled
+        }
+        .onKeyPress(.return) {
+            if projectViewModel.selectedContainer != nil {
+                showContainerDetailEditor = true
+                return .handled
+            }
+            return .ignored
         }
     }
 

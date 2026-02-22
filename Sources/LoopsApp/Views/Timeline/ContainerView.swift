@@ -17,6 +17,7 @@ public struct ContainerView: View {
     var onMove: ((_ newStartBar: Int) -> Bool)?
     var onResizeLeft: ((_ newStartBar: Int, _ newLength: Int) -> Bool)?
     var onResizeRight: ((_ newLength: Int) -> Bool)?
+    var onDoubleClick: (() -> Void)?
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -36,7 +37,8 @@ public struct ContainerView: View {
         onDelete: (() -> Void)? = nil,
         onMove: ((_ newStartBar: Int) -> Bool)? = nil,
         onResizeLeft: ((_ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
-        onResizeRight: ((_ newLength: Int) -> Bool)? = nil
+        onResizeRight: ((_ newLength: Int) -> Bool)? = nil,
+        onDoubleClick: (() -> Void)? = nil
     ) {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
@@ -49,6 +51,7 @@ public struct ContainerView: View {
         self.onMove = onMove
         self.onResizeLeft = onResizeLeft
         self.onResizeRight = onResizeRight
+        self.onDoubleClick = onDoubleClick
     }
 
     private var containerWidth: CGFloat {
@@ -121,6 +124,7 @@ public struct ContainerView: View {
         }
         .frame(width: displayWidth, height: height)
         .offset(x: displayOffset)
+        .onTapGesture(count: 2) { onDoubleClick?() }
         .onTapGesture { onSelect?() }
         .gesture(moveGesture)
         .contextMenu {

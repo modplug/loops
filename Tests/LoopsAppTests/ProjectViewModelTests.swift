@@ -723,4 +723,150 @@ struct ProjectViewModelTests {
         vm.undoManager?.redo()
         #expect(vm.project.songs[0].tracks.count == 3)
     }
+
+    // MARK: - Container Detail Editor Tests (Reorder Effects)
+
+    @Test("Reorder container effects moves effect down")
+    @MainActor
+    func reorderContainerEffectsDown() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effectA = InsertEffect(component: comp, displayName: "Reverb", orderIndex: 0)
+        let effectB = InsertEffect(component: comp, displayName: "Delay", orderIndex: 1)
+        let effectC = InsertEffect(component: comp, displayName: "Chorus", orderIndex: 2)
+
+        vm.addContainerEffect(containerID: containerID, effect: effectA)
+        vm.addContainerEffect(containerID: containerID, effect: effectB)
+        vm.addContainerEffect(containerID: containerID, effect: effectC)
+
+        let effects = vm.project.songs[0].tracks[0].containers[0].insertEffects
+        #expect(effects.count == 3)
+
+        // Move first effect to position 2 (after second)
+        vm.reorderContainerEffects(containerID: containerID, from: IndexSet(integer: 0), to: 2)
+
+        let reordered = vm.project.songs[0].tracks[0].containers[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(reordered[0].displayName == "Delay")
+        #expect(reordered[1].displayName == "Reverb")
+        #expect(reordered[2].displayName == "Chorus")
+        #expect(reordered[0].orderIndex == 0)
+        #expect(reordered[1].orderIndex == 1)
+        #expect(reordered[2].orderIndex == 2)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Reorder container effects moves effect up")
+    @MainActor
+    func reorderContainerEffectsUp() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "Reverb", orderIndex: 0))
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "Delay", orderIndex: 1))
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "Chorus", orderIndex: 2))
+
+        // Move last effect to position 0 (beginning)
+        vm.reorderContainerEffects(containerID: containerID, from: IndexSet(integer: 2), to: 0)
+
+        let reordered = vm.project.songs[0].tracks[0].containers[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(reordered[0].displayName == "Chorus")
+        #expect(reordered[1].displayName == "Reverb")
+        #expect(reordered[2].displayName == "Delay")
+    }
+
+    @Test("Reorder container effects with undo restores original order")
+    @MainActor
+    func reorderContainerEffectsUndo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "Reverb", orderIndex: 0))
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "Delay", orderIndex: 1))
+
+        vm.reorderContainerEffects(containerID: containerID, from: IndexSet(integer: 0), to: 2)
+
+        let afterReorder = vm.project.songs[0].tracks[0].containers[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(afterReorder[0].displayName == "Delay")
+        #expect(afterReorder[1].displayName == "Reverb")
+
+        vm.undoManager?.undo()
+
+        let afterUndo = vm.project.songs[0].tracks[0].containers[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(afterUndo[0].displayName == "Reverb")
+        #expect(afterUndo[1].displayName == "Delay")
+    }
+
+    @Test("Reorder with invalid container ID is no-op")
+    @MainActor
+    func reorderContainerEffectsInvalidID() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+
+        let bogusID = ID<Container>()
+        vm.reorderContainerEffects(containerID: bogusID, from: IndexSet(integer: 0), to: 1)
+        // Should not crash or modify state — no unsaved changes from reorder
+        #expect(!vm.hasUnsavedChanges)
+    }
+
+    @Test("Selected container returns correct container")
+    @MainActor
+    func selectedContainerProperty() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        vm.selectedContainerID = containerID
+        #expect(vm.selectedContainer != nil)
+        #expect(vm.selectedContainer?.id == containerID)
+        #expect(vm.selectedContainerTrackKind == .audio)
+    }
+
+    @Test("All containers in current song returns all containers across tracks")
+    @MainActor
+    func allContainersInCurrentSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        let track1ID = vm.project.songs[0].tracks[0].id
+        let track2ID = vm.project.songs[0].tracks[1].id
+        let _ = vm.addContainer(trackID: track1ID, startBar: 1, lengthBars: 2)
+        let _ = vm.addContainer(trackID: track1ID, startBar: 3, lengthBars: 2)
+        let _ = vm.addContainer(trackID: track2ID, startBar: 1, lengthBars: 4)
+
+        let allContainers = vm.allContainersInCurrentSong
+        #expect(allContainers.count == 3)
+    }
+
+    @Test("All tracks in current song returns all tracks")
+    @MainActor
+    func allTracksInCurrentSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        vm.addTrack(kind: .bus)
+
+        let allTracks = vm.allTracksInCurrentSong
+        #expect(allTracks.count == 3)
+    }
 }

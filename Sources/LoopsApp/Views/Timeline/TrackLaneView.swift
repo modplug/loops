@@ -19,6 +19,7 @@ public struct TrackLaneView: View {
     var onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)?
     var onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)?
     var onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)?
+    var onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)?
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
@@ -37,7 +38,8 @@ public struct TrackLaneView: View {
         onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
         onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)? = nil,
         onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)? = nil,
-        onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil
+        onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil,
+        onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)? = nil
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
@@ -52,6 +54,7 @@ public struct TrackLaneView: View {
         self.onContainerResizeRight = onContainerResizeRight
         self.onCreateContainer = onCreateContainer
         self.onDropAudioFile = onDropAudioFile
+        self.onContainerDoubleClick = onContainerDoubleClick
     }
 
     public var body: some View {
@@ -86,7 +89,8 @@ public struct TrackLaneView: View {
                     onDelete: { onContainerDelete?(container.id) },
                     onMove: { newStart in onContainerMove?(container.id, newStart) ?? false },
                     onResizeLeft: { start, len in onContainerResizeLeft?(container.id, start, len) ?? false },
-                    onResizeRight: { len in onContainerResizeRight?(container.id, len) ?? false }
+                    onResizeRight: { len in onContainerResizeRight?(container.id, len) ?? false },
+                    onDoubleClick: { onContainerDoubleClick?(container.id) }
                 )
                 .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
             }

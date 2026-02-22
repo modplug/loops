@@ -519,6 +519,25 @@ public final class ProjectViewModel {
         }
     }
 
+    /// Reorders a container's insert effects by moving from source indices to a destination index.
+    public func reorderContainerEffects(containerID: ID<Container>, from source: IndexSet, to destination: Int) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Reorder Effects")
+                // Sort effects by orderIndex before reordering
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.sort { $0.orderIndex < $1.orderIndex }
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.move(fromOffsets: source, toOffset: destination)
+                // Reindex
+                for i in project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.indices {
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[i].orderIndex = i
+                }
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
     /// Toggles bypass on a single effect within a container.
     public func toggleContainerEffectBypass(containerID: ID<Container>, effectID: ID<InsertEffect>) {
         guard !project.songs.isEmpty else { return }
