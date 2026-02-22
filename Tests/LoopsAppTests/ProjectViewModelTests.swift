@@ -2340,4 +2340,132 @@ struct ProjectViewModelTests {
         #expect(vm.project.songs.count == 2)
         #expect(vm.project.songs[1].metronomeConfig == config)
     }
+
+    // MARK: - Track Inspector Routing Tests (#87)
+
+    @Test("Set input port via inspector updates track model")
+    @MainActor
+    func setInputPortUpdatesTrackModel() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(vm.project.songs[0].tracks[0].inputPortID == nil)
+        vm.setTrackInputPort(trackID: trackID, portID: "device:0:0")
+        #expect(vm.project.songs[0].tracks[0].inputPortID == "device:0:0")
+    }
+
+    @Test("Set output port via inspector updates track model")
+    @MainActor
+    func setOutputPortUpdatesTrackModel() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(vm.project.songs[0].tracks[0].outputPortID == nil)
+        vm.setTrackOutputPort(trackID: trackID, portID: "device:1:0")
+        #expect(vm.project.songs[0].tracks[0].outputPortID == "device:1:0")
+    }
+
+    @Test("Add effect via inspector is reflected in track insert chain")
+    @MainActor
+    func addEffectReflectedInTrackChain() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(vm.project.songs[0].tracks[0].insertEffects.isEmpty)
+        let effect = InsertEffect(
+            component: AudioComponentInfo(componentType: 0x61756678, componentSubType: 0x74737431, componentManufacturer: 0x41706C65),
+            displayName: "Test Effect",
+            orderIndex: 0
+        )
+        vm.addTrackEffect(trackID: trackID, effect: effect)
+        #expect(vm.project.songs[0].tracks[0].insertEffects.count == 1)
+        #expect(vm.project.songs[0].tracks[0].insertEffects[0].displayName == "Test Effect")
+    }
+
+    @Test("Set input port undo/redo")
+    @MainActor
+    func setInputPortUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.setTrackInputPort(trackID: trackID, portID: "device:0:0")
+        #expect(vm.project.songs[0].tracks[0].inputPortID == "device:0:0")
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].inputPortID == nil)
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].inputPortID == "device:0:0")
+    }
+
+    @Test("Set output port undo/redo")
+    @MainActor
+    func setOutputPortUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.setTrackOutputPort(trackID: trackID, portID: "device:1:0")
+        #expect(vm.project.songs[0].tracks[0].outputPortID == "device:1:0")
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].outputPortID == nil)
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].outputPortID == "device:1:0")
+    }
+
+    @Test("Set master output port updates master track")
+    @MainActor
+    func setMasterOutputPort() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        guard let masterTrack = vm.project.songs[0].tracks.first(where: { $0.kind == .master }) else {
+            Issue.record("Master track not found")
+            return
+        }
+        #expect(masterTrack.outputPortID == nil)
+        vm.setMasterOutputPort(portID: "device:2:0")
+        let updated = vm.project.songs[0].tracks.first(where: { $0.kind == .master })!
+        #expect(updated.outputPortID == "device:2:0")
+    }
+
+    @Test("Set MIDI input via inspector updates device and channel")
+    @MainActor
+    func setMIDIInputUpdatesDeviceAndChannel() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == nil)
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == nil)
+        vm.setTrackMIDIInput(trackID: trackID, deviceID: "midi-dev-1", channel: 10)
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == "midi-dev-1")
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == 10)
+    }
+
+    @Test("Clear input port sets to nil (default)")
+    @MainActor
+    func clearInputPortSetsNil() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.setTrackInputPort(trackID: trackID, portID: "device:0:0")
+        #expect(vm.project.songs[0].tracks[0].inputPortID == "device:0:0")
+        vm.setTrackInputPort(trackID: trackID, portID: nil)
+        #expect(vm.project.songs[0].tracks[0].inputPortID == nil)
+    }
+
+    @Test("Invalid track ID is no-op for set input port")
+    @MainActor
+    func setInputPortInvalidTrackID() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let bogusID = ID<Track>()
+        vm.setTrackInputPort(trackID: bogusID, portID: "device:0:0")
+        #expect(vm.project.songs[0].tracks[0].inputPortID == nil)
+    }
 }

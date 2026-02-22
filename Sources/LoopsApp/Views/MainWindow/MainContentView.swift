@@ -688,6 +688,19 @@ public struct MainContentView: View {
             onReorderEffects: { source, destination in
                 projectViewModel.reorderTrackEffects(trackID: track.id, from: source, to: destination)
             },
+            onSetInputPort: { portID in
+                projectViewModel.setTrackInputPort(trackID: track.id, portID: portID)
+            },
+            onSetOutputPort: { portID in
+                if track.kind == .master {
+                    projectViewModel.setMasterOutputPort(portID: portID)
+                } else {
+                    projectViewModel.setTrackOutputPort(trackID: track.id, portID: portID)
+                }
+            },
+            onSetMIDIInput: { deviceID, channel in
+                projectViewModel.setTrackMIDIInput(trackID: track.id, deviceID: deviceID, channel: channel)
+            },
             onSetVolume: { volume in
                 projectViewModel.setTrackVolume(trackID: track.id, volume: volume)
             },
@@ -709,10 +722,9 @@ public struct MainContentView: View {
             },
             midiParameterMappings: projectViewModel.project.midiParameterMappings,
             isMIDILearning: projectViewModel.isMIDIParameterLearning,
-            inputPortName: inputPortName(for: track.inputPortID),
-            outputPortName: outputPortName(for: track.outputPortID),
-            midiDeviceName: midiDeviceName(for: track.midiInputDeviceID),
-            midiChannelLabel: midiChannelLabel(for: track.midiInputChannel)
+            availableInputPorts: settingsViewModel?.inputPorts ?? [],
+            availableOutputPorts: settingsViewModel?.outputPorts ?? [],
+            availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? []
         )
     }
 

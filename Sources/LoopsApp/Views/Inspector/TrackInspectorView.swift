@@ -40,11 +40,10 @@ public struct TrackInspectorView: View {
     // Whether MIDI learn is currently active
     var isMIDILearning: Bool = false
 
-    // Port/device name resolvers
-    var inputPortName: String = "Default"
-    var outputPortName: String = "Default"
-    var midiDeviceName: String?
-    var midiChannelLabel: String?
+    // Available ports and devices for interactive pickers
+    var availableInputPorts: [InputPort] = []
+    var availableOutputPorts: [OutputPort] = []
+    var availableMIDIDevices: [MIDIInputDevice] = []
 
     @State private var editingName: String = ""
     @State private var availableEffects: [AudioUnitInfo] = []
@@ -120,38 +119,115 @@ public struct TrackInspectorView: View {
     private var routingSection: some View {
         if track.kind == .audio || track.kind == .bus || track.kind == .backing {
             Section("I/O Routing") {
-                LabeledContent("Input") {
-                    Text(inputPortName)
-                        .foregroundStyle(.secondary)
-                }
-                LabeledContent("Output") {
-                    Text(outputPortName)
-                        .foregroundStyle(.secondary)
-                }
+                inputPortPicker
+                outputPortPicker
             }
         }
 
         if track.kind == .midi {
             Section("MIDI Routing") {
-                LabeledContent("Device") {
-                    Text(midiDeviceName ?? "All Devices")
-                        .foregroundStyle(.secondary)
-                }
-                LabeledContent("Channel") {
-                    Text(midiChannelLabel ?? "Omni")
-                        .foregroundStyle(.secondary)
-                }
+                midiDevicePicker
+                midiChannelPicker
             }
         }
 
         if track.kind == .master {
             Section("Output") {
-                LabeledContent("Output") {
-                    Text(outputPortName)
-                        .foregroundStyle(.secondary)
-                }
+                outputPortPicker
             }
         }
+    }
+
+    @ViewBuilder
+    private var inputPortPicker: some View {
+        Menu {
+            Button("Default") { onSetInputPort?(nil) }
+            if !availableInputPorts.isEmpty { Divider() }
+            ForEach(availableInputPorts) { port in
+                Button(port.displayName) { onSetInputPort?(port.id) }
+            }
+        } label: {
+            LabeledContent("Input") {
+                Text(inputPortDisplayName)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var outputPortPicker: some View {
+        Menu {
+            Button("Default") { onSetOutputPort?(nil) }
+            if !availableOutputPorts.isEmpty { Divider() }
+            ForEach(availableOutputPorts) { port in
+                Button(port.displayName) { onSetOutputPort?(port.id) }
+            }
+        } label: {
+            LabeledContent("Output") {
+                Text(outputPortDisplayName)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var midiDevicePicker: some View {
+        Menu {
+            Button("All Devices") {
+                onSetMIDIInput?(nil, track.midiInputChannel)
+            }
+            if !availableMIDIDevices.isEmpty { Divider() }
+            ForEach(availableMIDIDevices) { device in
+                Button(device.displayName) {
+                    onSetMIDIInput?(device.id, track.midiInputChannel)
+                }
+            }
+        } label: {
+            LabeledContent("Device") {
+                Text(midiDeviceDisplayName)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var midiChannelPicker: some View {
+        Menu {
+            Button("Omni") {
+                onSetMIDIInput?(track.midiInputDeviceID, nil)
+            }
+            Divider()
+            ForEach(1...16, id: \.self) { ch in
+                Button("Ch \(ch)") {
+                    onSetMIDIInput?(track.midiInputDeviceID, UInt8(ch))
+                }
+            }
+        } label: {
+            LabeledContent("Channel") {
+                Text(midiChannelDisplayName)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var inputPortDisplayName: String {
+        guard let portID = track.inputPortID else { return "Default" }
+        return availableInputPorts.first { $0.id == portID }?.displayName ?? "Default"
+    }
+
+    private var outputPortDisplayName: String {
+        guard let portID = track.outputPortID else { return "Default" }
+        return availableOutputPorts.first { $0.id == portID }?.displayName ?? "Default"
+    }
+
+    private var midiDeviceDisplayName: String {
+        guard let deviceID = track.midiInputDeviceID else { return "All Devices" }
+        return availableMIDIDevices.first { $0.id == deviceID }?.displayName ?? deviceID
+    }
+
+    private var midiChannelDisplayName: String {
+        guard let ch = track.midiInputChannel else { return "Omni" }
+        return "Ch \(ch)"
     }
 
     // MARK: - Mix Section
