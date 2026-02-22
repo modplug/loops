@@ -1,7 +1,8 @@
 import SwiftUI
 import LoopsCore
 
-/// Displays bar numbers along the top of the timeline with drag-to-select range support.
+/// Displays bar numbers along the top of the timeline with click-to-position
+/// playhead and Shift+drag range selection.
 public struct RulerView: View {
     let totalBars: Int
     let pixelsPerBar: CGFloat
@@ -9,22 +10,25 @@ public struct RulerView: View {
     var selectedRange: ClosedRange<Int>?
     var onRangeSelect: ((ClosedRange<Int>) -> Void)?
     var onRangeDeselect: (() -> Void)?
+    var onPlayheadPosition: ((Double) -> Void)?
 
     @State private var dragStartBar: Int?
     @State private var dragCurrentBar: Int?
+    @State private var isScrubbing: Bool = false
 
-    public init(totalBars: Int, pixelsPerBar: CGFloat, timeSignature: TimeSignature, selectedRange: ClosedRange<Int>? = nil, onRangeSelect: ((ClosedRange<Int>) -> Void)? = nil, onRangeDeselect: (() -> Void)? = nil) {
+    public init(totalBars: Int, pixelsPerBar: CGFloat, timeSignature: TimeSignature, selectedRange: ClosedRange<Int>? = nil, onRangeSelect: ((ClosedRange<Int>) -> Void)? = nil, onRangeDeselect: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil) {
         self.totalBars = totalBars
         self.pixelsPerBar = pixelsPerBar
         self.timeSignature = timeSignature
         self.selectedRange = selectedRange
         self.onRangeSelect = onRangeSelect
         self.onRangeDeselect = onRangeDeselect
+        self.onPlayheadPosition = onPlayheadPosition
     }
 
     /// The active range: either from an in-progress drag or the committed selection.
     private var activeRange: ClosedRange<Int>? {
-        if let start = dragStartBar, let end = dragCurrentBar, start != end {
+        if !isScrubbing, let start = dragStartBar, let end = dragCurrentBar, start != end {
             return min(start, end)...max(start, end)
         }
         return selectedRange
@@ -84,28 +88,63 @@ public struct RulerView: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
-                    let startBar = barForX(value.startLocation.x)
-                    let currentBar = barForX(value.location.x)
-                    dragStartBar = startBar
-                    dragCurrentBar = currentBar
+                    let isShift = NSEvent.modifierFlags.contains(.shift)
+                    if isShift {
+                        // Shift+drag: range selection
+                        isScrubbing = false
+                        let startBar = barForX(value.startLocation.x)
+                        let currentBar = barForX(value.location.x)
+                        dragStartBar = startBar
+                        dragCurrentBar = currentBar
+                    } else {
+                        // Normal drag: scrub playhead
+                        isScrubbing = true
+                        let bar = snappedBarForX(value.location.x)
+                        onPlayheadPosition?(bar)
+                    }
                 }
                 .onEnded { value in
-                    let distance = abs(value.location.x - value.startLocation.x)
-                    if distance < 3 {
-                        // Tap — clear selection
+                    let isShift = NSEvent.modifierFlags.contains(.shift)
+                    if isScrubbing || !isShift {
+                        // Normal click or scrub end — position playhead
+                        let bar = snappedBarForX(value.location.x)
+                        onPlayheadPosition?(bar)
                         onRangeDeselect?()
-                    } else if let start = dragStartBar, let end = dragCurrentBar, start != end {
-                        let lower = min(start, end)
-                        let upper = max(start, end)
-                        onRangeSelect?(lower...upper)
+                    } else {
+                        // Shift+drag ended — commit range selection
+                        let distance = abs(value.location.x - value.startLocation.x)
+                        if distance < 3 {
+                            onRangeDeselect?()
+                        } else if let start = dragStartBar, let end = dragCurrentBar, start != end {
+                            let lower = min(start, end)
+                            let upper = max(start, end)
+                            onRangeSelect?(lower...upper)
+                        }
                     }
                     dragStartBar = nil
                     dragCurrentBar = nil
+                    isScrubbing = false
                 }
         )
     }
 
     private func barForX(_ x: CGFloat) -> Int {
         max(1, min(Int(x / pixelsPerBar) + 1, totalBars))
+    }
+
+    /// Returns a snapped bar position (Double) for the given x-coordinate.
+    /// Snaps to beat if zoomed in enough, otherwise to whole bar.
+    private func snappedBarForX(_ x: CGFloat) -> Double {
+        let clampedX = max(x, 0)
+        let rawBar = (Double(clampedX) / Double(pixelsPerBar)) + 1.0
+        let ppBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
+        if ppBeat >= 40.0 {
+            let beatsPerBar = Double(timeSignature.beatsPerBar)
+            let totalBeats = (rawBar - 1.0) * beatsPerBar
+            let snappedBeats = totalBeats.rounded()
+            return max((snappedBeats / beatsPerBar) + 1.0, 1.0)
+        } else {
+            return max(rawBar.rounded(), 1.0)
+        }
     }
 }

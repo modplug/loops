@@ -60,6 +60,23 @@ public final class TimelineViewModel {
         (Double(x) / Double(pixelsPerBar)) + 1.0
     }
 
+    /// Snaps a bar position to the nearest bar or beat boundary depending on zoom level.
+    /// At low zoom (pixelsPerBar < beatSnapThreshold), snaps to whole bars.
+    /// At high zoom, snaps to the nearest beat within the bar.
+    public func snappedBar(forXPosition x: CGFloat, timeSignature: TimeSignature) -> Double {
+        let rawBar = bar(forXPosition: max(x, 0))
+        let ppBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
+        // Snap to beat when each beat is at least 40 pixels wide
+        if ppBeat >= 40.0 {
+            let beatsPerBar = Double(timeSignature.beatsPerBar)
+            let totalBeats = (rawBar - 1.0) * beatsPerBar
+            let snappedBeats = (totalBeats).rounded()
+            return max((snappedBeats / beatsPerBar) + 1.0, 1.0)
+        } else {
+            return max(rawBar.rounded(), 1.0)
+        }
+    }
+
     /// Current playhead x-coordinate.
     public var playheadX: CGFloat {
         xPosition(forBar: playheadBar)

@@ -223,4 +223,35 @@ struct TransportManagerTests {
         #expect(transport.state == .stopped)
         #expect(transport.countInBarsRemaining == 0)
     }
+
+    // MARK: - Click-to-Position (#73)
+
+    @Test("Set playhead position during playback updates position")
+    func setPlayheadDuringPlayback() {
+        let transport = TransportManager()
+        transport.play()
+        #expect(transport.state == .playing)
+        transport.setPlayheadPosition(5.0)
+        #expect(transport.playheadBar == 5.0)
+        transport.stop()
+    }
+
+    @Test("Set playhead position while stopped sets position directly")
+    func setPlayheadWhileStopped() {
+        let transport = TransportManager()
+        transport.setPlayheadPosition(10.0)
+        #expect(transport.playheadBar == 10.0)
+        #expect(transport.state == .stopped)
+    }
+
+    @Test("Set playhead position fires callback")
+    func setPlayheadFiresCallback() {
+        let transport = TransportManager()
+        var receivedBar: Double?
+        transport.onPositionUpdate = { bar in
+            receivedBar = bar
+        }
+        transport.setPlayheadPosition(7.5)
+        #expect(receivedBar == 7.5)
+    }
 }

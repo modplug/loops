@@ -10,16 +10,18 @@ public struct TimelineView: View {
     let trackHeight: CGFloat
     let minHeight: CGFloat
     var onContainerDoubleClick: (() -> Void)?
+    var onPlayheadPosition: ((Double) -> Void)?
 
     @State private var selectedBreakpointID: ID<AutomationBreakpoint>?
 
-    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, onContainerDoubleClick: (() -> Void)? = nil) {
+    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, onContainerDoubleClick: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil) {
         self.viewModel = viewModel
         self.projectViewModel = projectViewModel
         self.song = song
         self.trackHeight = trackHeight
         self.minHeight = minHeight
         self.onContainerDoubleClick = onContainerDoubleClick
+        self.onPlayheadPosition = onPlayheadPosition
     }
 
     public var totalContentHeight: CGFloat {
@@ -35,13 +37,18 @@ public struct TimelineView: View {
 
     public var body: some View {
         ZStack(alignment: .topLeading) {
-            // Grid overlay — fills available space
+            // Grid overlay — fills available space, with click-to-position gesture
             GridOverlayView(
                 totalBars: viewModel.totalBars,
                 pixelsPerBar: viewModel.pixelsPerBar,
                 timeSignature: song.timeSignature,
                 height: displayHeight
             )
+            .contentShape(Rectangle())
+            .onTapGesture { location in
+                let bar = viewModel.snappedBar(forXPosition: location.x, timeSignature: song.timeSignature)
+                onPlayheadPosition?(bar)
+            }
 
             // Track lanes stacked vertically
             VStack(spacing: 0) {

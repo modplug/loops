@@ -93,6 +93,9 @@ public struct MainContentView: View {
                                 },
                                 onRangeDeselect: {
                                     timelineViewModel.clearSelectedRange()
+                                },
+                                onPlayheadPosition: { bar in
+                                    transportViewModel?.seek(toBar: bar)
                                 }
                             )
                         }
@@ -183,6 +186,9 @@ public struct MainContentView: View {
                                         minHeight: geo.size.height,
                                         onContainerDoubleClick: {
                                             showContainerDetailEditor = true
+                                        },
+                                        onPlayheadPosition: { bar in
+                                            transportViewModel?.seek(toBar: bar)
                                         }
                                     )
                                 }

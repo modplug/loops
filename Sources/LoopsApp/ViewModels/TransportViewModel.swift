@@ -187,6 +187,50 @@ public final class TransportViewModel {
         syncFromTransport()
     }
 
+    /// Seeks to a new bar position. If currently playing, stops and restarts
+    /// playback from the new position so audio is rescheduled.
+    public func seek(toBar bar: Double) {
+        let wasPlaying = isPlaying
+        if wasPlaying {
+            playbackScheduler?.stop()
+            engineManager?.metronome?.reset()
+            transport.pause()
+        }
+
+        transport.setPlayheadPosition(bar)
+        syncFromTransport()
+
+        if wasPlaying, let engine = engineManager, let context = songProvider?() {
+            engine.metronome?.update(
+                bpm: bpm,
+                beatsPerBar: timeSignature.beatsPerBar,
+                sampleRate: engine.currentSampleRate
+            )
+            engine.metronome?.reset()
+            engine.metronome?.setEnabled(isMetronomeEnabled)
+
+            let scheduler = playbackScheduler
+            let seekBar = playheadBar
+            let currentBPM = bpm
+            let ts = timeSignature
+            let sr = engine.currentSampleRate
+            let song = context.song
+            let recordings = context.recordings
+            Task {
+                await scheduler?.prepare(song: song, sourceRecordings: recordings)
+                scheduler?.play(
+                    song: song,
+                    fromBar: seekBar,
+                    bpm: currentBPM,
+                    timeSignature: ts,
+                    sampleRate: sr
+                )
+            }
+            transport.play()
+            syncFromTransport()
+        }
+    }
+
     public func updateBPM(_ newBPM: Double) {
         bpm = min(max(newBPM, 20.0), 300.0)
         transport.bpm = bpm
