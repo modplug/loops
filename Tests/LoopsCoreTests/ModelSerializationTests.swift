@@ -1379,4 +1379,178 @@ struct ModelSerializationTests {
         #expect(decoded.setlists.count == 1)
         #expect(decoded.midiMappings.count == 1)
     }
+
+    // MARK: - ContainerField
+
+    @Test("ContainerField all cases round-trip")
+    func containerFieldAllCasesRoundTrip() throws {
+        for field in ContainerField.allCases {
+            let decoded = try roundTrip(field)
+            #expect(field == decoded)
+        }
+    }
+
+    // MARK: - Container Clone Fields
+
+    @Test("Container with clone fields round-trips")
+    func containerWithCloneFieldsRoundTrip() throws {
+        let parentID = ID<Container>()
+        let container = Container(
+            name: "Clone",
+            startBar: 5,
+            lengthBars: 4,
+            parentContainerID: parentID,
+            overriddenFields: [.effects, .name]
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.parentContainerID == parentID)
+        #expect(decoded.overriddenFields == [.effects, .name])
+        #expect(decoded.isClone)
+    }
+
+    @Test("Container without clone fields decodes from legacy JSON")
+    func containerLegacyDecodingWithoutCloneFields() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000003",
+            "name": "Legacy",
+            "startBar": 1,
+            "lengthBars": 4,
+            "loopSettings": {
+                "loopCount": { "fill": {} },
+                "boundaryMode": "hardCut",
+                "crossfadeDurationMs": 10.0
+            },
+            "isRecordArmed": false
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Container.self, from: data)
+        #expect(decoded.parentContainerID == nil)
+        #expect(decoded.overriddenFields.isEmpty)
+        #expect(!decoded.isClone)
+    }
+
+    @Test("Clone with no overrides inherits all parent fields")
+    func cloneInheritsAllParentFields() {
+        let parent = Container(
+            name: "Parent",
+            startBar: 1,
+            lengthBars: 8,
+            loopSettings: LoopSettings(loopCount: .fill),
+            insertEffects: [
+                InsertEffect(
+                    component: AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1),
+                    displayName: "Reverb",
+                    orderIndex: 0
+                )
+            ],
+            instrumentOverride: AudioComponentInfo(componentType: 2, componentSubType: 2, componentManufacturer: 2),
+            enterFade: FadeSettings(duration: 1.0, curve: .linear),
+            exitFade: FadeSettings(duration: 0.5, curve: .exponential),
+            onEnterActions: [.makeSendMIDI(message: .programChange(channel: 0, program: 5), destination: .externalPort(name: "Out"))],
+            onExitActions: [.makeSendMIDI(message: .controlChange(channel: 0, controller: 64, value: 0), destination: .externalPort(name: "Out"))]
+        )
+
+        let clone = Container(
+            name: "CloneName",
+            startBar: 9,
+            lengthBars: 4,
+            parentContainerID: parent.id,
+            overriddenFields: []
+        )
+
+        let resolved = clone.resolved(parent: parent)
+
+        // Inherited from parent
+        #expect(resolved.name == "Parent")
+        #expect(resolved.loopSettings == parent.loopSettings)
+        #expect(resolved.insertEffects.count == 1)
+        #expect(resolved.instrumentOverride != nil)
+        #expect(resolved.enterFade != nil)
+        #expect(resolved.exitFade != nil)
+        #expect(resolved.onEnterActions.count == 1)
+        #expect(resolved.onExitActions.count == 1)
+
+        // Position fields are always local
+        #expect(resolved.startBar == 9)
+        #expect(resolved.lengthBars == 4)
+        #expect(resolved.parentContainerID == parent.id)
+    }
+
+    @Test("Clone with overridden effects uses local effects")
+    func cloneOverriddenEffectsUsesLocal() {
+        let parent = Container(
+            name: "Parent",
+            startBar: 1,
+            lengthBars: 8,
+            insertEffects: [
+                InsertEffect(
+                    component: AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1),
+                    displayName: "ParentReverb",
+                    orderIndex: 0
+                )
+            ]
+        )
+
+        let localEffect = InsertEffect(
+            component: AudioComponentInfo(componentType: 2, componentSubType: 2, componentManufacturer: 2),
+            displayName: "LocalDelay",
+            orderIndex: 0
+        )
+
+        let clone = Container(
+            name: "Clone",
+            startBar: 9,
+            lengthBars: 4,
+            insertEffects: [localEffect],
+            parentContainerID: parent.id,
+            overriddenFields: [.effects]
+        )
+
+        let resolved = clone.resolved(parent: parent)
+
+        // Effects should be local since overridden
+        #expect(resolved.insertEffects.count == 1)
+        #expect(resolved.insertEffects[0].displayName == "LocalDelay")
+
+        // Name not overridden, should be parent's
+        #expect(resolved.name == "Parent")
+    }
+
+    @Test("Clone of clone links to original parent (no nesting)")
+    func cloneOfCloneLinksToOriginal() {
+        // This is tested via ProjectViewModel, but we verify the resolution works
+        let original = Container(
+            id: ID(),
+            name: "Original",
+            startBar: 1,
+            lengthBars: 8
+        )
+
+        let clone1 = Container(
+            name: "Clone1",
+            startBar: 9,
+            lengthBars: 4,
+            parentContainerID: original.id,
+            overriddenFields: []
+        )
+
+        // A "clone of clone" should point to original, not to clone1
+        let clone2 = Container(
+            name: "Clone2",
+            startBar: 13,
+            lengthBars: 4,
+            parentContainerID: clone1.parentContainerID ?? clone1.id,
+            overriddenFields: []
+        )
+
+        // clone2 should point to the original, not to clone1
+        #expect(clone2.parentContainerID == original.id)
+
+        let allContainers = [original, clone1, clone2]
+        let resolved = clone2.resolved { id in allContainers.first(where: { $0.id == id }) }
+        #expect(resolved.name == "Original")
+    }
 }

@@ -32,7 +32,18 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     /// Automation lanes controlling AU parameters over this container's duration.
     public var automationLanes: [AutomationLane]
 
+    /// If non-nil, this container is a linked clone of the parent.
+    /// Non-overridden fields are inherited from the parent at resolution time.
+    public var parentContainerID: ID<Container>?
+
+    /// Which fields have been locally overridden on this clone.
+    /// Empty for original containers. Only meaningful when `parentContainerID` is set.
+    public var overriddenFields: Set<ContainerField>
+
     public var endBar: Int { startBar + lengthBars }
+
+    /// Whether this container is a linked clone.
+    public var isClone: Bool { parentContainerID != nil }
 
     public init(
         id: ID<Container> = ID(),
@@ -52,7 +63,9 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         exitFade: FadeSettings? = nil,
         onEnterActions: [ContainerAction] = [],
         onExitActions: [ContainerAction] = [],
-        automationLanes: [AutomationLane] = []
+        automationLanes: [AutomationLane] = [],
+        parentContainerID: ID<Container>? = nil,
+        overriddenFields: Set<ContainerField> = []
     ) {
         self.id = id
         self.name = name
@@ -72,6 +85,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         self.onEnterActions = onEnterActions
         self.onExitActions = onExitActions
         self.automationLanes = automationLanes
+        self.parentContainerID = parentContainerID
+        self.overriddenFields = overriddenFields
     }
 
     // MARK: - Backward-compatible decoding
@@ -81,7 +96,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         case loopSettings, isRecordArmed, volumeOverride, panOverride
         case insertEffects, isEffectChainBypassed, instrumentOverride
         case enterFade, exitFade, onEnterActions, onExitActions
-        case automationLanes
+        case automationLanes, parentContainerID, overriddenFields
     }
 
     public init(from decoder: Decoder) throws {
@@ -104,5 +119,54 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         onEnterActions = try c.decodeIfPresent([ContainerAction].self, forKey: .onEnterActions) ?? []
         onExitActions = try c.decodeIfPresent([ContainerAction].self, forKey: .onExitActions) ?? []
         automationLanes = try c.decodeIfPresent([AutomationLane].self, forKey: .automationLanes) ?? []
+        parentContainerID = try c.decodeIfPresent(LoopsCore.ID<Container>.self, forKey: .parentContainerID)
+        overriddenFields = try c.decodeIfPresent(Set<ContainerField>.self, forKey: .overriddenFields) ?? []
+    }
+
+    // MARK: - Clone Resolution
+
+    /// Returns a new container with all fields resolved against the given parent.
+    /// For each field: if the field is in `overriddenFields`, the local value is used;
+    /// otherwise, the parent's value is inherited. Position fields (startBar, lengthBars,
+    /// sourceRecordingID, etc.) are always local.
+    public func resolved(parent: Container) -> Container {
+        var result = self
+        if !overriddenFields.contains(.name) {
+            result.name = parent.name
+        }
+        if !overriddenFields.contains(.effects) {
+            result.insertEffects = parent.insertEffects
+            result.isEffectChainBypassed = parent.isEffectChainBypassed
+        }
+        if !overriddenFields.contains(.automation) {
+            result.automationLanes = parent.automationLanes
+        }
+        if !overriddenFields.contains(.fades) {
+            result.enterFade = parent.enterFade
+            result.exitFade = parent.exitFade
+        }
+        if !overriddenFields.contains(.enterActions) {
+            result.onEnterActions = parent.onEnterActions
+        }
+        if !overriddenFields.contains(.exitActions) {
+            result.onExitActions = parent.onExitActions
+        }
+        if !overriddenFields.contains(.loopSettings) {
+            result.loopSettings = parent.loopSettings
+        }
+        if !overriddenFields.contains(.instrumentOverride) {
+            result.instrumentOverride = parent.instrumentOverride
+        }
+        return result
+    }
+
+    /// Returns a resolved container given a lookup function for finding parent containers.
+    /// If this is not a clone (parentContainerID is nil), returns self unchanged.
+    public func resolved(using lookup: (ID) -> Container?) -> Container {
+        guard let parentID = parentContainerID,
+              let parent = lookup(parentID) else {
+            return self
+        }
+        return resolved(parent: parent)
     }
 }

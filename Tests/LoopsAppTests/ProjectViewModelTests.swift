@@ -1191,4 +1191,189 @@ struct ProjectViewModelTests {
         // IDs should be different
         #expect(vm.project.songs[1].sections[0].id != vm.project.songs[0].sections[0].id)
     }
+
+    // MARK: - Container Clone Management
+
+    @Test("Clone container creates linked clone at position")
+    @MainActor
+    func cloneContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: originalID, newStartBar: 5)
+        #expect(cloneID != nil)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+
+        let clone = vm.project.songs[0].tracks[0].containers[1]
+        #expect(clone.parentContainerID == originalID)
+        #expect(clone.overriddenFields.isEmpty)
+        #expect(clone.startBar == 5)
+        #expect(clone.lengthBars == 4)
+        #expect(clone.isClone)
+        #expect(vm.selectedContainerID == cloneID)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Clone container prevents overlap")
+    @MainActor
+    func cloneContainerOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Try to clone at overlapping position
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: originalID, newStartBar: 3)
+        #expect(cloneID == nil)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+    }
+
+    @Test("Clone of clone links to original parent (no nesting)")
+    @MainActor
+    func cloneOfCloneNoNesting() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Create first clone
+        let clone1ID = vm.cloneContainer(trackID: trackID, containerID: originalID, newStartBar: 5)
+        #expect(clone1ID != nil)
+        let clone1 = vm.project.songs[0].tracks[0].containers[1]
+        #expect(clone1.parentContainerID == originalID)
+
+        // Clone the clone — should link to original, not to clone1
+        let clone2ID = vm.cloneContainer(trackID: trackID, containerID: clone1ID!, newStartBar: 9)
+        #expect(clone2ID != nil)
+        let clone2 = vm.project.songs[0].tracks[0].containers[2]
+        #expect(clone2.parentContainerID == originalID)
+    }
+
+    @Test("Consolidate container disconnects from parent")
+    @MainActor
+    func consolidateContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Update the original's name so we can verify consolidation resolves it
+        vm.updateContainerName(containerID: originalID, name: "OriginalName")
+
+        // Create clone
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: originalID, newStartBar: 5)!
+
+        // Verify clone inherits parent name (not overridden)
+        let cloneBefore = vm.project.songs[0].tracks[0].containers[1]
+        #expect(cloneBefore.parentContainerID == originalID)
+        #expect(!cloneBefore.overriddenFields.contains(.name))
+
+        // Consolidate
+        vm.consolidateContainer(trackID: trackID, containerID: cloneID)
+
+        let consolidated = vm.project.songs[0].tracks[0].containers[1]
+        #expect(consolidated.parentContainerID == nil)
+        #expect(consolidated.overriddenFields == Set(ContainerField.allCases))
+        // Name should be resolved from parent
+        #expect(consolidated.name == "OriginalName")
+        #expect(!consolidated.isClone)
+    }
+
+    @Test("Clone undo/redo")
+    @MainActor
+    func cloneUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let _ = vm.cloneContainer(trackID: trackID, containerID: originalID, newStartBar: 5)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+        #expect(vm.project.songs[0].tracks[0].containers[1].parentContainerID == originalID)
+    }
+
+    @Test("Consolidate undo/redo")
+    @MainActor
+    func consolidateUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: originalID, newStartBar: 5)!
+
+        vm.consolidateContainer(trackID: trackID, containerID: cloneID)
+        #expect(vm.project.songs[0].tracks[0].containers[1].parentContainerID == nil)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers[1].parentContainerID == originalID)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].containers[1].parentContainerID == nil)
+    }
+
+    @Test("Editing clone field auto-marks override")
+    @MainActor
+    func editingCloneFieldMarksOverride() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: originalID, newStartBar: 5)!
+
+        // Clone should start with no overrides
+        #expect(vm.project.songs[0].tracks[0].containers[1].overriddenFields.isEmpty)
+
+        // Rename the clone — should mark .name as overridden
+        vm.updateContainerName(containerID: cloneID, name: "Custom Name")
+        #expect(vm.project.songs[0].tracks[0].containers[1].overriddenFields.contains(.name))
+
+        // Change loop settings — should mark .loopSettings
+        vm.updateContainerLoopSettings(containerID: cloneID, settings: LoopSettings(loopCount: .fill))
+        #expect(vm.project.songs[0].tracks[0].containers[1].overriddenFields.contains(.loopSettings))
+    }
+
+    @Test("duplicateSong copies clone fields")
+    @MainActor
+    func duplicateSongCopiesCloneFields() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+        let _ = vm.cloneContainer(trackID: trackID, containerID: originalID, newStartBar: 5)
+
+        let songID = vm.project.songs[0].id
+        vm.duplicateSong(id: songID)
+
+        #expect(vm.project.songs.count == 2)
+        let copiedClone = vm.project.songs[1].tracks[0].containers[1]
+        // parentContainerID is copied (points to original in the original song)
+        #expect(copiedClone.parentContainerID == originalID)
+        #expect(copiedClone.overriddenFields.isEmpty)
+    }
 }

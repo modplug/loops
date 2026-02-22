@@ -102,9 +102,20 @@ public final class OfflineRenderer {
         )
         let totalFrames = AVAudioFrameCount(Double(totalBars) * spb)
 
+        // Resolve clone fields for all containers before rendering
+        let allContainers = song.tracks.flatMap(\.containers)
+        var resolvedSong = song
+        for trackIdx in resolvedSong.tracks.indices {
+            for containerIdx in resolvedSong.tracks[trackIdx].containers.indices {
+                resolvedSong.tracks[trackIdx].containers[containerIdx] =
+                    resolvedSong.tracks[trackIdx].containers[containerIdx]
+                        .resolved { id in allContainers.first(where: { $0.id == id }) }
+            }
+        }
+
         // Determine which tracks are audible
-        let hasSolo = song.tracks.contains { $0.isSoloed }
-        var audibleTracks = song.tracks.filter { track in
+        let hasSolo = resolvedSong.tracks.contains { $0.isSoloed }
+        var audibleTracks = resolvedSong.tracks.filter { track in
             if track.isMuted { return false }
             if hasSolo && !track.isSoloed { return false }
             return true
@@ -113,9 +124,9 @@ public final class OfflineRenderer {
         // Resolve trigger actions: include containers from non-audible tracks if triggered
         let triggeredIDs = resolveTriggeredContainers(
             audibleTracks: audibleTracks,
-            allTracks: song.tracks
+            allTracks: resolvedSong.tracks
         )
-        for track in song.tracks {
+        for track in resolvedSong.tracks {
             if audibleTracks.contains(where: { $0.id == track.id }) { continue }
             let triggered = track.containers.filter { triggeredIDs.contains($0.id) }
             if !triggered.isEmpty {

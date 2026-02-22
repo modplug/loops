@@ -20,6 +20,7 @@ public struct TrackLaneView: View {
     var onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)?
     var onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)?
     var onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)?
+    var onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)?
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
@@ -39,7 +40,8 @@ public struct TrackLaneView: View {
         onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)? = nil,
         onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)? = nil,
         onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil,
-        onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)? = nil
+        onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)? = nil
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
@@ -55,6 +57,7 @@ public struct TrackLaneView: View {
         self.onCreateContainer = onCreateContainer
         self.onDropAudioFile = onDropAudioFile
         self.onContainerDoubleClick = onContainerDoubleClick
+        self.onCloneContainer = onCloneContainer
     }
 
     public var body: some View {
@@ -85,12 +88,15 @@ public struct TrackLaneView: View {
                     isSelected: container.id == selectedContainerID,
                     trackColor: trackColor,
                     waveformPeaks: waveformPeaksForContainer?(container),
+                    isClone: container.parentContainerID != nil,
+                    overriddenFields: container.overriddenFields,
                     onSelect: { onContainerSelect?(container.id) },
                     onDelete: { onContainerDelete?(container.id) },
                     onMove: { newStart in onContainerMove?(container.id, newStart) ?? false },
                     onResizeLeft: { start, len in onContainerResizeLeft?(container.id, start, len) ?? false },
                     onResizeRight: { len in onContainerResizeRight?(container.id, len) ?? false },
-                    onDoubleClick: { onContainerDoubleClick?(container.id) }
+                    onDoubleClick: { onContainerDoubleClick?(container.id) },
+                    onClone: { newStart in onCloneContainer?(container.id, newStart) }
                 )
                 .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
             }

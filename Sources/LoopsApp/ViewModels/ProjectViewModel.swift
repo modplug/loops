@@ -191,7 +191,9 @@ public final class ProjectViewModel {
                             lengthBars: container.lengthBars,
                             sourceRecordingID: container.sourceRecordingID,
                             linkGroupID: container.linkGroupID,
-                            loopSettings: container.loopSettings
+                            loopSettings: container.loopSettings,
+                            parentContainerID: container.parentContainerID,
+                            overriddenFields: container.overriddenFields
                         )
                     },
                     insertEffects: track.insertEffects,
@@ -469,6 +471,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Change Loop Settings")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].loopSettings = settings
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .loopSettings)
                 hasUnsavedChanges = true
                 return
             }
@@ -482,6 +485,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Rename Container")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].name = name
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .name)
                 hasUnsavedChanges = true
                 return
             }
@@ -536,6 +540,7 @@ public final class ProjectViewModel {
                 var newEffect = effect
                 newEffect.orderIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.count
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.append(newEffect)
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                 hasUnsavedChanges = true
                 return
             }
@@ -549,10 +554,10 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Remove Container Effect")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.removeAll { $0.id == effectID }
-                // Reindex remaining effects
                 for i in project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.indices {
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[i].orderIndex = i
                 }
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                 hasUnsavedChanges = true
                 return
             }
@@ -566,6 +571,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Toggle Effect Chain Bypass")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].isEffectChainBypassed.toggle()
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                 hasUnsavedChanges = true
                 return
             }
@@ -581,10 +587,10 @@ public final class ProjectViewModel {
                 // Sort effects by orderIndex before reordering
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.sort { $0.orderIndex < $1.orderIndex }
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.move(fromOffsets: source, toOffset: destination)
-                // Reindex
                 for i in project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.indices {
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[i].orderIndex = i
                 }
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                 hasUnsavedChanges = true
                 return
             }
@@ -599,6 +605,7 @@ public final class ProjectViewModel {
                 if let effectIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.firstIndex(where: { $0.id == effectID }) {
                     registerUndo(actionName: "Toggle Effect Bypass")
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[effectIndex].isBypassed.toggle()
+                    markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                     hasUnsavedChanges = true
                     return
                 }
@@ -615,6 +622,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: override != nil ? "Set Instrument Override" : "Remove Instrument Override")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].instrumentOverride = override
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .instrumentOverride)
                 hasUnsavedChanges = true
                 return
             }
@@ -630,6 +638,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: fade != nil ? "Set Enter Fade" : "Remove Enter Fade")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].enterFade = fade
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .fades)
                 hasUnsavedChanges = true
                 return
             }
@@ -643,6 +652,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: fade != nil ? "Set Exit Fade" : "Remove Exit Fade")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].exitFade = fade
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .fades)
                 hasUnsavedChanges = true
                 return
             }
@@ -658,6 +668,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Add Enter Action")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].onEnterActions.append(action)
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .enterActions)
                 hasUnsavedChanges = true
                 return
             }
@@ -671,6 +682,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Remove Enter Action")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].onEnterActions.removeAll { $0.id == actionID }
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .enterActions)
                 hasUnsavedChanges = true
                 return
             }
@@ -684,6 +696,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Add Exit Action")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].onExitActions.append(action)
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .exitActions)
                 hasUnsavedChanges = true
                 return
             }
@@ -697,6 +710,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Remove Exit Action")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].onExitActions.removeAll { $0.id == actionID }
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .exitActions)
                 hasUnsavedChanges = true
                 return
             }
@@ -712,6 +726,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Add Automation Lane")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.append(lane)
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                 hasUnsavedChanges = true
                 return
             }
@@ -725,6 +740,7 @@ public final class ProjectViewModel {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 registerUndo(actionName: "Remove Automation Lane")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.removeAll { $0.id == laneID }
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                 hasUnsavedChanges = true
                 return
             }
@@ -739,6 +755,7 @@ public final class ProjectViewModel {
                 if let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.firstIndex(where: { $0.id == laneID }) {
                     registerUndo(actionName: "Add Breakpoint")
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.append(breakpoint)
+                    markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                     hasUnsavedChanges = true
                     return
                 }
@@ -754,6 +771,7 @@ public final class ProjectViewModel {
                 if let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.firstIndex(where: { $0.id == laneID }) {
                     registerUndo(actionName: "Remove Breakpoint")
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.removeAll { $0.id == breakpointID }
+                    markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                     hasUnsavedChanges = true
                     return
                 }
@@ -770,6 +788,7 @@ public final class ProjectViewModel {
                     if let bpIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.firstIndex(where: { $0.id == breakpoint.id }) {
                         registerUndo(actionName: "Edit Breakpoint")
                         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints[bpIndex] = breakpoint
+                        markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                         hasUnsavedChanges = true
                         return
                     }
@@ -810,6 +829,90 @@ public final class ProjectViewModel {
             }
         }
         return nil
+    }
+
+    // MARK: - Container Clone Management
+
+    /// Creates a linked clone of a container at a new position on the same track.
+    /// Cloning a clone links to the original parent (no nesting).
+    /// Returns the new clone's ID, or nil if the clone would overlap.
+    @discardableResult
+    public func cloneContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Int) -> ID<Container>? {
+        guard !project.songs.isEmpty else { return nil }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return nil }
+
+        let source = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+
+        // No nested clones: link to original parent if source is already a clone
+        let parentID = source.parentContainerID ?? source.id
+
+        let clone = Container(
+            name: source.name,
+            startBar: max(newStartBar, 1),
+            lengthBars: source.lengthBars,
+            sourceRecordingID: source.sourceRecordingID,
+            linkGroupID: source.linkGroupID,
+            loopSettings: source.loopSettings,
+            insertEffects: source.insertEffects,
+            isEffectChainBypassed: source.isEffectChainBypassed,
+            instrumentOverride: source.instrumentOverride,
+            enterFade: source.enterFade,
+            exitFade: source.exitFade,
+            onEnterActions: source.onEnterActions,
+            onExitActions: source.onExitActions,
+            automationLanes: source.automationLanes,
+            parentContainerID: parentID,
+            overriddenFields: []
+        )
+
+        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: clone) {
+            return nil
+        }
+
+        registerUndo(actionName: "Clone Container")
+        project.songs[currentSongIndex].tracks[trackIndex].containers.append(clone)
+        selectedContainerID = clone.id
+        hasUnsavedChanges = true
+        return clone.id
+    }
+
+    /// Disconnects a clone from its parent, making it a standalone container.
+    /// All fields become local (adds all fields to overriddenFields, clears parentContainerID).
+    public func consolidateContainer(trackID: ID<Track>, containerID: ID<Container>) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return }
+        guard project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].parentContainerID != nil else { return }
+
+        registerUndo(actionName: "Consolidate Container")
+
+        // Resolve all inherited fields from parent before disconnecting
+        let container = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+        let allContainers = project.songs[currentSongIndex].tracks.flatMap(\.containers)
+        let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
+
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex] = resolved
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].parentContainerID = nil
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].overriddenFields = Set(ContainerField.allCases)
+        hasUnsavedChanges = true
+    }
+
+    /// Finds a container by ID across all tracks in the current song.
+    public func findContainer(id: ID<Container>) -> Container? {
+        guard let song = currentSong else { return nil }
+        for track in song.tracks {
+            if let container = track.containers.first(where: { $0.id == id }) {
+                return container
+            }
+        }
+        return nil
+    }
+
+    /// Marks a field as overridden on a clone container.
+    private func markFieldOverridden(trackIndex: Int, containerIndex: Int, field: ContainerField) {
+        guard project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].parentContainerID != nil else { return }
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].overriddenFields.insert(field)
     }
 
     // MARK: - Section Management

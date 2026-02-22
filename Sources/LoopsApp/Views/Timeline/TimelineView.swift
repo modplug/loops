@@ -80,6 +80,9 @@ public struct TimelineView: View {
                         onContainerDoubleClick: { containerID in
                             projectViewModel.selectedContainerID = containerID
                             onContainerDoubleClick?()
+                        },
+                        onCloneContainer: { containerID, newStartBar in
+                            projectViewModel.cloneContainer(trackID: track.id, containerID: containerID, newStartBar: newStartBar)
                         }
                     )
                 }

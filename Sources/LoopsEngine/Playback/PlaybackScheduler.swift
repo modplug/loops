@@ -70,6 +70,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
     public func prepare(song: Song, sourceRecordings: [ID<SourceRecording>: SourceRecording]) async {
         cleanup()
 
+        let allContainers = song.tracks.flatMap(\.containers)
+
         // Load audio files
         for (id, recording) in sourceRecordings {
             let fileURL = audioDirURL.appendingPathComponent(recording.filename)
@@ -87,10 +89,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
             trackMixer.pan = track.pan
             trackMixers[track.id] = trackMixer
 
-            // Pre-instantiate per-container subgraphs
+            // Pre-instantiate per-container subgraphs (resolve clone fields)
             for container in track.containers {
-                guard container.sourceRecordingID != nil else { continue }
-                await buildContainerSubgraph(container: container, trackMixer: trackMixer)
+                let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
+                guard resolved.sourceRecordingID != nil else { continue }
+                await buildContainerSubgraph(container: resolved, trackMixer: trackMixer)
             }
         }
     }
@@ -111,6 +114,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         let samplesPerBar = self.samplesPerBar(bpm: bpm, timeSignature: timeSignature, sampleRate: sampleRate)
 
+        let allContainers = song.tracks.flatMap(\.containers)
+
         // Build container → track mapping for monitoring suppression
         for track in song.tracks {
             for container in track.containers {
@@ -121,10 +126,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
         for track in song.tracks {
             if track.isMuted { continue }
 
-            // Schedule each container that has a recording
+            // Schedule each container that has a recording (resolve clone fields)
             for container in track.containers {
+                let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
                 scheduleContainer(
-                    container: container,
+                    container: resolved,
                     fromBar: fromBar,
                     samplesPerBar: samplesPerBar
                 )
@@ -539,8 +545,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
         bpm: Double,
         timeSignature: TimeSignature
     ) {
-        // Collect all containers with automation
-        let containersWithAutomation = song.tracks.flatMap(\.containers)
+        // Collect all containers with automation (resolve clone fields)
+        let allContainers = song.tracks.flatMap(\.containers)
+        let containersWithAutomation = allContainers
+            .map { $0.resolved { id in allContainers.first(where: { $0.id == id }) } }
             .filter { !$0.automationLanes.isEmpty }
         guard !containersWithAutomation.isEmpty else { return }
 
@@ -612,14 +620,16 @@ extension PlaybackScheduler: ParameterResolver {
 extension PlaybackScheduler: ContainerTriggerDelegate {
     public func triggerStart(containerID: ID<Container>) {
         guard let song = currentSong else { return }
+        let allContainers = song.tracks.flatMap(\.containers)
         for track in song.tracks {
             guard let container = track.containers.first(where: { $0.id == containerID }) else { continue }
             // Skip if already active
             guard !activeContainers.contains(where: { $0.id == containerID }) else { return }
+            let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
             let spb = samplesPerBar(bpm: currentBPM, timeSignature: currentTimeSignature, sampleRate: currentSampleRate)
             scheduleContainer(
-                container: container,
-                fromBar: Double(container.startBar),
+                container: resolved,
+                fromBar: Double(resolved.startBar),
                 samplesPerBar: spb
             )
             return

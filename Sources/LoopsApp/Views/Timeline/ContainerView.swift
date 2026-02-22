@@ -12,12 +12,15 @@ public struct ContainerView: View {
     let isSelected: Bool
     let trackColor: Color
     let waveformPeaks: [Float]?
+    let isClone: Bool
+    let overriddenFields: Set<ContainerField>
     var onSelect: (() -> Void)?
     var onDelete: (() -> Void)?
     var onMove: ((_ newStartBar: Int) -> Bool)?
     var onResizeLeft: ((_ newStartBar: Int, _ newLength: Int) -> Bool)?
     var onResizeRight: ((_ newLength: Int) -> Bool)?
     var onDoubleClick: (() -> Void)?
+    var onClone: ((_ newStartBar: Int) -> Void)?
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -25,6 +28,8 @@ public struct ContainerView: View {
     @State private var resizeRightDelta: CGFloat = 0
     @State private var isResizingLeft = false
     @State private var isResizingRight = false
+    @State private var isAltDragging = false
+    @State private var altDragOffset: CGFloat = 0
 
     public init(
         container: Container,
@@ -33,12 +38,15 @@ public struct ContainerView: View {
         isSelected: Bool = false,
         trackColor: Color = .blue,
         waveformPeaks: [Float]? = nil,
+        isClone: Bool = false,
+        overriddenFields: Set<ContainerField> = [],
         onSelect: (() -> Void)? = nil,
         onDelete: (() -> Void)? = nil,
         onMove: ((_ newStartBar: Int) -> Bool)? = nil,
         onResizeLeft: ((_ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
         onResizeRight: ((_ newLength: Int) -> Bool)? = nil,
-        onDoubleClick: (() -> Void)? = nil
+        onDoubleClick: (() -> Void)? = nil,
+        onClone: ((_ newStartBar: Int) -> Void)? = nil
     ) {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
@@ -46,12 +54,15 @@ public struct ContainerView: View {
         self.isSelected = isSelected
         self.trackColor = trackColor
         self.waveformPeaks = waveformPeaks
+        self.isClone = isClone
+        self.overriddenFields = overriddenFields
         self.onSelect = onSelect
         self.onDelete = onDelete
         self.onMove = onMove
         self.onResizeLeft = onResizeLeft
         self.onResizeRight = onResizeRight
         self.onDoubleClick = onDoubleClick
+        self.onClone = onClone
     }
 
     private var containerWidth: CGFloat {
@@ -81,12 +92,29 @@ public struct ContainerView: View {
 
             // Container label
             VStack(alignment: .leading, spacing: 2) {
-                Text(container.name)
-                    .font(.caption2.bold())
-                    .lineLimit(1)
-                Text("\(container.lengthBars) bar\(container.lengthBars == 1 ? "" : "s")")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 2) {
+                    if isClone {
+                        Image(systemName: "link")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(container.name)
+                        .font(.caption2.bold())
+                        .lineLimit(1)
+                }
+                HStack(spacing: 2) {
+                    Text("\(container.lengthBars) bar\(container.lengthBars == 1 ? "" : "s")")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    if isClone && !overriddenFields.isEmpty {
+                        Text("\(overriddenFields.count)")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.orange.opacity(0.8)))
+                    }
+                }
             }
             .padding(.horizontal, 4)
             .padding(.top, 2)
@@ -126,11 +154,22 @@ public struct ContainerView: View {
         .offset(x: displayOffset)
         .onTapGesture(count: 2) { onDoubleClick?() }
         .onTapGesture { onSelect?() }
+        .gesture(altCloneGesture)
         .gesture(moveGesture)
         .contextMenu {
             Button("Delete Container", role: .destructive) {
                 onDelete?()
             }
+        }
+
+        // Alt-drag clone ghost preview
+        if isAltDragging {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(trackColor.opacity(0.2))
+                .strokeBorder(trackColor.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [4, 2]))
+                .frame(width: containerWidth, height: height)
+                .offset(x: altDragOffset)
+                .allowsHitTesting(false)
         }
     }
 
@@ -203,6 +242,25 @@ public struct ContainerView: View {
                     let _ = onResizeRight?(newLength)
                 }
                 resizeRightDelta = 0
+            }
+    }
+
+    private var altCloneGesture: some Gesture {
+        DragGesture(minimumDistance: 5)
+            .modifiers(.option)
+            .onChanged { value in
+                isAltDragging = true
+                let barDelta = round(value.translation.width / pixelsPerBar)
+                altDragOffset = barDelta * pixelsPerBar
+            }
+            .onEnded { value in
+                isAltDragging = false
+                let barDelta = Int(round(value.translation.width / pixelsPerBar))
+                let newStart = container.startBar + barDelta
+                if newStart >= 1 {
+                    onClone?(newStart)
+                }
+                altDragOffset = 0
             }
     }
 }
