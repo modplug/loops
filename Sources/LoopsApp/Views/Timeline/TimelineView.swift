@@ -91,6 +91,26 @@ public struct TimelineView: View {
                         onCloneContainer: { containerID, newStartBar in
                             projectViewModel.cloneContainer(trackID: track.id, containerID: containerID, newStartBar: newStartBar)
                         },
+                        onCopyContainer: { containerID in
+                            projectViewModel.copyContainer(trackID: track.id, containerID: containerID)
+                        },
+                        onDuplicateContainer: { containerID in
+                            projectViewModel.duplicateContainer(trackID: track.id, containerID: containerID)
+                        },
+                        onLinkCloneContainer: { containerID in
+                            guard let container = track.containers.first(where: { $0.id == containerID }) else { return }
+                            projectViewModel.cloneContainer(trackID: track.id, containerID: containerID, newStartBar: container.endBar)
+                        },
+                        onUnlinkContainer: { containerID in
+                            projectViewModel.consolidateContainer(trackID: track.id, containerID: containerID)
+                        },
+                        onArmToggle: {
+                            projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed)
+                        },
+                        onPasteAtBar: { bar in
+                            projectViewModel.pasteContainers(trackID: track.id, atBar: bar)
+                        },
+                        hasClipboard: !projectViewModel.clipboard.isEmpty,
                         isAutomationExpanded: isExpanded,
                         automationSubLanePaths: subLanePaths,
                         selectedBreakpointID: selectedBreakpointID,

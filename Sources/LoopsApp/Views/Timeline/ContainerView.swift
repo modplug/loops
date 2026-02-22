@@ -21,6 +21,11 @@ public struct ContainerView: View {
     var onResizeRight: ((_ newLength: Int) -> Bool)?
     var onDoubleClick: (() -> Void)?
     var onClone: ((_ newStartBar: Int) -> Void)?
+    var onCopy: (() -> Void)?
+    var onDuplicate: (() -> Void)?
+    var onLinkClone: (() -> Void)?
+    var onUnlink: (() -> Void)?
+    var onArmToggle: (() -> Void)?
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -46,7 +51,12 @@ public struct ContainerView: View {
         onResizeLeft: ((_ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
         onResizeRight: ((_ newLength: Int) -> Bool)? = nil,
         onDoubleClick: (() -> Void)? = nil,
-        onClone: ((_ newStartBar: Int) -> Void)? = nil
+        onClone: ((_ newStartBar: Int) -> Void)? = nil,
+        onCopy: (() -> Void)? = nil,
+        onDuplicate: (() -> Void)? = nil,
+        onLinkClone: (() -> Void)? = nil,
+        onUnlink: (() -> Void)? = nil,
+        onArmToggle: (() -> Void)? = nil
     ) {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
@@ -63,6 +73,11 @@ public struct ContainerView: View {
         self.onResizeRight = onResizeRight
         self.onDoubleClick = onDoubleClick
         self.onClone = onClone
+        self.onCopy = onCopy
+        self.onDuplicate = onDuplicate
+        self.onLinkClone = onLinkClone
+        self.onUnlink = onUnlink
+        self.onArmToggle = onArmToggle
     }
 
     private var containerWidth: CGFloat {
@@ -169,9 +184,17 @@ public struct ContainerView: View {
         .gesture(altCloneGesture)
         .gesture(moveGesture)
         .contextMenu {
-            Button("Delete Container", role: .destructive) {
-                onDelete?()
+            Button("Copy") { onCopy?() }
+            Button("Duplicate") { onDuplicate?() }
+            Button("Link (Create Clone)") { onLinkClone?() }
+            if isClone {
+                Button("Unlink (Consolidate)") { onUnlink?() }
             }
+            Divider()
+            Button("Edit...") { onDoubleClick?() }
+            Button("Arm/Disarm") { onArmToggle?() }
+            Divider()
+            Button("Delete", role: .destructive) { onDelete?() }
         }
 
         // Alt-drag clone ghost preview

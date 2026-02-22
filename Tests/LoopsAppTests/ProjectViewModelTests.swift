@@ -1376,4 +1376,279 @@ struct ProjectViewModelTests {
         #expect(copiedClone.parentContainerID == originalID)
         #expect(copiedClone.overriddenFields.isEmpty)
     }
+
+    // MARK: - Context Menu: Duplicate Container
+
+    @Test("Duplicate container creates independent copy at next position")
+    @MainActor
+    func duplicateContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let dupID = vm.duplicateContainer(trackID: trackID, containerID: containerID)
+        #expect(dupID != nil)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+
+        let dup = vm.project.songs[0].tracks[0].containers[1]
+        #expect(dup.startBar == 5) // placed right after original (endBar)
+        #expect(dup.lengthBars == 4)
+        #expect(dup.id != containerID) // independent copy
+        #expect(dup.parentContainerID == nil) // not a clone
+        #expect(vm.selectedContainerID == dupID)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Duplicate container blocked by overlap returns nil")
+    @MainActor
+    func duplicateContainerOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4) // block position 5
+        let firstID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let dupID = vm.duplicateContainer(trackID: trackID, containerID: firstID)
+        #expect(dupID == nil)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+    }
+
+    // MARK: - Context Menu: Duplicate Track
+
+    @Test("Duplicate track produces correct deep copy")
+    @MainActor
+    func duplicateTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+        vm.renameTrack(id: trackID, newName: "Lead Guitar")
+
+        let copyID = vm.duplicateTrack(trackID: trackID)
+        #expect(copyID != nil)
+        #expect(vm.project.songs[0].tracks.count == 2)
+
+        let copy = vm.project.songs[0].tracks[1]
+        #expect(copy.name == "Lead Guitar Copy")
+        #expect(copy.kind == .audio)
+        #expect(copy.containers.count == 2)
+        #expect(copy.containers[0].startBar == 1)
+        #expect(copy.containers[0].lengthBars == 4)
+        #expect(copy.containers[1].startBar == 5)
+        #expect(copy.containers[1].lengthBars == 4)
+        // IDs must be different
+        #expect(copy.id != trackID)
+        #expect(copy.containers[0].id != vm.project.songs[0].tracks[0].containers[0].id)
+        #expect(copy.containers[1].id != vm.project.songs[0].tracks[0].containers[1].id)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Duplicate track copies track properties")
+    @MainActor
+    func duplicateTrackCopiesProperties() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.setTrackVolume(trackID: trackID, volume: 0.7)
+        vm.setTrackPan(trackID: trackID, pan: -0.5)
+        vm.toggleMute(trackID: trackID)
+        vm.setTrackMIDIInput(trackID: trackID, deviceID: "dev-1", channel: 3)
+
+        let copyID = vm.duplicateTrack(trackID: trackID)!
+        let copy = vm.project.songs[0].tracks.first(where: { $0.id == copyID })!
+        #expect(copy.volume == 0.7)
+        #expect(copy.pan == -0.5)
+        #expect(copy.isMuted)
+        #expect(copy.midiInputDeviceID == "dev-1")
+        #expect(copy.midiInputChannel == 3)
+    }
+
+    @Test("Duplicate track undo removes copy")
+    @MainActor
+    func duplicateTrackUndo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.duplicateTrack(trackID: trackID)
+        #expect(vm.project.songs[0].tracks.count == 2)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks.count == 1)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks.count == 2)
+    }
+
+    // MARK: - Context Menu: Copy/Paste
+
+    @Test("Copy container stores entry in clipboard")
+    @MainActor
+    func copyContainer() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 3, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        vm.copyContainer(trackID: trackID, containerID: containerID)
+        #expect(vm.clipboard.count == 1)
+        #expect(vm.clipboard[0].container.id == containerID)
+        #expect(vm.clipboard[0].trackID == trackID)
+        #expect(vm.clipboardBaseBar == 3)
+    }
+
+    @Test("Paste at position creates containers at correct bar offset")
+    @MainActor
+    func pasteAtPosition() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 3, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Copy container at bar 3
+        vm.copyContainer(trackID: trackID, containerID: containerID)
+
+        // Paste at bar 10 → offset is +7, so container should start at bar 10
+        let pasted = vm.pasteContainers(trackID: trackID, atBar: 10)
+        #expect(pasted == 1)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 2)
+        let pastedContainer = vm.project.songs[0].tracks[0].containers[1]
+        #expect(pastedContainer.startBar == 10)
+        #expect(pastedContainer.lengthBars == 4)
+        #expect(pastedContainer.id != containerID) // new ID
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Paste skips overlapping containers")
+    @MainActor
+    func pasteSkipsOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        vm.copyContainer(trackID: trackID, containerID: containerID)
+
+        // Paste at bar 3 → would overlap existing (1-4), should be skipped
+        let pasted = vm.pasteContainers(trackID: trackID, atBar: 3)
+        #expect(pasted == 0)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+    }
+
+    @Test("Copy section copies containers in range")
+    @MainActor
+    func copySectionContainers() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+        let _ = vm.addContainer(trackID: trackID, startBar: 10, lengthBars: 2) // outside range
+
+        // Copy range bars 1-8 (should get first two containers)
+        vm.copyContainersInRange(startBar: 1, endBar: 9)
+        #expect(vm.clipboard.count == 2)
+        #expect(vm.clipboardBaseBar == 1)
+    }
+
+    // MARK: - Context Menu: Split Section
+
+    @Test("Split section at playhead creates two sections")
+    @MainActor
+    func splitSection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(name: "Intro", startBar: 1, lengthBars: 8, color: "#FF5733")
+        let sectionID = vm.project.songs[0].sections[0].id
+
+        let result = vm.splitSection(sectionID: sectionID, atBar: 5)
+        #expect(result)
+        #expect(vm.project.songs[0].sections.count == 2)
+
+        let first = vm.project.songs[0].sections[0]
+        let second = vm.project.songs[0].sections[1]
+        #expect(first.startBar == 1)
+        #expect(first.lengthBars == 4)
+        #expect(first.name == "Intro")
+        #expect(second.startBar == 5)
+        #expect(second.lengthBars == 4)
+        #expect(second.name == "Intro (2)")
+        #expect(second.color == "#FF5733")
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Split section at boundary fails")
+    @MainActor
+    func splitSectionAtBoundary() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4)
+        let sectionID = vm.project.songs[0].sections[0].id
+
+        // At start bar — not strictly inside
+        #expect(!vm.splitSection(sectionID: sectionID, atBar: 1))
+        // At end bar — not strictly inside
+        #expect(!vm.splitSection(sectionID: sectionID, atBar: 5))
+        // Outside
+        #expect(!vm.splitSection(sectionID: sectionID, atBar: 10))
+        #expect(vm.project.songs[0].sections.count == 1)
+    }
+
+    @Test("Split section undo restores original")
+    @MainActor
+    func splitSectionUndo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(name: "Intro", startBar: 1, lengthBars: 8)
+        let sectionID = vm.project.songs[0].sections[0].id
+
+        vm.splitSection(sectionID: sectionID, atBar: 5)
+        #expect(vm.project.songs[0].sections.count == 2)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].sections.count == 1)
+        #expect(vm.project.songs[0].sections[0].lengthBars == 8)
+    }
+
+    // MARK: - Context Menu: Unlink only shown on clones
+
+    @Test("Container isClone reflects parentContainerID state")
+    @MainActor
+    func containerIsCloneState() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Original is not a clone
+        #expect(!vm.project.songs[0].tracks[0].containers[0].isClone)
+
+        // Create clone
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: originalID, newStartBar: 5)!
+        let clone = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == cloneID })!
+        #expect(clone.isClone)
+
+        // Consolidate removes clone status
+        vm.consolidateContainer(trackID: trackID, containerID: cloneID)
+        let consolidated = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == cloneID })!
+        #expect(!consolidated.isClone)
+    }
 }

@@ -14,6 +14,11 @@ struct SectionLaneView: View {
     let onSectionResizeRight: (ID<SectionRegion>, Int) -> Void
     let onSectionDoubleClick: (ID<SectionRegion>) -> Void
     let onSectionNavigate: (Int) -> Void
+    var onSectionDelete: ((ID<SectionRegion>) -> Void)?
+    var onSectionRecolor: ((ID<SectionRegion>, String) -> Void)?
+    var onSectionCopy: ((ID<SectionRegion>) -> Void)?
+    var onSectionSplit: ((ID<SectionRegion>, Int) -> Void)?
+    var playheadBar: Int
 
     private let laneHeight: CGFloat = 24
 
@@ -37,7 +42,13 @@ struct SectionLaneView: View {
                     onResizeLeft: { newStart, newLength in onSectionResizeLeft(section.id, newStart, newLength) },
                     onResizeRight: { newLength in onSectionResizeRight(section.id, newLength) },
                     onDoubleClick: { onSectionDoubleClick(section.id) },
-                    onNavigate: { onSectionNavigate(section.startBar) }
+                    onNavigate: { onSectionNavigate(section.startBar) },
+                    onDelete: { onSectionDelete?(section.id) },
+                    onRecolor: { color in onSectionRecolor?(section.id, color) },
+                    onCopy: { onSectionCopy?(section.id) },
+                    onSplit: {
+                        onSectionSplit?(section.id, playheadBar)
+                    }
                 )
             }
         }
@@ -78,6 +89,21 @@ private struct SectionBandView: View {
     let onResizeRight: (Int) -> Void
     let onDoubleClick: () -> Void
     let onNavigate: () -> Void
+    var onDelete: (() -> Void)?
+    var onRecolor: ((String) -> Void)?
+    var onCopy: (() -> Void)?
+    var onSplit: (() -> Void)?
+
+    private static let sectionColors: [(String, String)] = [
+        ("Red", "#E74C3C"),
+        ("Orange", "#E67E22"),
+        ("Yellow", "#F1C40F"),
+        ("Green", "#2ECC71"),
+        ("Teal", "#1ABC9C"),
+        ("Blue", "#3498DB"),
+        ("Purple", "#9B59B6"),
+        ("Pink", "#E91E90"),
+    ]
 
     @State private var isDragging = false
     @State private var dragOffset: CGFloat = 0
@@ -137,6 +163,19 @@ private struct SectionBandView: View {
             onNavigate()
         }
         .gesture(moveDragGesture)
+        .contextMenu {
+            Button("Rename...") { onDoubleClick() }
+            Menu("Recolor") {
+                ForEach(Self.sectionColors, id: \.1) { name, hex in
+                    Button(name) { onRecolor?(hex) }
+                }
+            }
+            Divider()
+            Button("Copy Section") { onCopy?() }
+            Button("Split at Playhead") { onSplit?() }
+            Divider()
+            Button("Delete", role: .destructive) { onDelete?() }
+        }
     }
 
     // MARK: - Move Gesture

@@ -21,6 +21,13 @@ public struct TrackLaneView: View {
     var onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)?
     var onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)?
     var onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)?
+    var onCopyContainer: ((_ containerID: ID<Container>) -> Void)?
+    var onDuplicateContainer: ((_ containerID: ID<Container>) -> Void)?
+    var onLinkCloneContainer: ((_ containerID: ID<Container>) -> Void)?
+    var onUnlinkContainer: ((_ containerID: ID<Container>) -> Void)?
+    var onArmToggle: (() -> Void)?
+    var onPasteAtBar: ((_ bar: Int) -> Void)?
+    var hasClipboard: Bool
     var isAutomationExpanded: Bool
     var automationSubLanePaths: [EffectPath]
     var selectedBreakpointID: ID<AutomationBreakpoint>?
@@ -49,6 +56,13 @@ public struct TrackLaneView: View {
         onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil,
         onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)? = nil,
         onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)? = nil,
+        onCopyContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onDuplicateContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onLinkCloneContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onUnlinkContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onArmToggle: (() -> Void)? = nil,
+        onPasteAtBar: ((_ bar: Int) -> Void)? = nil,
+        hasClipboard: Bool = false,
         isAutomationExpanded: Bool = false,
         automationSubLanePaths: [EffectPath] = [],
         selectedBreakpointID: ID<AutomationBreakpoint>? = nil,
@@ -72,6 +86,13 @@ public struct TrackLaneView: View {
         self.onDropAudioFile = onDropAudioFile
         self.onContainerDoubleClick = onContainerDoubleClick
         self.onCloneContainer = onCloneContainer
+        self.onCopyContainer = onCopyContainer
+        self.onDuplicateContainer = onDuplicateContainer
+        self.onLinkCloneContainer = onLinkCloneContainer
+        self.onUnlinkContainer = onUnlinkContainer
+        self.onArmToggle = onArmToggle
+        self.onPasteAtBar = onPasteAtBar
+        self.hasClipboard = hasClipboard
         self.isAutomationExpanded = isAutomationExpanded
         self.automationSubLanePaths = automationSubLanePaths
         self.selectedBreakpointID = selectedBreakpointID
@@ -95,6 +116,16 @@ public struct TrackLaneView: View {
                     .fill(Color(nsColor: .textBackgroundColor).opacity(0.3))
                     .contentShape(Rectangle())
                     .gesture(createContainerGesture)
+                    .contextMenu {
+                        Button("Create Container Here") {
+                            onCreateContainer?(1, 4)
+                        }
+                        if hasClipboard {
+                            Button("Paste") {
+                                onPasteAtBar?(1)
+                            }
+                        }
+                    }
 
                 // Draw-to-create preview
                 if isCreatingContainer, let startX = dragStartX, let currentX = dragCurrentX {
@@ -124,7 +155,12 @@ public struct TrackLaneView: View {
                         onResizeLeft: { start, len in onContainerResizeLeft?(container.id, start, len) ?? false },
                         onResizeRight: { len in onContainerResizeRight?(container.id, len) ?? false },
                         onDoubleClick: { onContainerDoubleClick?(container.id) },
-                        onClone: { newStart in onCloneContainer?(container.id, newStart) }
+                        onClone: { newStart in onCloneContainer?(container.id, newStart) },
+                        onCopy: { onCopyContainer?(container.id) },
+                        onDuplicate: { onDuplicateContainer?(container.id) },
+                        onLinkClone: { onLinkCloneContainer?(container.id) },
+                        onUnlink: { onUnlinkContainer?(container.id) },
+                        onArmToggle: { onArmToggle?() }
                     )
                     .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
                 }

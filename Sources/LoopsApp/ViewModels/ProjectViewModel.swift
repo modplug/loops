@@ -2,6 +2,12 @@ import SwiftUI
 import LoopsCore
 import LoopsEngine
 
+/// An entry in the container clipboard, storing a copied container and its source track ID.
+public struct ClipboardContainerEntry: Equatable, Sendable {
+    public let container: Container
+    public let trackID: ID<Track>
+}
+
 /// Manages the current project state and file operations.
 @Observable
 @MainActor
@@ -11,6 +17,11 @@ public final class ProjectViewModel {
     public var hasUnsavedChanges: Bool = false
     public var isExportSheetPresented: Bool = false
     public var undoManager: UndoManager?
+
+    /// Clipboard for container copy/paste operations.
+    public var clipboard: [ClipboardContainerEntry] = []
+    /// The leftmost start bar of copied containers, used for offset calculation on paste.
+    public var clipboardBaseBar: Int = 1
 
     private let persistence = ProjectPersistence()
 
@@ -913,6 +924,193 @@ public final class ProjectViewModel {
     private func markFieldOverridden(trackIndex: Int, containerIndex: Int, field: ContainerField) {
         guard project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].parentContainerID != nil else { return }
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].overriddenFields.insert(field)
+    }
+
+    // MARK: - Clipboard & Context Menu Operations
+
+    /// Copies a container to the clipboard.
+    public func copyContainer(trackID: ID<Track>, containerID: ID<Container>) {
+        guard let song = currentSong else { return }
+        guard let track = song.tracks.first(where: { $0.id == trackID }) else { return }
+        guard let container = track.containers.first(where: { $0.id == containerID }) else { return }
+        clipboard = [ClipboardContainerEntry(container: container, trackID: trackID)]
+        clipboardBaseBar = container.startBar
+    }
+
+    /// Copies all containers within a bar range (e.g., from a section) to the clipboard.
+    public func copyContainersInRange(startBar: Int, endBar: Int) {
+        guard let song = currentSong else { return }
+        var entries: [ClipboardContainerEntry] = []
+        for track in song.tracks {
+            for container in track.containers {
+                // Include containers that overlap the range
+                if container.startBar < endBar && container.endBar > startBar {
+                    entries.append(ClipboardContainerEntry(container: container, trackID: track.id))
+                }
+            }
+        }
+        guard !entries.isEmpty else { return }
+        clipboard = entries
+        clipboardBaseBar = startBar
+    }
+
+    /// Duplicates a container as an independent copy at the next available position on the same track.
+    @discardableResult
+    public func duplicateContainer(trackID: ID<Track>, containerID: ID<Container>) -> ID<Container>? {
+        guard !project.songs.isEmpty else { return nil }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return nil }
+
+        let source = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+
+        let duplicate = Container(
+            name: source.name,
+            startBar: source.endBar,
+            lengthBars: source.lengthBars,
+            sourceRecordingID: source.sourceRecordingID,
+            linkGroupID: source.linkGroupID,
+            loopSettings: source.loopSettings,
+            insertEffects: source.insertEffects,
+            isEffectChainBypassed: source.isEffectChainBypassed,
+            instrumentOverride: source.instrumentOverride,
+            enterFade: source.enterFade,
+            exitFade: source.exitFade,
+            onEnterActions: source.onEnterActions,
+            onExitActions: source.onExitActions,
+            automationLanes: source.automationLanes
+        )
+
+        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: duplicate) {
+            return nil
+        }
+
+        registerUndo(actionName: "Duplicate Container")
+        project.songs[currentSongIndex].tracks[trackIndex].containers.append(duplicate)
+        selectedContainerID = duplicate.id
+        hasUnsavedChanges = true
+        return duplicate.id
+    }
+
+    /// Duplicates a track with all its containers.
+    @discardableResult
+    public func duplicateTrack(trackID: ID<Track>) -> ID<Track>? {
+        guard !project.songs.isEmpty else { return nil }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
+
+        let source = project.songs[currentSongIndex].tracks[trackIndex]
+
+        registerUndo(actionName: "Duplicate Track")
+        let copy = Track(
+            name: source.name + " Copy",
+            kind: source.kind,
+            volume: source.volume,
+            pan: source.pan,
+            isMuted: source.isMuted,
+            isSoloed: source.isSoloed,
+            containers: source.containers.map { container in
+                Container(
+                    name: container.name,
+                    startBar: container.startBar,
+                    lengthBars: container.lengthBars,
+                    sourceRecordingID: container.sourceRecordingID,
+                    linkGroupID: container.linkGroupID,
+                    loopSettings: container.loopSettings,
+                    insertEffects: container.insertEffects,
+                    isEffectChainBypassed: container.isEffectChainBypassed,
+                    instrumentOverride: container.instrumentOverride,
+                    enterFade: container.enterFade,
+                    exitFade: container.exitFade,
+                    onEnterActions: container.onEnterActions,
+                    onExitActions: container.onExitActions,
+                    automationLanes: container.automationLanes,
+                    parentContainerID: container.parentContainerID,
+                    overriddenFields: container.overriddenFields
+                )
+            },
+            insertEffects: source.insertEffects,
+            sendLevels: source.sendLevels,
+            instrumentComponent: source.instrumentComponent,
+            inputPortID: source.inputPortID,
+            outputPortID: source.outputPortID,
+            midiInputDeviceID: source.midiInputDeviceID,
+            midiInputChannel: source.midiInputChannel,
+            isRecordArmed: source.isRecordArmed,
+            isMonitoring: source.isMonitoring,
+            orderIndex: project.songs[currentSongIndex].tracks.count
+        )
+        project.songs[currentSongIndex].tracks.insert(copy, at: trackIndex + 1)
+        reindexTracks()
+        hasUnsavedChanges = true
+        return copy.id
+    }
+
+    /// Pastes clipboard containers at the given bar on the given track.
+    /// Returns the number of containers successfully pasted.
+    @discardableResult
+    public func pasteContainers(trackID: ID<Track>, atBar: Int) -> Int {
+        guard !project.songs.isEmpty, !clipboard.isEmpty else { return 0 }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return 0 }
+
+        let offset = atBar - clipboardBaseBar
+        var pasted = 0
+
+        registerUndo(actionName: "Paste")
+        for entry in clipboard {
+            let newContainer = Container(
+                name: entry.container.name,
+                startBar: max(entry.container.startBar + offset, 1),
+                lengthBars: entry.container.lengthBars,
+                sourceRecordingID: entry.container.sourceRecordingID,
+                linkGroupID: entry.container.linkGroupID,
+                loopSettings: entry.container.loopSettings,
+                insertEffects: entry.container.insertEffects,
+                isEffectChainBypassed: entry.container.isEffectChainBypassed,
+                instrumentOverride: entry.container.instrumentOverride,
+                enterFade: entry.container.enterFade,
+                exitFade: entry.container.exitFade,
+                onEnterActions: entry.container.onEnterActions,
+                onExitActions: entry.container.onExitActions,
+                automationLanes: entry.container.automationLanes
+            )
+
+            if !hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: newContainer) {
+                project.songs[currentSongIndex].tracks[trackIndex].containers.append(newContainer)
+                pasted += 1
+            }
+        }
+
+        if pasted > 0 {
+            hasUnsavedChanges = true
+        }
+        return pasted
+    }
+
+    /// Splits a section at a given bar into two sections.
+    @discardableResult
+    public func splitSection(sectionID: ID<SectionRegion>, atBar: Int) -> Bool {
+        guard !project.songs.isEmpty else { return false }
+        guard let sectionIndex = project.songs[currentSongIndex].sections.firstIndex(where: { $0.id == sectionID }) else { return false }
+
+        let section = project.songs[currentSongIndex].sections[sectionIndex]
+        // atBar must be strictly inside the section
+        guard atBar > section.startBar && atBar < section.endBar else { return false }
+
+        let firstLength = atBar - section.startBar
+        let secondLength = section.endBar - atBar
+
+        registerUndo(actionName: "Split Section")
+        project.songs[currentSongIndex].sections[sectionIndex].lengthBars = firstLength
+
+        let secondSection = SectionRegion(
+            name: section.name + " (2)",
+            startBar: atBar,
+            lengthBars: secondLength,
+            color: section.color,
+            notes: section.notes
+        )
+        project.songs[currentSongIndex].sections.insert(secondSection, at: sectionIndex + 1)
+        hasUnsavedChanges = true
+        return true
     }
 
     // MARK: - Section Management

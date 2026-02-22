@@ -123,7 +123,22 @@ public struct MainContentView: View {
                                 },
                                 onSectionNavigate: { bar in
                                     transportViewModel?.setPlayheadPosition(Double(bar))
-                                }
+                                },
+                                onSectionDelete: { sectionID in
+                                    projectViewModel.removeSection(sectionID: sectionID)
+                                },
+                                onSectionRecolor: { sectionID, color in
+                                    projectViewModel.recolorSection(sectionID: sectionID, color: color)
+                                },
+                                onSectionCopy: { sectionID in
+                                    if let section = song.sections.first(where: { $0.id == sectionID }) {
+                                        projectViewModel.copyContainersInRange(startBar: section.startBar, endBar: section.endBar)
+                                    }
+                                },
+                                onSectionSplit: { sectionID, atBar in
+                                    projectViewModel.splitSection(sectionID: sectionID, atBar: atBar)
+                                },
+                                playheadBar: Int(timelineViewModel.playheadBar)
                             )
                         }
                     }
@@ -432,6 +447,13 @@ public struct MainContentView: View {
                 editingTrackID = track.id
                 editingTrackName = track.name
             }
+            Button("Duplicate Track") {
+                projectViewModel.duplicateTrack(trackID: track.id)
+            }
+            Divider()
+            Button(track.isRecordArmed ? "Disarm Recording" : "Arm for Recording") {
+                projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed)
+            }
 
             if track.kind == .audio, let svm = settingsViewModel {
                 Divider()
@@ -488,7 +510,11 @@ public struct MainContentView: View {
 
             Divider()
             Button("Delete Track", role: .destructive) {
-                trackToDelete = track
+                if track.containers.isEmpty {
+                    projectViewModel.removeTrack(id: track.id)
+                } else {
+                    trackToDelete = track
+                }
             }
         }
         .onTapGesture(count: 2) {
