@@ -7,6 +7,7 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
     public var timeSignature: TimeSignature
     public var tracks: [Track]
     public var countInBars: Int
+    public var sections: [SectionRegion]
 
     public init(
         id: ID<Song> = ID(),
@@ -14,7 +15,8 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         tempo: Tempo = Tempo(),
         timeSignature: TimeSignature = TimeSignature(),
         tracks: [Track] = [],
-        countInBars: Int = 0
+        countInBars: Int = 0,
+        sections: [SectionRegion] = []
     ) {
         self.id = id
         self.name = name
@@ -22,10 +24,11 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         self.timeSignature = timeSignature
         self.tracks = tracks
         self.countInBars = countInBars
+        self.sections = sections
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, tempo, timeSignature, tracks, countInBars
+        case id, name, tempo, timeSignature, tracks, countInBars, sections
     }
 
     public init(from decoder: Decoder) throws {
@@ -36,5 +39,6 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         timeSignature = try c.decode(TimeSignature.self, forKey: .timeSignature)
         tracks = try c.decode([Track].self, forKey: .tracks)
         countInBars = try c.decodeIfPresent(Int.self, forKey: .countInBars) ?? 0
+        sections = try c.decodeIfPresent([SectionRegion].self, forKey: .sections) ?? []
     }
 }

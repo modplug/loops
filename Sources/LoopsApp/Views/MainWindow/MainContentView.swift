@@ -22,6 +22,8 @@ public struct MainContentView: View {
     @State private var isSidebarVisible: Bool = true
     @State private var sidebarTab: SidebarTab = .songs
     @State private var showContainerDetailEditor: Bool = false
+    @State private var editingSectionID: ID<SectionRegion>?
+    @State private var editingSectionName: String = ""
 
     public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
         self.projectViewModel = projectViewModel
@@ -82,6 +84,50 @@ public struct MainContentView: View {
                         }
                     }
                     .frame(height: 20)
+                    Divider()
+
+                    // Section lane row (fixed, not scrollable vertically)
+                    HStack(spacing: 0) {
+                        Text("Sections")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 160, height: 24)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                        Divider()
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            SectionLaneView(
+                                sections: song.sections,
+                                pixelsPerBar: timelineViewModel.pixelsPerBar,
+                                totalBars: timelineViewModel.totalBars,
+                                selectedSectionID: projectViewModel.selectedSectionID,
+                                onSectionSelect: { sectionID in
+                                    projectViewModel.selectedSectionID = sectionID
+                                },
+                                onSectionCreate: { startBar, lengthBars in
+                                    projectViewModel.addSection(startBar: startBar, lengthBars: lengthBars)
+                                },
+                                onSectionMove: { sectionID, newStartBar in
+                                    projectViewModel.moveSection(sectionID: sectionID, newStartBar: newStartBar)
+                                },
+                                onSectionResizeLeft: { sectionID, newStart, newLength in
+                                    projectViewModel.resizeSection(sectionID: sectionID, newStartBar: newStart, newLengthBars: newLength)
+                                },
+                                onSectionResizeRight: { sectionID, newLength in
+                                    projectViewModel.resizeSection(sectionID: sectionID, newLengthBars: newLength)
+                                },
+                                onSectionDoubleClick: { sectionID in
+                                    editingSectionID = sectionID
+                                    if let section = song.sections.first(where: { $0.id == sectionID }) {
+                                        editingSectionName = section.name
+                                    }
+                                },
+                                onSectionNavigate: { bar in
+                                    transportViewModel?.setPlayheadPosition(Double(bar))
+                                }
+                            )
+                        }
+                    }
+                    .frame(height: 24)
                     Divider()
 
                     // Track area — grid fills available space, scrollbar at bottom.
@@ -303,6 +349,29 @@ public struct MainContentView: View {
                 Text("Are you sure you want to delete \"\(track.name)\"?")
             }
         }
+        .popover(isPresented: .init(
+            get: { editingSectionID != nil },
+            set: { if !$0 { commitSectionRename() } }
+        )) {
+            VStack(spacing: 8) {
+                Text("Rename Section")
+                    .font(.headline)
+                TextField("Section name", text: $editingSectionName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
+                    .onSubmit { commitSectionRename() }
+                HStack {
+                    Button("Cancel") {
+                        editingSectionID = nil
+                    }
+                    Button("OK") {
+                        commitSectionRename()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding()
+        }
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button(action: { withAnimation { isSidebarVisible.toggle() } }) {
@@ -447,6 +516,13 @@ public struct MainContentView: View {
             projectViewModel.renameTrack(id: id, newName: editingTrackName)
         }
         editingTrackID = nil
+    }
+
+    private func commitSectionRename() {
+        if let id = editingSectionID, !editingSectionName.isEmpty {
+            projectViewModel.renameSection(sectionID: id, name: editingSectionName)
+        }
+        editingSectionID = nil
     }
 
     private var addTrackMenu: some View {

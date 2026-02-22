@@ -204,7 +204,16 @@ public final class ProjectViewModel {
                     orderIndex: track.orderIndex
                 )
             },
-            countInBars: original.countInBars
+            countInBars: original.countInBars,
+            sections: original.sections.map { section in
+                SectionRegion(
+                    name: section.name,
+                    startBar: section.startBar,
+                    lengthBars: section.lengthBars,
+                    color: section.color,
+                    notes: section.notes
+                )
+            }
         )
         project.songs.insert(copy, at: index + 1)
         currentSongID = copy.id
@@ -801,6 +810,132 @@ public final class ProjectViewModel {
             }
         }
         return nil
+    }
+
+    // MARK: - Section Management
+
+    /// The currently selected section ID.
+    public var selectedSectionID: ID<SectionRegion>?
+
+    /// Adds a section region to the current song. Returns false if it would overlap.
+    @discardableResult
+    public func addSection(name: String? = nil, startBar: Int, lengthBars: Int, color: String = "#5B9BD5") -> Bool {
+        guard !project.songs.isEmpty else { return false }
+        let clampedStart = max(startBar, 1)
+        let clampedLength = max(lengthBars, 1)
+        let sectionCount = project.songs[currentSongIndex].sections.count
+        let sectionName = name ?? "Section \(sectionCount + 1)"
+        let section = SectionRegion(
+            name: sectionName,
+            startBar: clampedStart,
+            lengthBars: clampedLength,
+            color: color
+        )
+
+        if hasSectionOverlap(in: project.songs[currentSongIndex], with: section) {
+            return false
+        }
+
+        registerUndo(actionName: "Add Section")
+        project.songs[currentSongIndex].sections.append(section)
+        selectedSectionID = section.id
+        hasUnsavedChanges = true
+        return true
+    }
+
+    /// Removes a section region from the current song.
+    public func removeSection(sectionID: ID<SectionRegion>) {
+        guard !project.songs.isEmpty else { return }
+        registerUndo(actionName: "Remove Section")
+        project.songs[currentSongIndex].sections.removeAll { $0.id == sectionID }
+        if selectedSectionID == sectionID {
+            selectedSectionID = nil
+        }
+        hasUnsavedChanges = true
+    }
+
+    /// Moves a section to a new start bar. Returns false if it would overlap.
+    @discardableResult
+    public func moveSection(sectionID: ID<SectionRegion>, newStartBar: Int) -> Bool {
+        guard !project.songs.isEmpty else { return false }
+        guard let sectionIndex = project.songs[currentSongIndex].sections.firstIndex(where: { $0.id == sectionID }) else { return false }
+
+        let clampedStart = max(newStartBar, 1)
+        var proposed = project.songs[currentSongIndex].sections[sectionIndex]
+        proposed.startBar = clampedStart
+
+        if hasSectionOverlap(in: project.songs[currentSongIndex], with: proposed, excluding: sectionID) {
+            return false
+        }
+
+        registerUndo(actionName: "Move Section")
+        project.songs[currentSongIndex].sections[sectionIndex].startBar = clampedStart
+        hasUnsavedChanges = true
+        return true
+    }
+
+    /// Resizes a section. Returns false if it would overlap.
+    @discardableResult
+    public func resizeSection(sectionID: ID<SectionRegion>, newStartBar: Int? = nil, newLengthBars: Int? = nil) -> Bool {
+        guard !project.songs.isEmpty else { return false }
+        guard let sectionIndex = project.songs[currentSongIndex].sections.firstIndex(where: { $0.id == sectionID }) else { return false }
+
+        var proposed = project.songs[currentSongIndex].sections[sectionIndex]
+        if let start = newStartBar { proposed.startBar = max(start, 1) }
+        if let length = newLengthBars { proposed.lengthBars = max(length, 1) }
+
+        if hasSectionOverlap(in: project.songs[currentSongIndex], with: proposed, excluding: sectionID) {
+            return false
+        }
+
+        registerUndo(actionName: "Resize Section")
+        if let start = newStartBar {
+            project.songs[currentSongIndex].sections[sectionIndex].startBar = max(start, 1)
+        }
+        if let length = newLengthBars {
+            project.songs[currentSongIndex].sections[sectionIndex].lengthBars = max(length, 1)
+        }
+        hasUnsavedChanges = true
+        return true
+    }
+
+    /// Renames a section.
+    public func renameSection(sectionID: ID<SectionRegion>, name: String) {
+        guard !project.songs.isEmpty else { return }
+        guard let sectionIndex = project.songs[currentSongIndex].sections.firstIndex(where: { $0.id == sectionID }) else { return }
+        registerUndo(actionName: "Rename Section")
+        project.songs[currentSongIndex].sections[sectionIndex].name = name
+        hasUnsavedChanges = true
+    }
+
+    /// Changes the color of a section.
+    public func recolorSection(sectionID: ID<SectionRegion>, color: String) {
+        guard !project.songs.isEmpty else { return }
+        guard let sectionIndex = project.songs[currentSongIndex].sections.firstIndex(where: { $0.id == sectionID }) else { return }
+        registerUndo(actionName: "Recolor Section")
+        project.songs[currentSongIndex].sections[sectionIndex].color = color
+        hasUnsavedChanges = true
+    }
+
+    /// Updates the notes on a section.
+    public func setSectionNotes(sectionID: ID<SectionRegion>, notes: String?) {
+        guard !project.songs.isEmpty else { return }
+        guard let sectionIndex = project.songs[currentSongIndex].sections.firstIndex(where: { $0.id == sectionID }) else { return }
+        registerUndo(actionName: "Edit Section Notes")
+        project.songs[currentSongIndex].sections[sectionIndex].notes = notes
+        hasUnsavedChanges = true
+    }
+
+    /// Checks if a section would overlap any existing section in the song.
+    private func hasSectionOverlap(in song: Song, with section: SectionRegion, excluding excludeID: ID<SectionRegion>? = nil) -> Bool {
+        for existing in song.sections {
+            if existing.id == excludeID { continue }
+            if existing.id == section.id { continue }
+            if section.startBar < existing.endBar && existing.startBar < section.endBar {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - Audio Directory

@@ -1255,6 +1255,64 @@ struct ModelSerializationTests {
         #expect(abs(mid - 0.5) < 1e-5)
     }
 
+    // MARK: - SectionRegion
+
+    @Test("SectionRegion round-trips")
+    func sectionRegionRoundTrip() throws {
+        let section = SectionRegion(
+            name: "Verse",
+            startBar: 5,
+            lengthBars: 8,
+            color: "#FF5733",
+            notes: "Main verse theme"
+        )
+        let decoded = try roundTrip(section)
+        #expect(section == decoded)
+        #expect(decoded.name == "Verse")
+        #expect(decoded.startBar == 5)
+        #expect(decoded.lengthBars == 8)
+        #expect(decoded.color == "#FF5733")
+        #expect(decoded.notes == "Main verse theme")
+        #expect(decoded.endBar == 13)
+    }
+
+    @Test("Song with sections round-trips")
+    func songWithSectionsRoundTrip() throws {
+        let sections = [
+            SectionRegion(name: "Intro", startBar: 1, lengthBars: 4, color: "#5B9BD5"),
+            SectionRegion(name: "Verse", startBar: 5, lengthBars: 8, color: "#FF5733"),
+        ]
+        let song = Song(
+            name: "Structured Song",
+            tempo: Tempo(bpm: 120.0),
+            timeSignature: TimeSignature(),
+            tracks: [],
+            sections: sections
+        )
+        let decoded = try roundTrip(song)
+        #expect(song == decoded)
+        #expect(decoded.sections.count == 2)
+        #expect(decoded.sections[0].name == "Intro")
+        #expect(decoded.sections[1].name == "Verse")
+    }
+
+    @Test("Song decodes from legacy JSON without sections")
+    func songLegacyWithoutSections() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000002",
+            "name": "Old Song",
+            "tempo": { "bpm": 120.0 },
+            "timeSignature": { "beatsPerBar": 4, "beatUnit": 4 },
+            "tracks": []
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Song.self, from: data)
+        #expect(decoded.name == "Old Song")
+        #expect(decoded.sections.isEmpty)
+    }
+
     // MARK: - Full Project
 
     @Test("Full Project round-trips through JSON")

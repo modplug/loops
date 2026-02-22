@@ -1006,4 +1006,189 @@ struct ProjectViewModelTests {
         #expect(vm.project.songs.count == 2)
         #expect(vm.project.songs[1].countInBars == 2)
     }
+
+    // MARK: - Section Management
+
+    @Test("Add section to current song")
+    @MainActor
+    func addSection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let result = vm.addSection(name: "Intro", startBar: 1, lengthBars: 4)
+        #expect(result)
+        #expect(vm.project.songs[0].sections.count == 1)
+        #expect(vm.project.songs[0].sections[0].name == "Intro")
+        #expect(vm.project.songs[0].sections[0].startBar == 1)
+        #expect(vm.project.songs[0].sections[0].lengthBars == 4)
+        #expect(vm.selectedSectionID != nil)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Add section with default name auto-increments")
+    @MainActor
+    func addSectionDefaultName() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4)
+        vm.addSection(startBar: 5, lengthBars: 4)
+        #expect(vm.project.songs[0].sections[0].name == "Section 1")
+        #expect(vm.project.songs[0].sections[1].name == "Section 2")
+    }
+
+    @Test("Section overlap prevention")
+    @MainActor
+    func sectionOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+
+        // Add first section: bars 1-4
+        let first = vm.addSection(startBar: 1, lengthBars: 4)
+        #expect(first)
+
+        // Try overlapping section: bars 3-6 — should fail
+        let overlap = vm.addSection(startBar: 3, lengthBars: 4)
+        #expect(!overlap)
+        #expect(vm.project.songs[0].sections.count == 1)
+
+        // Non-overlapping section: bars 5-8 — should succeed
+        let noOverlap = vm.addSection(startBar: 5, lengthBars: 4)
+        #expect(noOverlap)
+        #expect(vm.project.songs[0].sections.count == 2)
+    }
+
+    @Test("Remove section")
+    @MainActor
+    func removeSection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4)
+        let sectionID = vm.project.songs[0].sections[0].id
+        vm.selectedSectionID = sectionID
+        vm.removeSection(sectionID: sectionID)
+        #expect(vm.project.songs[0].sections.isEmpty)
+        #expect(vm.selectedSectionID == nil)
+    }
+
+    @Test("Move section")
+    @MainActor
+    func moveSection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4)
+        let sectionID = vm.project.songs[0].sections[0].id
+        let result = vm.moveSection(sectionID: sectionID, newStartBar: 5)
+        #expect(result)
+        #expect(vm.project.songs[0].sections[0].startBar == 5)
+    }
+
+    @Test("Move section prevents overlap")
+    @MainActor
+    func moveSectionOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4)
+        vm.addSection(startBar: 5, lengthBars: 4)
+        let firstID = vm.project.songs[0].sections[0].id
+
+        // Try to move first section to bar 4 — would overlap with second
+        let result = vm.moveSection(sectionID: firstID, newStartBar: 4)
+        #expect(!result)
+        #expect(vm.project.songs[0].sections[0].startBar == 1)
+    }
+
+    @Test("Resize section")
+    @MainActor
+    func resizeSection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4)
+        let sectionID = vm.project.songs[0].sections[0].id
+        let result = vm.resizeSection(sectionID: sectionID, newLengthBars: 8)
+        #expect(result)
+        #expect(vm.project.songs[0].sections[0].lengthBars == 8)
+    }
+
+    @Test("Resize section prevents overlap")
+    @MainActor
+    func resizeSectionOverlap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4)
+        vm.addSection(startBar: 5, lengthBars: 4)
+        let firstID = vm.project.songs[0].sections[0].id
+
+        let result = vm.resizeSection(sectionID: firstID, newLengthBars: 6)
+        #expect(!result)
+        #expect(vm.project.songs[0].sections[0].lengthBars == 4)
+    }
+
+    @Test("Rename section")
+    @MainActor
+    func renameSection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(name: "Intro", startBar: 1, lengthBars: 4)
+        let sectionID = vm.project.songs[0].sections[0].id
+        vm.renameSection(sectionID: sectionID, name: "Outro")
+        #expect(vm.project.songs[0].sections[0].name == "Outro")
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Recolor section")
+    @MainActor
+    func recolorSection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4, color: "#5B9BD5")
+        let sectionID = vm.project.songs[0].sections[0].id
+        vm.recolorSection(sectionID: sectionID, color: "#FF0000")
+        #expect(vm.project.songs[0].sections[0].color == "#FF0000")
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Undo/redo add section")
+    @MainActor
+    func undoRedoAddSection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4)
+        #expect(vm.project.songs[0].sections.count == 1)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].sections.isEmpty)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].sections.count == 1)
+    }
+
+    @Test("Undo/redo remove section")
+    @MainActor
+    func undoRedoRemoveSection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(startBar: 1, lengthBars: 4)
+        let sectionID = vm.project.songs[0].sections[0].id
+        vm.removeSection(sectionID: sectionID)
+        #expect(vm.project.songs[0].sections.isEmpty)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].sections.count == 1)
+    }
+
+    @Test("duplicateSong copies sections")
+    @MainActor
+    func duplicateSongCopiesSections() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSection(name: "Intro", startBar: 1, lengthBars: 4, color: "#FF5733")
+        vm.addSection(name: "Verse", startBar: 5, lengthBars: 8, color: "#5B9BD5")
+        let songID = vm.project.songs[0].id
+        vm.duplicateSong(id: songID)
+        #expect(vm.project.songs.count == 2)
+        #expect(vm.project.songs[1].sections.count == 2)
+        #expect(vm.project.songs[1].sections[0].name == "Intro")
+        #expect(vm.project.songs[1].sections[1].name == "Verse")
+        // IDs should be different
+        #expect(vm.project.songs[1].sections[0].id != vm.project.songs[0].sections[0].id)
+    }
 }
