@@ -106,7 +106,7 @@ struct ExportAudioView: View {
         Task.detached {
             do {
                 let renderer = OfflineRenderer(audioDirURL: audioDir)
-                try renderer.render(
+                try await renderer.render(
                     song: song,
                     sourceRecordings: recordings,
                     config: config
