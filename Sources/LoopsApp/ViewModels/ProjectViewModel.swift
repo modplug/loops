@@ -25,21 +25,25 @@ public final class ProjectViewModel {
     private func registerUndo(actionName: String) {
         let snapshot = project
         let wasUnsaved = hasUnsavedChanges
-        let currentSongID = currentSongID
+        let savedSongID = currentSongID
+        undoManager?.beginUndoGrouping()
         undoManager?.registerUndo(withTarget: self) { target in
             let redoSnapshot = target.project
             let redoUnsaved = target.hasUnsavedChanges
             let redoSongID = target.currentSongID
             target.project = snapshot
             target.hasUnsavedChanges = wasUnsaved
-            target.currentSongID = currentSongID
+            target.currentSongID = savedSongID
+            target.undoManager?.beginUndoGrouping()
             target.undoManager?.registerUndo(withTarget: target) { target2 in
                 target2.project = redoSnapshot
                 target2.hasUnsavedChanges = redoUnsaved
                 target2.currentSongID = redoSongID
             }
+            target.undoManager?.endUndoGrouping()
             target.undoManager?.setActionName(actionName)
         }
+        undoManager?.endUndoGrouping()
         undoManager?.setActionName(actionName)
     }
 
