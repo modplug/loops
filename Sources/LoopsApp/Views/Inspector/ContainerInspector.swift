@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import LoopsCore
 import LoopsEngine
 
@@ -31,6 +32,8 @@ public struct ContainerInspector: View {
     var onRemoveBreakpoint: ((ID<AutomationLane>, ID<AutomationBreakpoint>) -> Void)?
     var onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)?
     var onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)?
+    /// Returns the engine's live AVAudioUnit for a container effect at the given index, if available.
+    var liveEffectUnit: ((Int) -> AVAudioUnit?)?
     var onNavigateToParent: (() -> Void)?
     let parentContainer: Container?
     var isMIDIActive: Bool
@@ -95,6 +98,7 @@ public struct ContainerInspector: View {
         onRemoveBreakpoint: ((ID<AutomationLane>, ID<AutomationBreakpoint>) -> Void)? = nil,
         onUpdateBreakpoint: ((ID<AutomationLane>, AutomationBreakpoint) -> Void)? = nil,
         onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)? = nil,
+        liveEffectUnit: ((Int) -> AVAudioUnit?)? = nil,
         onNavigateToParent: (() -> Void)? = nil,
         parentContainer: Container? = nil,
         isMIDIActive: Bool = false,
@@ -128,6 +132,7 @@ public struct ContainerInspector: View {
         self.onRemoveBreakpoint = onRemoveBreakpoint
         self.onUpdateBreakpoint = onUpdateBreakpoint
         self.onUpdateEffectPreset = onUpdateEffectPreset
+        self.liveEffectUnit = liveEffectUnit
         self.onNavigateToParent = onNavigateToParent
         self.parentContainer = parentContainer
         self.isMIDIActive = isMIDIActive
@@ -328,7 +333,7 @@ public struct ContainerInspector: View {
                 }
                 .font(.callout)
             } else {
-                ForEach(sortedEffects) { effect in
+                ForEach(Array(sortedEffects.enumerated()), id: \.element.id) { index, effect in
                     HStack {
                         Circle()
                             .fill(effect.isBypassed ? Color.gray : Color.green)
@@ -341,6 +346,7 @@ public struct ContainerInspector: View {
                                 component: effect.component,
                                 displayName: effect.displayName,
                                 presetData: effect.presetData,
+                                liveAudioUnit: liveEffectUnit?(index),
                                 onPresetChanged: { data in
                                     onUpdateEffectPreset?(effect.id, data)
                                 }

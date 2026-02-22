@@ -125,6 +125,9 @@ public struct MainContentView: View {
                 onUpdateEffectPreset: { effectID, data in
                     projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effectID, presetData: data)
                 },
+                liveEffectUnit: { index in
+                    transportViewModel?.liveEffectUnit(containerID: container.id, effectIndex: index)
+                },
                 onDismiss: {
                     showContainerDetailEditor = false
                 }
@@ -743,6 +746,9 @@ public struct MainContentView: View {
                 onUpdateEffectPreset: { effectID, data in
                     projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effectID, presetData: data)
                 },
+                liveEffectUnit: { index in
+                    transportViewModel?.liveEffectUnit(containerID: container.id, effectIndex: index)
+                },
                 onNavigateToParent: container.parentContainerID != nil ? {
                     if let parentID = container.parentContainerID {
                         projectViewModel.selectedContainerID = parentID
@@ -835,7 +841,10 @@ public struct MainContentView: View {
             isMIDILearning: projectViewModel.isMIDIParameterLearning,
             availableInputPorts: settingsViewModel?.inputPorts ?? [],
             availableOutputPorts: settingsViewModel?.outputPorts ?? [],
-            availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? []
+            availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? [],
+            liveTrackEffectUnit: { index in
+                transportViewModel?.liveTrackEffectUnit(trackID: track.id, effectIndex: index)
+            }
         )
     }
 

@@ -78,6 +78,87 @@ struct PluginWindowTests {
         reverbWindow?.close()
     }
 
+    @Test("Plugin window with live AU uses engine instance")
+    @MainActor
+    func pluginWindowUsesLiveAU() async throws {
+        // Create a live AU instance (simulating the engine's effect)
+        let description = AudioComponentDescription(
+            componentType: Self.delayComponent.componentType,
+            componentSubType: Self.delayComponent.componentSubType,
+            componentManufacturer: Self.delayComponent.componentManufacturer,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+
+        let liveAU = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AVAudioUnit, Error>) in
+            AVAudioUnit.instantiate(with: description, options: []) { audioUnit, error in
+                if let audioUnit = audioUnit {
+                    continuation.resume(returning: audioUnit)
+                } else {
+                    continuation.resume(throwing: error!)
+                }
+            }
+        }
+
+        // Modify a parameter on the live instance
+        guard let param = liveAU.auAudioUnit.parameterTree?.allParameters.first else {
+            Issue.record("AUDelay should have parameters")
+            return
+        }
+        let testValue = param.minValue + (param.maxValue - param.minValue) * 0.42
+        param.value = testValue
+
+        // Open plugin window with the live AU
+        var savedPreset: Data?
+        let manager = PluginWindowManager()
+        manager.open(
+            component: Self.delayComponent,
+            displayName: "AUDelay",
+            presetData: nil,
+            liveAudioUnit: liveAU,
+            onPresetChanged: { data in
+                savedPreset = data
+            }
+        )
+
+        try await Task.sleep(for: .seconds(2))
+
+        let window = manager.window(for: Self.delayComponent)
+        #expect(window != nil)
+
+        // Verify parameter value is still what we set (same instance)
+        #expect(abs(param.value - testValue) < 0.01)
+
+        // Close window — preset should be saved from the live instance
+        window?.close()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(savedPreset != nil)
+
+        window?.close()
+    }
+
+    @Test("Plugin window without live AU creates standalone instance")
+    @MainActor
+    func pluginWindowFallsBackToStandalone() async throws {
+        let manager = PluginWindowManager()
+        manager.open(
+            component: Self.delayComponent,
+            displayName: "AUDelay",
+            presetData: nil,
+            liveAudioUnit: nil,
+            onPresetChanged: nil
+        )
+
+        try await Task.sleep(for: .seconds(2))
+
+        let window = manager.window(for: Self.delayComponent)
+        #expect(window != nil)
+        #expect(window!.isVisible)
+
+        window?.close()
+    }
+
     @Test("Opening same plugin twice reuses existing window")
     @MainActor
     func samePluginReusesWindow() async throws {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import LoopsCore
 import LoopsEngine
 
@@ -373,6 +374,21 @@ public final class TransportViewModel {
     @discardableResult
     public func setParameter(at path: EffectPath, value: Float) -> Bool {
         return playbackScheduler?.setParameter(at: path, value: value) ?? false
+    }
+
+    /// Returns the engine's live AVAudioUnit for a container-level effect, if playback is prepared.
+    public func liveEffectUnit(containerID: ID<Container>, effectIndex: Int) -> AVAudioUnit? {
+        playbackScheduler?.liveEffectUnit(containerID: containerID, effectIndex: effectIndex)
+    }
+
+    /// Returns the engine's live AVAudioUnit for a track-level effect, if playback is prepared.
+    public func liveTrackEffectUnit(trackID: ID<Track>, effectIndex: Int) -> AVAudioUnit? {
+        playbackScheduler?.liveTrackEffectUnit(trackID: trackID, effectIndex: effectIndex)
+    }
+
+    /// Returns the engine's live AVAudioUnit for a master track effect, if playback is prepared.
+    public func liveMasterEffectUnit(effectIndex: Int) -> AVAudioUnit? {
+        playbackScheduler?.liveMasterEffectUnit(effectIndex: effectIndex)
     }
 
     /// Serializes playback Tasks so only one prepare() runs at a time.

@@ -18,10 +18,14 @@ final class PluginWindowManager {
     }
 
     /// Opens (or brings to front) a plugin window for the given component.
+    /// When `liveAudioUnit` is provided (from the engine's active effect chain), the window
+    /// displays that instance directly so parameter changes affect live audio immediately.
+    /// When nil, a standalone instance is created (fallback for when playback is not prepared).
     func open(
         component: AudioComponentInfo,
         displayName: String,
         presetData: Data?,
+        liveAudioUnit: AVAudioUnit? = nil,
         onPresetChanged: ((Data?) -> Void)?
     ) {
         let key = "\(component.componentType)-\(component.componentSubType)-\(component.componentManufacturer)"
@@ -36,6 +40,7 @@ final class PluginWindowManager {
             component: component,
             displayName: displayName,
             presetData: presetData,
+            liveAudioUnit: liveAudioUnit,
             onPresetChanged: onPresetChanged,
             onClose: { [weak self] in
                 self?.windows.removeValue(forKey: key)
@@ -47,6 +52,8 @@ final class PluginWindowManager {
 }
 
 /// A resizable NSWindow that hosts an Audio Unit's native plugin UI.
+/// When a live AU instance (from the engine) is provided, parameter changes in the
+/// plugin UI immediately affect audio output. Otherwise a standalone instance is created.
 @MainActor
 private final class PluginWindow: NSWindow, NSWindowDelegate {
     private var avAudioUnit: AVAudioUnit?
@@ -58,6 +65,7 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
         component: AudioComponentInfo,
         displayName: String,
         presetData: Data?,
+        liveAudioUnit: AVAudioUnit?,
         onPresetChanged: ((Data?) -> Void)?,
         onClose: (() -> Void)?
     ) {
@@ -75,7 +83,7 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
         self.delegate = self
         self.center()
 
-        // Show a loading spinner while the AU loads
+        // Show a loading spinner while the AU view loads
         let spinner = NSProgressIndicator()
         spinner.style = .spinning
         spinner.startAnimation(nil)
@@ -88,12 +96,61 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
         ])
         self.contentView = loadingView
 
-        Task { @MainActor in
-            await self.loadPlugin(component: component, presetData: presetData, displayName: displayName)
+        if let liveAudioUnit {
+            // Use the engine's live AU instance directly — parameter changes
+            // will affect audio output in real-time.
+            self.avAudioUnit = liveAudioUnit
+            Task { @MainActor in
+                await self.presentAudioUnit(liveAudioUnit, displayName: displayName)
+            }
+        } else {
+            // No live instance available — create a standalone AU (fallback)
+            Task { @MainActor in
+                await self.loadStandalonePlugin(component: component, presetData: presetData, displayName: displayName)
+            }
         }
     }
 
-    private func loadPlugin(component: AudioComponentInfo, presetData: Data?, displayName: String) async {
+    /// Presents the UI for an already-loaded AVAudioUnit instance.
+    private func presentAudioUnit(_ au: AVAudioUnit, displayName: String) async {
+        let vc = await AudioUnitUIHost.requestViewController(for: au.auAudioUnit)
+
+        if let vc {
+            self.contentViewController = vc
+
+            if self.applyPreferredSize(from: vc) {
+                self.center()
+            } else {
+                // Plugin hasn't reported its preferred size yet — observe for
+                // async updates (common with AU effect plugins).
+                self.sizeObservation = vc.observe(
+                    \.preferredContentSize,
+                    options: [.new]
+                ) { [weak self] viewController, _ in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if self.applyPreferredSize(from: viewController) {
+                            self.center()
+                            self.sizeObservation = nil
+                        }
+                    }
+                }
+            }
+        } else {
+            // No custom UI — show generic parameter sliders in SwiftUI
+            let params = au.auAudioUnit.parameterTree?.allParameters ?? []
+            let hostingView = NSHostingView(rootView: GenericParameterListView(
+                parameters: params,
+                displayName: displayName
+            ))
+            self.contentView = hostingView
+            self.setContentSize(NSSize(width: 450, height: min(CGFloat(params.count * 32 + 80), 600)))
+            self.center()
+        }
+    }
+
+    /// Creates a standalone AU instance (not connected to engine) and presents its UI.
+    private func loadStandalonePlugin(component: AudioComponentInfo, presetData: Data?, displayName: String) async {
         let description = AudioComponentDescription(
             componentType: component.componentType,
             componentSubType: component.componentSubType,
@@ -121,43 +178,7 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
 
             self.avAudioUnit = au
 
-            // Request the plugin's custom view controller
-            let vc = await AudioUnitUIHost.requestViewController(for: au.auAudioUnit)
-
-            if let vc {
-                // Use the plugin's native view controller
-                self.contentViewController = vc
-
-                // Size window to fit the plugin's preferred content size
-                if self.applyPreferredSize(from: vc) {
-                    self.center()
-                } else {
-                    // Plugin hasn't reported its preferred size yet — observe for
-                    // async updates (common with AU effect plugins).
-                    self.sizeObservation = vc.observe(
-                        \.preferredContentSize,
-                        options: [.new]
-                    ) { [weak self] viewController, _ in
-                        Task { @MainActor [weak self] in
-                            guard let self else { return }
-                            if self.applyPreferredSize(from: viewController) {
-                                self.center()
-                                self.sizeObservation = nil
-                            }
-                        }
-                    }
-                }
-            } else {
-                // No custom UI — show generic parameter sliders in SwiftUI
-                let params = au.auAudioUnit.parameterTree?.allParameters ?? []
-                let hostingView = NSHostingView(rootView: GenericParameterListView(
-                    parameters: params,
-                    displayName: displayName
-                ))
-                self.contentView = hostingView
-                self.setContentSize(NSSize(width: 450, height: min(CGFloat(params.count * 32 + 80), 600)))
-                self.center()
-            }
+            await presentAudioUnit(au, displayName: displayName)
         } catch {
             let hostingView = NSHostingView(rootView: PluginErrorView(message: error.localizedDescription))
             self.contentView = hostingView

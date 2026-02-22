@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import LoopsCore
 import LoopsEngine
 
@@ -44,6 +45,9 @@ public struct TrackInspectorView: View {
     var availableInputPorts: [InputPort] = []
     var availableOutputPorts: [OutputPort] = []
     var availableMIDIDevices: [MIDIInputDevice] = []
+
+    /// Returns the engine's live AVAudioUnit for a track effect at the given index, if available.
+    var liveTrackEffectUnit: ((Int) -> AVAudioUnit?)?
 
     @State private var editingName: String = ""
     @State private var availableEffects: [AudioUnitInfo] = []
@@ -310,7 +314,7 @@ public struct TrackInspectorView: View {
                     .help("MIDI mapped")
             }
             Spacer()
-            effectRowButtons(effect: effect)
+            effectRowButtons(effect: effect, effectIndex: effectIndex)
         }
         .contextMenu {
             if hasMIDIMapping {
@@ -327,12 +331,13 @@ public struct TrackInspectorView: View {
     }
 
     @ViewBuilder
-    private func effectRowButtons(effect: InsertEffect) -> some View {
+    private func effectRowButtons(effect: InsertEffect, effectIndex: Int) -> some View {
         Button {
             PluginWindowManager.shared.open(
                 component: effect.component,
                 displayName: effect.displayName,
                 presetData: effect.presetData,
+                liveAudioUnit: liveTrackEffectUnit?(effectIndex),
                 onPresetChanged: nil
             )
         } label: {

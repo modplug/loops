@@ -964,4 +964,245 @@ struct PlaybackSchedulerTests {
 
         return (tempDir, song, recordings)
     }
+
+    // MARK: - Live Effect Unit Fixtures
+
+    // Apple's built-in AUDelay: aufx/dely/appl
+    private static let delayComponent = AudioComponentInfo(
+        componentType: 0x61756678,   // 'aufx'
+        componentSubType: 0x64656C79, // 'dely'
+        componentManufacturer: 0x6170706C // 'appl'
+    )
+
+    private static func makeTestFixtureWithEffects() throws -> (
+        tempDir: URL,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording],
+        containerID: ID<Container>,
+        trackID: ID<Track>
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        if let channelData = buffer.floatChannelData {
+            for frame in 0..<Int(sampleCount) {
+                channelData[0][frame] = sin(Float(frame) * 0.01) * 0.1
+            }
+        }
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(
+            filename: "test.caf",
+            sampleRate: 44100,
+            sampleCount: Int64(sampleCount)
+        )
+
+        let containerID = ID<Container>()
+        let containerEffect = InsertEffect(
+            component: delayComponent,
+            displayName: "AUDelay",
+            orderIndex: 0
+        )
+        let container = Container(
+            id: containerID,
+            name: "Test Container",
+            startBar: 1,
+            lengthBars: 4,
+            sourceRecordingID: recordingID,
+            insertEffects: [containerEffect]
+        )
+
+        let trackID = ID<Track>()
+        let trackEffect = InsertEffect(
+            component: delayComponent,
+            displayName: "AUDelay Track",
+            orderIndex: 0
+        )
+        let track = Track(
+            id: trackID,
+            name: "Test Track",
+            kind: .audio,
+            containers: [container],
+            insertEffects: [trackEffect]
+        )
+        let song = Song(name: "Test Song", tracks: [track])
+        let recordings: [ID<SourceRecording>: SourceRecording] = [recordingID: recording]
+
+        return (tempDir, song, recordings, containerID, trackID)
+    }
+
+    // MARK: - Live Effect Unit Tests
+
+    @Test("liveEffectUnit returns container effect after prepare",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func liveEffectUnitContainerEffect() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+
+        // Before prepare, should return nil
+        let before = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0)
+        #expect(before == nil)
+
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        let unit = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0)
+        #expect(unit != nil)
+
+        scheduler.cleanup()
+    }
+
+    @Test("liveTrackEffectUnit returns track effect after prepare",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func liveTrackEffectUnitAfterPrepare() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+
+        let before = scheduler.liveTrackEffectUnit(trackID: fixture.trackID, effectIndex: 0)
+        #expect(before == nil)
+
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        let unit = scheduler.liveTrackEffectUnit(trackID: fixture.trackID, effectIndex: 0)
+        #expect(unit != nil)
+
+        scheduler.cleanup()
+    }
+
+    @Test("liveEffectUnit returns nil for invalid container ID",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func liveEffectUnitInvalidContainerID() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        let unit = scheduler.liveEffectUnit(containerID: ID<Container>(), effectIndex: 0)
+        #expect(unit == nil)
+
+        scheduler.cleanup()
+    }
+
+    @Test("liveEffectUnit returns nil for out-of-bounds index",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func liveEffectUnitOutOfBoundsIndex() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        let unit = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 99)
+        #expect(unit == nil)
+
+        scheduler.cleanup()
+    }
+
+    @Test("liveEffectUnit returns nil after cleanup",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func liveEffectUnitNilAfterCleanup() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        let unit = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0)
+        #expect(unit != nil)
+
+        scheduler.cleanup()
+
+        let after = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0)
+        #expect(after == nil)
+    }
+
+    @Test("Parameter change on live effect unit is reflected",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func parameterChangeOnLiveEffectUnit() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        guard let unit = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0) else {
+            Issue.record("Expected live effect unit")
+            return
+        }
+
+        // Get a parameter from the AU's parameter tree
+        guard let param = unit.auAudioUnit.parameterTree?.allParameters.first else {
+            Issue.record("Expected at least one parameter on AUDelay")
+            return
+        }
+
+        let original = param.value
+        let newValue = param.minValue + (param.maxValue - param.minValue) * 0.5
+        param.value = newValue
+
+        // Verify the change persists on the same instance
+        #expect(param.value != original || original == newValue)
+        #expect(abs(param.value - newValue) < 0.01)
+
+        scheduler.cleanup()
+    }
+
+    @Test("Preset data round-trips through engine instance",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func presetRoundTripThroughEngineInstance() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        guard let unit = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0) else {
+            Issue.record("Expected live effect unit")
+            return
+        }
+
+        // Modify a parameter
+        if let param = unit.auAudioUnit.parameterTree?.allParameters.first {
+            param.value = param.minValue + (param.maxValue - param.minValue) * 0.75
+        }
+
+        // Save preset from the engine instance
+        let host = AudioUnitHost(engine: engine)
+        let presetData = host.saveState(audioUnit: unit)
+        #expect(presetData != nil)
+
+        // The preset data should be restorable
+        if let data = presetData {
+            // Create a fresh AU and restore the preset
+            let freshUnit = try await host.loadAudioUnit(component: Self.delayComponent)
+            try host.restoreState(audioUnit: freshUnit, data: data)
+
+            // Verify the parameter was restored
+            if let originalParam = unit.auAudioUnit.parameterTree?.allParameters.first,
+               let restoredParam = freshUnit.auAudioUnit.parameterTree?.allParameters.first {
+                #expect(abs(originalParam.value - restoredParam.value) < 0.01)
+            }
+        }
+
+        scheduler.cleanup()
+    }
 }

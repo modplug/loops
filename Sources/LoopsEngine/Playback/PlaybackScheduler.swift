@@ -1031,6 +1031,36 @@ public final class PlaybackScheduler: @unchecked Sendable {
     }
 }
 
+// MARK: - Live AU Instance Access
+
+extension PlaybackScheduler {
+    /// Returns the live AVAudioUnit for a container-level effect at the given index.
+    public func liveEffectUnit(containerID: ID<Container>, effectIndex: Int) -> AVAudioUnit? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let subgraph = containerSubgraphs[containerID] else { return nil }
+        guard effectIndex >= 0, effectIndex < subgraph.effectUnits.count else { return nil }
+        return subgraph.effectUnits[effectIndex]
+    }
+
+    /// Returns the live AVAudioUnit for a track-level effect at the given index.
+    public func liveTrackEffectUnit(trackID: ID<Track>, effectIndex: Int) -> AVAudioUnit? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let units = trackEffectUnits[trackID] else { return nil }
+        guard effectIndex >= 0, effectIndex < units.count else { return nil }
+        return units[effectIndex]
+    }
+
+    /// Returns the live AVAudioUnit for a master track effect at the given index.
+    public func liveMasterEffectUnit(effectIndex: Int) -> AVAudioUnit? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard effectIndex >= 0, effectIndex < masterEffectUnits.count else { return nil }
+        return masterEffectUnits[effectIndex]
+    }
+}
+
 // MARK: - ParameterResolver
 
 extension PlaybackScheduler: ParameterResolver {

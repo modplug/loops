@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import LoopsCore
 import LoopsEngine
 
@@ -45,6 +46,8 @@ struct ContainerDetailEditor: View {
 
     // Preset callback
     var onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)?
+    /// Returns the engine's live AVAudioUnit for a container effect at the given index, if available.
+    var liveEffectUnit: ((Int) -> AVAudioUnit?)?
 
     var onDismiss: (() -> Void)?
 
@@ -145,7 +148,7 @@ struct ContainerDetailEditor: View {
                         .foregroundStyle(.secondary)
                         .font(.callout)
                 } else {
-                    ForEach(sortedEffects) { effect in
+                    ForEach(Array(sortedEffects.enumerated()), id: \.element.id) { index, effect in
                         HStack {
                             Circle()
                                 .fill(effect.isBypassed ? Color.gray : Color.green)
@@ -157,6 +160,7 @@ struct ContainerDetailEditor: View {
                                     component: effect.component,
                                     displayName: effect.displayName,
                                     presetData: effect.presetData,
+                                    liveAudioUnit: liveEffectUnit?(index),
                                     onPresetChanged: { data in
                                         onUpdateEffectPreset?(effect.id, data)
                                     }
