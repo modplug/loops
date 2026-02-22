@@ -16,7 +16,9 @@ public final class ProjectViewModel {
 
     public init(project: Project = Project()) {
         self.project = project
-        self.undoManager = UndoManager()
+        let um = UndoManager()
+        um.groupsByEvent = false
+        self.undoManager = um
     }
 
     /// Registers an undo action that snapshots and restores the full project state.
