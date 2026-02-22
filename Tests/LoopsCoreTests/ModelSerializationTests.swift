@@ -96,6 +96,70 @@ struct ModelSerializationTests {
         #expect(decoded.endBar == 13)
     }
 
+    @Test("Container with effects round-trips")
+    func containerWithEffectsRoundTrip() throws {
+        let effects = [
+            InsertEffect(
+                component: AudioComponentInfo(
+                    componentType: 0x61756678,
+                    componentSubType: 0x64656C79,
+                    componentManufacturer: 0x6170706C
+                ),
+                displayName: "AUDelay",
+                isBypassed: false,
+                presetData: Data([0x01, 0x02]),
+                orderIndex: 0
+            ),
+            InsertEffect(
+                component: AudioComponentInfo(
+                    componentType: 0x61756678,
+                    componentSubType: 0x72767262,
+                    componentManufacturer: 0x6170706C
+                ),
+                displayName: "AUReverb",
+                isBypassed: true,
+                orderIndex: 1
+            ),
+        ]
+        let container = Container(
+            name: "Chorus",
+            startBar: 9,
+            lengthBars: 8,
+            loopSettings: LoopSettings(loopCount: .fill),
+            insertEffects: effects,
+            isEffectChainBypassed: true
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.insertEffects.count == 2)
+        #expect(decoded.insertEffects[0].displayName == "AUDelay")
+        #expect(decoded.insertEffects[1].isBypassed == true)
+        #expect(decoded.isEffectChainBypassed == true)
+    }
+
+    @Test("Container decodes from legacy JSON without effect fields")
+    func containerLegacyDecoding() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Intro",
+            "startBar": 1,
+            "lengthBars": 4,
+            "loopSettings": {
+                "loopCount": { "fill": {} },
+                "boundaryMode": "hardCut",
+                "crossfadeDurationMs": 10.0
+            },
+            "isRecordArmed": false
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Container.self, from: data)
+        #expect(decoded.name == "Intro")
+        #expect(decoded.insertEffects.isEmpty)
+        #expect(decoded.isEffectChainBypassed == false)
+    }
+
     // MARK: - Track
 
     @Test("Track round-trips with port IDs")

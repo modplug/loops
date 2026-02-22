@@ -55,14 +55,23 @@ public final class TransportViewModel {
                 if playbackScheduler == nil {
                     playbackScheduler = PlaybackScheduler(engine: engine.engine, audioDirURL: context.audioDir)
                 }
-                playbackScheduler?.prepare(song: context.song, sourceRecordings: context.recordings)
-                playbackScheduler?.play(
-                    song: context.song,
-                    fromBar: playheadBar,
-                    bpm: bpm,
-                    timeSignature: timeSignature,
-                    sampleRate: engine.currentSampleRate
-                )
+                let scheduler = playbackScheduler
+                let bar = playheadBar
+                let currentBPM = bpm
+                let ts = timeSignature
+                let sr = engine.currentSampleRate
+                let song = context.song
+                let recordings = context.recordings
+                Task {
+                    await scheduler?.prepare(song: song, sourceRecordings: recordings)
+                    scheduler?.play(
+                        song: song,
+                        fromBar: bar,
+                        bpm: currentBPM,
+                        timeSignature: ts,
+                        sampleRate: sr
+                    )
+                }
             }
         }
 

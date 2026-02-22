@@ -472,6 +472,68 @@ public final class ProjectViewModel {
         }
     }
 
+    // MARK: - Container Effect Management
+
+    /// Adds an insert effect to a container.
+    public func addContainerEffect(containerID: ID<Container>, effect: InsertEffect) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Add Container Effect")
+                var newEffect = effect
+                newEffect.orderIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.count
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.append(newEffect)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Removes an insert effect from a container.
+    public func removeContainerEffect(containerID: ID<Container>, effectID: ID<InsertEffect>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Remove Container Effect")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.removeAll { $0.id == effectID }
+                // Reindex remaining effects
+                for i in project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.indices {
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[i].orderIndex = i
+                }
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Toggles bypass on a container's entire effect chain.
+    public func toggleContainerEffectChainBypass(containerID: ID<Container>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Toggle Effect Chain Bypass")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].isEffectChainBypassed.toggle()
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Toggles bypass on a single effect within a container.
+    public func toggleContainerEffectBypass(containerID: ID<Container>, effectID: ID<InsertEffect>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                if let effectIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.firstIndex(where: { $0.id == effectID }) {
+                    registerUndo(actionName: "Toggle Effect Bypass")
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[effectIndex].isBypassed.toggle()
+                    hasUnsavedChanges = true
+                    return
+                }
+            }
+        }
+    }
+
     /// Returns the selected container if one is selected.
     public var selectedContainer: Container? {
         guard let id = selectedContainerID, let song = currentSong else { return nil }

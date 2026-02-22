@@ -153,6 +153,18 @@ public struct MainContentView: View {
                         },
                         onUpdateName: { name in
                             projectViewModel.updateContainerName(containerID: container.id, name: name)
+                        },
+                        onAddEffect: { effect in
+                            projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
+                        },
+                        onRemoveEffect: { effectID in
+                            projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
+                        },
+                        onToggleEffectBypass: { effectID in
+                            projectViewModel.toggleContainerEffectBypass(containerID: container.id, effectID: effectID)
+                        },
+                        onToggleChainBypass: {
+                            projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
                         }
                     )
                 } else {

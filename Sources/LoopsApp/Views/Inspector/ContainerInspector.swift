@@ -6,6 +6,10 @@ public struct ContainerInspector: View {
     let container: Container
     var onUpdateLoopSettings: ((LoopSettings) -> Void)?
     var onUpdateName: ((String) -> Void)?
+    var onAddEffect: ((InsertEffect) -> Void)?
+    var onRemoveEffect: ((ID<InsertEffect>) -> Void)?
+    var onToggleEffectBypass: ((ID<InsertEffect>) -> Void)?
+    var onToggleChainBypass: (() -> Void)?
 
     @State private var editingName: String = ""
     @State private var selectedBoundaryMode: BoundaryMode = .hardCut
@@ -21,11 +25,19 @@ public struct ContainerInspector: View {
     public init(
         container: Container,
         onUpdateLoopSettings: ((LoopSettings) -> Void)? = nil,
-        onUpdateName: ((String) -> Void)? = nil
+        onUpdateName: ((String) -> Void)? = nil,
+        onAddEffect: ((InsertEffect) -> Void)? = nil,
+        onRemoveEffect: ((ID<InsertEffect>) -> Void)? = nil,
+        onToggleEffectBypass: ((ID<InsertEffect>) -> Void)? = nil,
+        onToggleChainBypass: (() -> Void)? = nil
     ) {
         self.container = container
         self.onUpdateLoopSettings = onUpdateLoopSettings
         self.onUpdateName = onUpdateName
+        self.onAddEffect = onAddEffect
+        self.onRemoveEffect = onRemoveEffect
+        self.onToggleEffectBypass = onToggleEffectBypass
+        self.onToggleChainBypass = onToggleChainBypass
     }
 
     public var body: some View {
@@ -51,6 +63,55 @@ public struct ContainerInspector: View {
                         Text("Empty")
                             .foregroundStyle(.secondary)
                     }
+                }
+            }
+
+            Section("Insert Effects") {
+                if container.insertEffects.isEmpty {
+                    Text("No effects")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                } else {
+                    ForEach(container.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex })) { effect in
+                        HStack {
+                            Circle()
+                                .fill(effect.isBypassed ? Color.gray : Color.green)
+                                .frame(width: 8, height: 8)
+                            Text(effect.displayName)
+                                .font(.callout)
+                            Spacer()
+                            Button {
+                                onToggleEffectBypass?(effect.id)
+                            } label: {
+                                Text(effect.isBypassed ? "Off" : "On")
+                                    .font(.caption)
+                                    .foregroundStyle(effect.isBypassed ? .secondary : .primary)
+                            }
+                            .buttonStyle(.plain)
+                            Button(role: .destructive) {
+                                onRemoveEffect?(effect.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                HStack {
+                    if !container.insertEffects.isEmpty {
+                        Toggle("Bypass All", isOn: Binding(
+                            get: { container.isEffectChainBypassed },
+                            set: { _ in onToggleChainBypass?() }
+                        ))
+                        .font(.caption)
+                    }
+                    Spacer()
+                    LabeledContent("Effects") {
+                        Text("\(container.insertEffects.count)")
+                    }
+                    .font(.caption)
                 }
             }
 
