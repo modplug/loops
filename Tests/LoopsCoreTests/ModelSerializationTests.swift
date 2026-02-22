@@ -1656,6 +1656,117 @@ struct ModelSerializationTests {
         #expect(MetronomeSubdivision.triplet.clicksPerBeat == 3.0)
     }
 
+    @Test("MetronomeSubdivision dottedQuarter clicksPerBeat")
+    func metronomeSubdivisionDottedQuarterClicksPerBeat() {
+        let cpb = MetronomeSubdivision.dottedQuarter.clicksPerBeat
+        #expect(abs(cpb - 2.0 / 3.0) < 1e-10)
+    }
+
+    // MARK: - MetronomeConfig
+
+    @Test("MetronomeConfig round-trips")
+    func metronomeConfigRoundTrip() throws {
+        let config = MetronomeConfig(volume: 0.6, subdivision: .triplet, outputPortID: "device:0:0")
+        let decoded = try roundTrip(config)
+        #expect(config == decoded)
+        #expect(decoded.volume == 0.6)
+        #expect(decoded.subdivision == .triplet)
+        #expect(decoded.outputPortID == "device:0:0")
+    }
+
+    @Test("MetronomeConfig defaults")
+    func metronomeConfigDefaults() {
+        let config = MetronomeConfig()
+        #expect(config.volume == 0.8)
+        #expect(config.subdivision == .quarter)
+        #expect(config.outputPortID == nil)
+    }
+
+    @Test("MetronomeConfig volume clamps to 0.0–1.0")
+    func metronomeConfigVolumeClamping() {
+        let tooHigh = MetronomeConfig(volume: 1.5)
+        #expect(tooHigh.volume == 1.0)
+        let tooLow = MetronomeConfig(volume: -0.5)
+        #expect(tooLow.volume == 0.0)
+        let valid = MetronomeConfig(volume: 0.5)
+        #expect(valid.volume == 0.5)
+    }
+
+    @Test("MetronomeConfig without outputPortID round-trips")
+    func metronomeConfigNoOutputPortRoundTrip() throws {
+        let config = MetronomeConfig(volume: 0.7, subdivision: .eighth)
+        let decoded = try roundTrip(config)
+        #expect(decoded.outputPortID == nil)
+    }
+
+    @Test("Song with metronomeConfig round-trips")
+    func songWithMetronomeConfigRoundTrip() throws {
+        let song = Song(
+            name: "Test",
+            tracks: [],
+            metronomeConfig: MetronomeConfig(volume: 0.5, subdivision: .sixteenth, outputPortID: "test:1:0")
+        )
+        let decoded = try roundTrip(song)
+        #expect(decoded.metronomeConfig.volume == 0.5)
+        #expect(decoded.metronomeConfig.subdivision == .sixteenth)
+        #expect(decoded.metronomeConfig.outputPortID == "test:1:0")
+    }
+
+    @Test("Song decodes from legacy JSON without metronomeConfig")
+    func songLegacyWithoutMetronomeConfig() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Old Song",
+            "tempo": { "bpm": 120.0 },
+            "timeSignature": { "beatsPerBar": 4, "beatUnit": 4 },
+            "tracks": []
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Song.self, from: data)
+        #expect(decoded.metronomeConfig == MetronomeConfig())
+    }
+
+    // MARK: - Subdivision Timing
+
+    @Test("Clicks per bar: quarter in 4/4 = 4")
+    func clicksPerBarQuarter44() {
+        let clicks = MetronomeSubdivision.quarter.clicksPerBeat * 4
+        #expect(clicks == 4.0)
+    }
+
+    @Test("Clicks per bar: eighth in 4/4 = 8")
+    func clicksPerBarEighth44() {
+        let clicks = MetronomeSubdivision.eighth.clicksPerBeat * 4
+        #expect(clicks == 8.0)
+    }
+
+    @Test("Clicks per bar: sixteenth in 4/4 = 16")
+    func clicksPerBarSixteenth44() {
+        let clicks = MetronomeSubdivision.sixteenth.clicksPerBeat * 4
+        #expect(clicks == 16.0)
+    }
+
+    @Test("Clicks per bar: triplet in 4/4 = 12")
+    func clicksPerBarTriplet44() {
+        let clicks = MetronomeSubdivision.triplet.clicksPerBeat * 4
+        #expect(clicks == 12.0)
+    }
+
+    @Test("Clicks per bar: dottedQuarter in 4/4")
+    func clicksPerBarDottedQuarter44() {
+        let clicks = MetronomeSubdivision.dottedQuarter.clicksPerBeat * 4
+        // 2/3 * 4 = 8/3 ≈ 2.667
+        #expect(abs(clicks - 8.0 / 3.0) < 1e-10)
+    }
+
+    @Test("Clicks per bar: eighth in 3/4 = 6")
+    func clicksPerBarEighth34() {
+        let clicks = MetronomeSubdivision.eighth.clicksPerBeat * 3
+        #expect(clicks == 6.0)
+    }
+
     @Test("Clone of clone links to original parent (no nesting)")
     func cloneOfCloneLinksToOriginal() {
         // This is tested via ProjectViewModel, but we verify the resolution works

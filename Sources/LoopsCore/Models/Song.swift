@@ -8,6 +8,7 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
     public var tracks: [Track]
     public var countInBars: Int
     public var sections: [SectionRegion]
+    public var metronomeConfig: MetronomeConfig
 
     public init(
         id: ID<Song> = ID(),
@@ -16,7 +17,8 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         timeSignature: TimeSignature = TimeSignature(),
         tracks: [Track] = [],
         countInBars: Int = 0,
-        sections: [SectionRegion] = []
+        sections: [SectionRegion] = [],
+        metronomeConfig: MetronomeConfig = MetronomeConfig()
     ) {
         self.id = id
         self.name = name
@@ -25,10 +27,11 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         self.tracks = tracks
         self.countInBars = countInBars
         self.sections = sections
+        self.metronomeConfig = metronomeConfig
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, tempo, timeSignature, tracks, countInBars, sections
+        case id, name, tempo, timeSignature, tracks, countInBars, sections, metronomeConfig
     }
 
     public init(from decoder: Decoder) throws {
@@ -40,6 +43,7 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         tracks = try c.decode([Track].self, forKey: .tracks)
         countInBars = try c.decodeIfPresent(Int.self, forKey: .countInBars) ?? 0
         sections = try c.decodeIfPresent([SectionRegion].self, forKey: .sections) ?? []
+        metronomeConfig = try c.decodeIfPresent(MetronomeConfig.self, forKey: .metronomeConfig) ?? MetronomeConfig()
     }
 
     // MARK: - Master Track

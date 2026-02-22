@@ -2270,4 +2270,74 @@ struct ProjectViewModelTests {
         song.ensureMasterTrack()
         #expect(song.tracks.filter({ $0.kind == .master }).count == 1)
     }
+
+    // MARK: - Metronome Config (#76)
+
+    @MainActor
+    @Test("setMetronomeConfig updates song metronome config")
+    func setMetronomeConfigUpdates() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        guard let songID = vm.currentSongID else {
+            Issue.record("No current song")
+            return
+        }
+        let config = MetronomeConfig(volume: 0.5, subdivision: .triplet, outputPortID: "test:0:0")
+        vm.setMetronomeConfig(songID: songID, config: config)
+        #expect(vm.currentSong?.metronomeConfig.volume == 0.5)
+        #expect(vm.currentSong?.metronomeConfig.subdivision == .triplet)
+        #expect(vm.currentSong?.metronomeConfig.outputPortID == "test:0:0")
+    }
+
+    @MainActor
+    @Test("setMetronomeConfig undo/redo")
+    func setMetronomeConfigUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        guard let songID = vm.currentSongID else {
+            Issue.record("No current song")
+            return
+        }
+        let original = vm.currentSong!.metronomeConfig
+        let config = MetronomeConfig(volume: 0.3, subdivision: .sixteenth)
+        vm.setMetronomeConfig(songID: songID, config: config)
+        #expect(vm.currentSong?.metronomeConfig.subdivision == .sixteenth)
+
+        vm.undoManager?.undo()
+        #expect(vm.currentSong?.metronomeConfig == original)
+
+        vm.undoManager?.redo()
+        #expect(vm.currentSong?.metronomeConfig.subdivision == .sixteenth)
+    }
+
+    @MainActor
+    @Test("setMetronomeConfig no-op when same config")
+    func setMetronomeConfigNoOp() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        guard let songID = vm.currentSongID else {
+            Issue.record("No current song")
+            return
+        }
+        let config = vm.currentSong!.metronomeConfig
+        vm.setMetronomeConfig(songID: songID, config: config)
+        // Should not have registered an undo since nothing changed
+        #expect(!(vm.undoManager?.canUndo ?? false))
+    }
+
+    @MainActor
+    @Test("duplicateSong copies metronomeConfig")
+    func duplicateSongCopiesMetronomeConfig() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        guard let songID = vm.currentSongID else {
+            Issue.record("No current song")
+            return
+        }
+        let config = MetronomeConfig(volume: 0.4, subdivision: .eighth, outputPortID: "test:1:0")
+        vm.setMetronomeConfig(songID: songID, config: config)
+        vm.duplicateSong(id: songID)
+        #expect(vm.project.songs.count == 2)
+        #expect(vm.project.songs[1].metronomeConfig == config)
+    }
 }

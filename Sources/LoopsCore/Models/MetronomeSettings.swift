@@ -43,3 +43,24 @@ public struct MetronomeSettings: Codable, Equatable, Sendable {
         self.subdivision = subdivision
     }
 }
+
+/// Global metronome configuration stored per-song.
+public struct MetronomeConfig: Codable, Equatable, Sendable {
+    /// Volume level (0.0–1.0).
+    public var volume: Float
+    /// Default subdivision when no master track container overrides.
+    public var subdivision: MetronomeSubdivision
+    /// Output port ID for routing metronome to a specific output (e.g., headphones).
+    /// When nil, routes to main mixer.
+    public var outputPortID: String?
+
+    public init(
+        volume: Float = 0.8,
+        subdivision: MetronomeSubdivision = .quarter,
+        outputPortID: String? = nil
+    ) {
+        self.volume = min(max(volume, 0.0), 1.0)
+        self.subdivision = subdivision
+        self.outputPortID = outputPortID
+    }
+}

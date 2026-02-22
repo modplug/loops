@@ -21,11 +21,22 @@ public struct LoopsRootView: View {
     public var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                ToolbarView(viewModel: transportViewModel, onTimeSignatureChange: { beatsPerBar, beatUnit in
-                    if let songID = viewModel.currentSongID {
-                        viewModel.setTimeSignature(songID: songID, beatsPerBar: beatsPerBar, beatUnit: beatUnit)
-                    }
-                })
+                ToolbarView(
+                    viewModel: transportViewModel,
+                    onTimeSignatureChange: { beatsPerBar, beatUnit in
+                        if let songID = viewModel.currentSongID {
+                            viewModel.setTimeSignature(songID: songID, beatsPerBar: beatsPerBar, beatUnit: beatUnit)
+                        }
+                    },
+                    onMetronomeConfigChange: { config in
+                        if let songID = viewModel.currentSongID {
+                            viewModel.setMetronomeConfig(songID: songID, config: config)
+                        }
+                    },
+                    availableOutputPorts: engineManager?.deviceManager.outputDevices().flatMap { device in
+                        engineManager?.deviceManager.outputPorts(for: device) ?? []
+                    } ?? []
+                )
                 Divider()
                 MainContentView(
                     projectViewModel: viewModel,
@@ -61,6 +72,10 @@ public struct LoopsRootView: View {
         .onChange(of: viewModel.currentSong?.timeSignature) { _, newValue in
             transportViewModel.timeSignature = newValue ?? TimeSignature()
         }
+        .onChange(of: viewModel.currentSong?.metronomeConfig) { _, newValue in
+            let config = newValue ?? MetronomeConfig()
+            transportViewModel.applyMetronomeConfig(config)
+        }
         .onAppear {
             transportViewModel.songProvider = { [weak viewModel] in
                 guard let vm = viewModel, let song = vm.currentSong else { return nil }
@@ -70,6 +85,9 @@ public struct LoopsRootView: View {
             transportViewModel.countInBars = viewModel.currentSong?.countInBars ?? 0
             // Sync time signature from the current song
             transportViewModel.timeSignature = viewModel.currentSong?.timeSignature ?? TimeSignature()
+            // Sync metronome config from the current song
+            let config = viewModel.currentSong?.metronomeConfig ?? MetronomeConfig()
+            transportViewModel.applyMetronomeConfig(config)
         }
         .sheet(isPresented: $viewModel.isExportSheetPresented) {
             ExportAudioView(viewModel: viewModel)

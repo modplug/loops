@@ -15,6 +15,9 @@ public final class TransportViewModel {
     public var countInBars: Int = 0
     public var isCountingIn: Bool = false
     public var countInBarsRemaining: Int = 0
+    public var metronomeVolume: Float = 0.8
+    public var metronomeSubdivision: MetronomeSubdivision = .quarter
+    public var metronomeOutputPortID: String?
 
     private let transport: TransportManager
     private let engineManager: AudioEngineManager?
@@ -85,6 +88,8 @@ public final class TransportViewModel {
                 beatsPerBar: timeSignature.beatsPerBar,
                 sampleRate: engine.currentSampleRate
             )
+            engine.metronome?.setVolume(metronomeVolume)
+            engine.metronome?.setSubdivision(activeSubdivision(atBar: playheadBar))
             engine.metronome?.reset()
 
             // If count-in is active, always enable metronome during count-in
@@ -182,6 +187,31 @@ public final class TransportViewModel {
         }
     }
 
+    /// Sets the metronome volume (clamped 0.0–1.0).
+    public func setMetronomeVolume(_ volume: Float) {
+        metronomeVolume = min(max(volume, 0.0), 1.0)
+        engineManager?.metronome?.setVolume(metronomeVolume)
+    }
+
+    /// Sets the default metronome subdivision.
+    public func setMetronomeSubdivision(_ subdivision: MetronomeSubdivision) {
+        metronomeSubdivision = subdivision
+        engineManager?.metronome?.setSubdivision(subdivision)
+    }
+
+    /// Routes the metronome to a specific output port (nil = main mixer).
+    public func setMetronomeOutputPort(_ portID: String?) {
+        metronomeOutputPortID = portID
+        engineManager?.setMetronomeOutputPort(portID)
+    }
+
+    /// Applies a MetronomeConfig to the transport (volume, subdivision, output routing).
+    public func applyMetronomeConfig(_ config: MetronomeConfig) {
+        setMetronomeVolume(config.volume)
+        setMetronomeSubdivision(config.subdivision)
+        setMetronomeOutputPort(config.outputPortID)
+    }
+
     public func setPlayheadPosition(_ bar: Double) {
         transport.setPlayheadPosition(bar)
         syncFromTransport()
@@ -206,6 +236,8 @@ public final class TransportViewModel {
                 beatsPerBar: timeSignature.beatsPerBar,
                 sampleRate: engine.currentSampleRate
             )
+            engine.metronome?.setVolume(metronomeVolume)
+            engine.metronome?.setSubdivision(activeSubdivision(atBar: playheadBar))
             engine.metronome?.reset()
             engine.metronome?.setEnabled(isMetronomeEnabled)
 
@@ -263,6 +295,25 @@ public final class TransportViewModel {
         } else {
             monitor.disableMonitoring(trackID: track.id)
         }
+    }
+
+    /// Returns the active subdivision for a given bar position.
+    /// Checks master track containers for MetronomeSettings overrides;
+    /// falls back to the default metronome subdivision.
+    private func activeSubdivision(atBar bar: Double) -> MetronomeSubdivision {
+        guard let context = songProvider?() else { return metronomeSubdivision }
+        let song = context.song
+        guard let masterTrack = song.masterTrack else { return metronomeSubdivision }
+
+        // Find the master track container at the current bar position
+        let barInt = Int(bar)
+        for container in masterTrack.containers {
+            if container.startBar <= barInt && container.endBar > barInt,
+               let settings = container.metronomeSettings {
+                return settings.subdivision
+            }
+        }
+        return metronomeSubdivision
     }
 
     private func syncFromTransport() {

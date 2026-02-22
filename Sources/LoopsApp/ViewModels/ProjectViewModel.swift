@@ -177,6 +177,15 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    /// Sets the metronome configuration for a song.
+    public func setMetronomeConfig(songID: ID<Song>, config: MetronomeConfig) {
+        guard let index = project.songs.firstIndex(where: { $0.id == songID }) else { return }
+        guard project.songs[index].metronomeConfig != config else { return }
+        registerUndo(actionName: "Set Metronome Config")
+        project.songs[index].metronomeConfig = config
+        hasUnsavedChanges = true
+    }
+
     /// Sets the count-in bars for a song.
     public func setCountInBars(songID: ID<Song>, bars: Int) {
         guard let index = project.songs.firstIndex(where: { $0.id == songID }) else { return }
@@ -248,7 +257,8 @@ public final class ProjectViewModel {
                     color: section.color,
                     notes: section.notes
                 )
-            }
+            },
+            metronomeConfig: original.metronomeConfig
         )
         project.songs.insert(copy, at: index + 1)
         currentSongID = copy.id

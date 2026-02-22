@@ -381,3 +381,41 @@
 - `render()` method now `async` to support AU instantiation; ExportAudioView caller updated
 - 6 new tests: enter fade gain ramp, exit fade gain ramp, bypassed chain renders dry, MIDI actions skipped, AU effect produces processed output (Apple Delay on impulse), trigger resolves container from muted track
 - All 267 tests pass
+
+# ============================================================
+# PRD #71 (continued): Transport, Master Track, Mixer, MIDI Parameter Control
+# ============================================================
+
+### Iteration 4 — #75 Master track: effects chain, output selector & metronome zones
+- Added `.master` case to `TrackKind` enum with `creatableKinds` static property excluding master
+- Created `MetronomeSettings` and `MetronomeSubdivision` models for per-section click behavior
+- Added `metronomeSettings: MetronomeSettings?` to Container for master track metronome zones
+- Added `isEffectChainBypassed: Bool` to Track for track-level effect chain bypass
+- Added `masterTrack` computed property, `ensureMasterTrack()`, `ensureMasterTrackLast()` to Song
+- Updated ProjectViewModel: auto-creates master track on new/open/add song, prevents master delete/duplicate/move, ensures master always last
+- Added master track management methods: addMasterEffect, removeMasterEffect, toggleMasterEffectChainBypass, setMasterOutputPort
+- Updated PlaybackScheduler: routes all track mixers through master mixer → master effects → main mixer
+- Updated OfflineRenderer: 5-phase rendering (container → track effects → pre-master mix → master effects → write), excludes master from audible tracks, applies master volume/pan
+- Updated TrackHeaderView: master-specific appearance (gray color, no record arm/monitor buttons, output routing display)
+- Updated MainContentView: add track menu uses creatableKinds, context menu hides delete/duplicate/record for master, adds output selector for master
+- Fixed exhaustive switch cases in TrackLaneView and StorylineInspectorView
+- All backward-compatible: new fields use decodeIfPresent with defaults
+- 13 files changed, 630 insertions
+- 20 new tests (MetronomeSettings/Subdivision Codable, master track auto-creation, always-last ordering, delete/duplicate prevention, creatableKinds, ensureMasterTrack idempotency, legacy JSON decode)
+- All 432 tests pass
+
+### Iteration 5 — #76 Metronome enhancements: volume, output routing & subdivision
+- `MetronomeGenerator`: added `volume` property (0.0–1.0, default 0.8), `setVolume(_:)` with clamping, `setSubdivision(_:)` for click density control
+- `MetronomeGenerator`: subdivision-aware audio rendering — accent on beat 1 (1500 Hz), regular beats (1000 Hz), subdivision clicks (800 Hz, softer amplitude)
+- `MetronomeGenerator`: `clicksPerBar(subdivision:beatsPerBar:)` static helper for timing calculations
+- New `MetronomeConfig` model: `volume: Float`, `subdivision: MetronomeSubdivision`, `outputPortID: String?` — stored per song
+- `Song` gains `metronomeConfig: MetronomeConfig` (default values, backward-compatible decoding)
+- `AudioEngineManager`: dedicated `metronomeMixer` node for output routing, `setMetronomeOutputPort(_:)` method
+- `TransportViewModel`: `metronomeVolume`, `metronomeSubdivision`, `metronomeOutputPortID` properties with setters
+- `TransportViewModel`: `applyMetronomeConfig(_:)` for bulk config sync, `activeSubdivision(atBar:)` reads MetronomeSettings from active master track containers
+- Play and seek paths now apply volume and subdivision to metronome before enabling
+- `ProjectViewModel`: `setMetronomeConfig(songID:config:)` with full undo/redo, `duplicateSong` copies metronomeConfig
+- `ToolbarView`: metronome volume slider (60px), subdivision picker menu (all 5 modes), output port selector submenu
+- `LoopsRootView`: wired metronome config callbacks, bidirectional sync between Song and TransportViewModel
+- 30 new tests: MetronomeGenerator volume/clamping/enabled/subdivision/clicksPerBar, MetronomeConfig Codable round-trip/defaults/volume clamping/no-output-port, Song with/without metronomeConfig, subdivision timing (clicks per bar for all modes in 4/4, 3/4, 6/8), ProjectViewModel setMetronomeConfig/undo-redo/no-op/duplicateSong
+- All 462 tests pass

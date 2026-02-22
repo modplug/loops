@@ -3,8 +3,8 @@ import AVFoundation
 import LoopsCore
 
 /// Generates metronome click audio via AVAudioSourceNode.
-/// Produces a short sine wave click on each beat, with an accented
-/// click on beat 1 of each bar.
+/// Produces a short sine wave click on each beat (with subdivision support),
+/// with an accented click on beat 1 of each bar.
 public final class MetronomeGenerator: @unchecked Sendable {
     public let sourceNode: AVAudioSourceNode
 
@@ -12,7 +12,14 @@ public final class MetronomeGenerator: @unchecked Sendable {
 
     private let clickFrequencyHz: Double = 1000.0
     private let accentFrequencyHz: Double = 1500.0
+    private let subdivisionFrequencyHz: Double = 800.0
     private let clickDurationMs: Double = 15.0
+
+    /// User-facing volume level (0.0–1.0), independent of master track volume.
+    public private(set) var volume: Float = 0.8
+
+    /// Whether the metronome is currently enabled (producing sound).
+    private var isEnabled: Bool = false
 
     /// Shared mutable state read by the audio render thread.
     /// Property access on individual primitives is safe for prototype
@@ -23,14 +30,18 @@ public final class MetronomeGenerator: @unchecked Sendable {
         var beatsPerBar: Int = 4
         var sampleCounter: Int64 = 0
         var clickDurationSamples: Int
+        var volume: Float = 0.8
+        var clicksPerBeat: Double = 1.0
         let clickFrequencyHz: Double
         let accentFrequencyHz: Double
+        let subdivisionFrequencyHz: Double
 
-        init(sampleRate: Double, clickFreq: Double, accentFreq: Double, clickDurationMs: Double) {
+        init(sampleRate: Double, clickFreq: Double, accentFreq: Double, subdivisionFreq: Double, clickDurationMs: Double) {
             self.sampleRate = sampleRate
             self.clickDurationSamples = Int(sampleRate * clickDurationMs / 1000.0)
             self.clickFrequencyHz = clickFreq
             self.accentFrequencyHz = accentFreq
+            self.subdivisionFrequencyHz = subdivisionFreq
         }
     }
 
@@ -39,6 +50,7 @@ public final class MetronomeGenerator: @unchecked Sendable {
             sampleRate: sampleRate,
             clickFreq: clickFrequencyHz,
             accentFreq: accentFrequencyHz,
+            subdivisionFreq: subdivisionFrequencyHz,
             clickDurationMs: clickDurationMs
         )
         self.renderState = state
@@ -47,19 +59,53 @@ public final class MetronomeGenerator: @unchecked Sendable {
             let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
             let sr = state.sampleRate
             let currentBpm = state.bpm
-            let samplesPerBeat = max(Int(sr * 60.0 / currentBpm), 1)
+            let vol = state.volume
+            let clicksPerBeat = state.clicksPerBeat
+            let samplesPerBeat = max(sr * 60.0 / currentBpm, 1.0)
+
+            // Samples per subdivision click
+            let samplesPerClick: Double
+            if clicksPerBeat > 0 {
+                samplesPerClick = samplesPerBeat / clicksPerBeat
+            } else {
+                samplesPerClick = samplesPerBeat
+            }
+
+            let totalClicksPerBar = clicksPerBeat * Double(state.beatsPerBar)
 
             for frame in 0..<Int(frameCount) {
                 var sample: Float = 0.0
 
-                let posInBeat = Int(state.sampleCounter) % samplesPerBeat
-                let beatIndex = (Int(state.sampleCounter) / samplesPerBeat) % state.beatsPerBar
+                let counter = Double(state.sampleCounter)
+                let totalSamplesPerBar = samplesPerBeat * Double(state.beatsPerBar)
+                let posInBar = counter.truncatingRemainder(dividingBy: max(totalSamplesPerBar, 1.0))
 
-                if posInBeat < state.clickDurationSamples {
-                    let freq = beatIndex == 0 ? state.accentFrequencyHz : state.clickFrequencyHz
-                    let phase = Double(posInBeat) / sr
-                    let envelope = 1.0 - (Double(posInBeat) / Double(state.clickDurationSamples))
-                    sample = Float(sin(2.0 * .pi * freq * phase) * envelope * 0.5)
+                // Which click within the bar are we at?
+                let clickIndex = Int(posInBar / max(samplesPerClick, 1.0))
+                let posInClick = Int(posInBar.truncatingRemainder(dividingBy: max(samplesPerClick, 1.0)))
+
+                if posInClick < state.clickDurationSamples, clickIndex < Int(totalClicksPerBar.rounded(.up)) {
+                    // Beat 1 accent: clickIndex == 0
+                    // Regular beat: clickIndex is on a beat boundary
+                    let isOnBeat = clicksPerBeat > 0 && (Double(clickIndex).truncatingRemainder(dividingBy: clicksPerBeat) < 0.001)
+                    let isBeat1 = clickIndex == 0
+
+                    let freq: Double
+                    let amplitude: Double
+                    if isBeat1 {
+                        freq = state.accentFrequencyHz
+                        amplitude = 0.5
+                    } else if isOnBeat {
+                        freq = state.clickFrequencyHz
+                        amplitude = 0.5
+                    } else {
+                        freq = state.subdivisionFrequencyHz
+                        amplitude = 0.3
+                    }
+
+                    let phase = Double(posInClick) / sr
+                    let envelope = 1.0 - (Double(posInClick) / Double(state.clickDurationSamples))
+                    sample = Float(sin(2.0 * .pi * freq * phase) * envelope * amplitude) * vol
                 }
 
                 for buffer in buffers {
@@ -84,13 +130,30 @@ public final class MetronomeGenerator: @unchecked Sendable {
         renderState.clickDurationSamples = Int(sampleRate * clickDurationMs / 1000.0)
     }
 
+    /// Sets the metronome volume (clamped to 0.0–1.0).
+    public func setVolume(_ newVolume: Float) {
+        volume = min(max(newVolume, 0.0), 1.0)
+        renderState.volume = volume
+    }
+
+    /// Sets the subdivision mode, controlling clicks per beat.
+    public func setSubdivision(_ subdivision: MetronomeSubdivision) {
+        renderState.clicksPerBeat = subdivision.clicksPerBeat
+    }
+
     /// Enables or disables the metronome output.
     public func setEnabled(_ enabled: Bool) {
+        isEnabled = enabled
         sourceNode.volume = enabled ? 1.0 : 0.0
     }
 
     /// Resets the sample counter (e.g., when transport resets to bar 1).
     public func reset() {
         renderState.sampleCounter = 0
+    }
+
+    /// Returns the number of clicks per bar for the given subdivision in the given time signature.
+    public static func clicksPerBar(subdivision: MetronomeSubdivision, beatsPerBar: Int) -> Double {
+        return subdivision.clicksPerBeat * Double(beatsPerBar)
     }
 }

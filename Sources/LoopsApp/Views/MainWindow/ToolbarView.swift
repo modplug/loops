@@ -9,15 +9,28 @@ public struct ToolbarView: View {
     /// Callback for when the user selects a new time signature.
     var onTimeSignatureChange: ((Int, Int) -> Void)?
 
+    /// Callback for when metronome config changes (volume, subdivision, output port).
+    var onMetronomeConfigChange: ((MetronomeConfig) -> Void)?
+
+    /// Available output ports for metronome routing.
+    var availableOutputPorts: [OutputPort]
+
     private static let countInOptions = [0, 1, 2, 4]
 
     private static let timeSignaturePresets: [(beatsPerBar: Int, beatUnit: Int)] = [
         (2, 4), (3, 4), (4, 4), (5, 4), (6, 8), (7, 8)
     ]
 
-    public init(viewModel: TransportViewModel, onTimeSignatureChange: ((Int, Int) -> Void)? = nil) {
+    public init(
+        viewModel: TransportViewModel,
+        onTimeSignatureChange: ((Int, Int) -> Void)? = nil,
+        onMetronomeConfigChange: ((MetronomeConfig) -> Void)? = nil,
+        availableOutputPorts: [OutputPort] = []
+    ) {
         self.viewModel = viewModel
         self.onTimeSignatureChange = onTimeSignatureChange
+        self.onMetronomeConfigChange = onMetronomeConfigChange
+        self.availableOutputPorts = availableOutputPorts
         _bpmText = State(initialValue: String(format: "%.1f", viewModel.bpm))
     }
 
@@ -105,6 +118,86 @@ public struct ToolbarView: View {
             }
             .buttonStyle(.plain)
             .help("Metronome")
+
+            // Metronome volume slider
+            Slider(value: Binding(
+                get: { Double(viewModel.metronomeVolume) },
+                set: { viewModel.setMetronomeVolume(Float($0))
+                    onMetronomeConfigChange?(MetronomeConfig(
+                        volume: Float($0),
+                        subdivision: viewModel.metronomeSubdivision,
+                        outputPortID: viewModel.metronomeOutputPortID
+                    ))
+                }
+            ), in: 0...1)
+            .frame(width: 60)
+            .help("Metronome Volume: \(Int(viewModel.metronomeVolume * 100))%")
+
+            // Metronome subdivision picker
+            Menu {
+                ForEach(MetronomeSubdivision.allCases, id: \.self) { sub in
+                    Button(action: {
+                        viewModel.setMetronomeSubdivision(sub)
+                        onMetronomeConfigChange?(MetronomeConfig(
+                            volume: viewModel.metronomeVolume,
+                            subdivision: sub,
+                            outputPortID: viewModel.metronomeOutputPortID
+                        ))
+                    }) {
+                        HStack {
+                            Text(sub.displayName)
+                            if viewModel.metronomeSubdivision == sub {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+
+                if !availableOutputPorts.isEmpty {
+                    Divider()
+                    Menu("Output") {
+                        Button(action: {
+                            viewModel.setMetronomeOutputPort(nil)
+                            onMetronomeConfigChange?(MetronomeConfig(
+                                volume: viewModel.metronomeVolume,
+                                subdivision: viewModel.metronomeSubdivision,
+                                outputPortID: nil
+                            ))
+                        }) {
+                            HStack {
+                                Text("Main Output")
+                                if viewModel.metronomeOutputPortID == nil {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                        ForEach(availableOutputPorts) { port in
+                            Button(action: {
+                                viewModel.setMetronomeOutputPort(port.id)
+                                onMetronomeConfigChange?(MetronomeConfig(
+                                    volume: viewModel.metronomeVolume,
+                                    subdivision: viewModel.metronomeSubdivision,
+                                    outputPortID: port.id
+                                ))
+                            }) {
+                                HStack {
+                                    Text(port.displayName)
+                                    if viewModel.metronomeOutputPortID == port.id {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Text(viewModel.metronomeSubdivision.displayName)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(viewModel.metronomeSubdivision != .quarter ? Color.accentColor : Color.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Metronome Subdivision")
 
             // Count-in picker
             Menu {
