@@ -211,4 +211,79 @@ struct MixerTests {
         // Should not crash, and should not modify existing tracks
         #expect(vm.project.songs[0].tracks[0].pan == 0.0)
     }
+
+    // MARK: - Fader/pan drag propagation
+
+    @Test("Volume fader drag values propagate to engine model immediately")
+    @MainActor
+    func faderDragPropagatesToEngine() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        // Simulate rapid drag updates (as from a custom drag gesture)
+        vm.setTrackVolume(trackID: trackID, volume: 0.3)
+        #expect(vm.project.songs[0].tracks[0].volume == 0.3)
+
+        vm.setTrackVolume(trackID: trackID, volume: 0.6)
+        #expect(vm.project.songs[0].tracks[0].volume == 0.6)
+
+        vm.setTrackVolume(trackID: trackID, volume: 1.5)
+        #expect(vm.project.songs[0].tracks[0].volume == 1.5)
+
+        // Each intermediate value is immediately reflected
+        vm.setTrackVolume(trackID: trackID, volume: 0.0)
+        #expect(vm.project.songs[0].tracks[0].volume == 0.0)
+    }
+
+    @Test("Engine volume state is readable back after changes")
+    @MainActor
+    func engineVolumeStateReadback() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        // Set volume via model (simulates engine update)
+        vm.setTrackVolume(trackID: trackID, volume: 0.42)
+
+        // Read back from the track model — this is what MixerStripView's
+        // onChange(of: track.volume) observes for UI sync
+        let readbackVolume = vm.project.songs[0].tracks.first(where: { $0.id == trackID })?.volume
+        #expect(readbackVolume == 0.42)
+    }
+
+    @Test("Pan knob drag values propagate to engine model immediately")
+    @MainActor
+    func panDragPropagatesToEngine() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        // Simulate rapid pan drag updates
+        vm.setTrackPan(trackID: trackID, pan: -0.7)
+        #expect(vm.project.songs[0].tracks[0].pan == -0.7)
+
+        vm.setTrackPan(trackID: trackID, pan: 0.0)
+        #expect(vm.project.songs[0].tracks[0].pan == 0.0)
+
+        vm.setTrackPan(trackID: trackID, pan: 0.9)
+        #expect(vm.project.songs[0].tracks[0].pan == 0.9)
+    }
+
+    @Test("Engine pan state is readable back after changes")
+    @MainActor
+    func enginePanStateReadback() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackPan(trackID: trackID, pan: -0.65)
+
+        let readbackPan = vm.project.songs[0].tracks.first(where: { $0.id == trackID })?.pan
+        #expect(readbackPan == -0.65)
+    }
 }

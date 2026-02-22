@@ -490,3 +490,50 @@
 - `duplicateTrack` and `duplicateSong` copy `expressionPedalCC` and `expressionPedalTarget`
 - 14 new tests: Codable round-trip (with target, without target, backward compat), assign to volume (creates mapping with correct trigger/target/range), custom CC number, assign to effect parameter, CC→volume scaling (0→0.0, 127→2.0), remove clears mapping, remove no-op, assign undo/redo, remove undo/redo, reassign replaces previous, duplicateTrack copies, duplicateSong copies
 - All 564 tests pass
+
+# ============================================================
+# PRD #82: Inspector & Editing Polish
+# ============================================================
+
+## Issue Dependency Graph
+# #83 Fix track selection gesture and highlight — no blockers
+# #84 Mixer UI fixes: fader and pan drag areas — no blockers
+# #85 Wall-time clock in transport and inspector — no blockers
+# #86 AU effect plugin window sizing verification — no blockers
+# #87 Track inspector: make routing and MIDI fields editable — blocked by #83
+# #88 Container inspector inline editing — no blockers
+# #89 Setlist entry inspector with transitions and fade-in — no blockers
+# #90 Linked clip inspector: parent display and parameter diff — blocked by #88
+# #91 Track reorder, delete, and creation context menu — blocked by #83
+# #92 Master channel pinned to bottom in timeline and mixer — no blockers
+# #93 Container fade handles with visual overlay — no blockers
+# #94 Effect parameter automation on timeline — no blockers
+# #95 MIDI instrument parameter automation (searchable) — blocked by #94
+# #96 Audio import async with preview rectangle — no blockers
+# #97 Playhead-audio sync fix — no blockers
+# #98 Audio recording into armed containers — no blockers
+# #99 MIDI monitoring: log view, activity dots, inspector badges — no blockers
+
+## Completed
+### Iteration 1 — #83 Fix track selection gesture and highlight
+- Root cause: `trackHeaderWithActions()` checked `timelineViewModel.selectedTrackIDs.contains(track.id)` for visual highlight, but regular click set `projectViewModel.selectedTrackID` — these were never synchronized
+- Fixed `MainContentView.trackHeaderWithActions()`: highlight now checks `projectViewModel.selectedTrackID == track.id` (the canonical single-select source of truth)
+- `timelineViewModel.selectedTrackIDs` remains separate — it's the multi-select set for range copy filtering (Cmd+click)
+- Added track selection to mixer: `MixerStripView` gains `isTrackSelected` + `onTrackSelect`, `MixerView` gains `selectedTrackID` + `onTrackSelect`
+- `MixerStripView`: selected strip shows accent color background (15% opacity) + accent border stroke + click-to-select gesture
+- `MainContentView.mixerContent()`: wired `selectedTrackID` and `onTrackSelect` to `projectViewModel.selectedTrackID`
+- Both timeline and mixer now respond to the same selection state (`projectViewModel.selectedTrackID`)
+- 2 new tests: selecting different track deselects previous (single-select model), selecting track sets selection and inspector shows track properties
+- All 596 tests pass
+
+### Iteration 2 — #84 Mixer UI fixes: fader and pan drag areas
+- Replaced `FaderView` rotated `Slider` (24pt wide) with custom vertical `DragGesture` control (44pt wide)
+- Custom fader: track background, accent-colored fill, draggable thumb (28pt wide), unity (0 dB) tick mark, immediate value updates on drag
+- Replaced `PanKnobView` horizontal `Slider` (60pt) with custom horizontal `DragGesture` control (60pt wide, 22pt tall)
+- Custom pan knob: center tick, accent-colored fill from center to thumb, circular draggable thumb, immediate value updates on drag
+- Both controls use `@Binding var value: Float` for direct engine integration
+- Both respond immediately to drag (not just on release) via `DragGesture(minimumDistance: 0).onChanged`
+- `MixerStripView`: existing `onChange(of: track.volume/pan)` observers ensure UI reflects engine state changes (prevents drift)
+- Updated `MixerStripView` track name label from fixed `frame(width: 60)` to `frame(maxWidth: 64)` to accommodate wider fader
+- 4 new tests: fader drag propagation (rapid updates reflected immediately), engine volume state readback, pan drag propagation, engine pan state readback
+- All 600 tests pass

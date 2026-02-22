@@ -52,7 +52,7 @@ public struct MixerStripView: View {
                 .font(.caption2)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(width: 60)
+                .frame(maxWidth: 64)
 
             // Track kind label
             Text(track.kind.displayName)
