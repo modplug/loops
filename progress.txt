@@ -1,0 +1,383 @@
+# Ralph Progress Log
+# Repository: modplug/loops
+
+# ============================================================
+# PRD #71: Transport, Master Track, Mixer, MIDI Parameter Control
+# Issues: #72-#81 (10 vertical slices)
+# ============================================================
+
+## Issue Dependency Graph
+# #72 Keyboard shortcuts — no blockers
+# #73 Click-to-position — no blockers
+# #74 Time signature selector — no blockers
+# #75 Master track — no blockers
+# #76 Metronome enhancements — blocked by #75
+# #77 Mixer view — blocked by #75
+# #78 Track volume & pan automation — no blockers
+# #79 Track inspector — no blockers
+# #80 MIDI Learn for parameters — no blockers
+# #81 Expression pedal quick-assign — blocked by #80
+
+## Completed
+### Iteration 1 — #72 Keyboard shortcuts: transport, navigation & editing
+- `ProjectViewModel`: `selectedTrackID: ID<Track>?` for keyboard-driven track focus
+- `ProjectViewModel`: `selectedContainerIDs: Set<ID<Container>>` for multi-select (Cmd+A)
+- `selectAllContainers()` populates set with all container IDs in current song
+- `deselectAll()` clears all selection state (container, track, section, multi-select)
+- `selectTrackByIndex(_:)` sets selectedTrackID by 0-based index
+- `lastBarWithContent` computed property: max endBar across containers and sections
+- Transport shortcuts: Space (play/pause, already existed — verified), R (toggle record arm on selected track), M (toggle metronome)
+- Navigation shortcuts: Left/Right arrows (nudge playhead ±1 bar), Home/Fn+Left (jump to bar 1), End/Fn+Right (jump to last bar with content), 1-9 (select track by index)
+- Editing shortcuts: Cmd+D (duplicate selected container, or track if none), Cmd+A (select all containers), Escape (deselect all + clear range/track selection), Tab (cycle inspector mode)
+- Existing shortcuts verified: Space (play/pause), Return (open detail editor), Delete (delete selected container/breakpoint), Cmd+C/V (copy/paste)
+- Shortcuts fire via `.onKeyPress` on MainContentView; do not conflict with TextField focus
+- 8 new tests: selectAllContainers, selectAllContainers empty, deselectAll, selectTrackByIndex, selectTrackByIndex out-of-range, lastBarWithContent, lastBarWithContent max of both, duplicate container undo/redo
+- All 394 tests pass
+
+### Iteration 2 — #73 Click-to-position: playhead positioning on ruler & timeline
+- `TimelineViewModel`: `snappedBar(forXPosition:timeSignature:)` — snaps to bar at low zoom, to beat at high zoom (threshold: 40px per beat)
+- `TransportViewModel`: `seek(toBar:)` — seeks playhead; if playing, stops/restarts PlaybackScheduler from new position
+- `RulerView`: single click positions playhead (snapped), drag scrubs continuously, Shift+drag retains range selection behavior
+- `RulerView`: `onPlayheadPosition` callback for playhead positioning
+- `TimelineView`: click on empty grid area (no container hit) positions playhead via `onPlayheadPosition` callback
+- `TimelineView`: `onTapGesture` on grid overlay with snapped bar conversion, does not interfere with container gestures
+- `MainContentView`: wired both ruler and timeline `onPlayheadPosition` callbacks to `transportViewModel.seek(toBar:)`
+- Pixel-to-bar snap logic: at low zoom (pixelsPerBeat < 40), rounds to nearest whole bar; at high zoom (pixelsPerBeat >= 40), rounds to nearest beat
+- Seek during playback: pauses transport, stops scheduler, sets new position, re-prepares and replays from new bar
+- Seek while stopped: directly sets playhead position
+- 10 new tests: snappedBar at x=0, snappedBar at x=pixelsPerBar, snap-to-bar low zoom, snap-to-beat high zoom, various zoom levels, negative x clamping, 3/4 time signature, setPlayhead during playback, setPlayhead while stopped, setPlayhead fires callback
+- All 404 tests pass
+
+### Iteration 3 — #74 Time signature selector: UI control with grid/ruler/metronome update
+- `ProjectViewModel`: `setTimeSignature(songID:beatsPerBar:beatUnit:)` with full undo/redo
+- Validation: beatsPerBar 1–12, beatUnit in {2, 4, 8, 16}; rejects invalid values, no-op on same value
+- `ToolbarView`: replaced display-only text with `Menu` picker showing 6 presets (2/4, 3/4, 4/4, 5/4, 6/8, 7/8)
+- `ToolbarView`: `onTimeSignatureChange` callback for decoupled communication
+- `LoopsRootView`: wires toolbar callback to `ProjectViewModel.setTimeSignature`
+- `LoopsRootView`: bidirectional sync — Song → TransportViewModel on song change, initial sync on appear
+- Grid overlay (`GridOverlayView`) already reactive: uses `timeSignature.beatsPerBar` for beat subdivisions
+- Ruler (`RulerView`) already reactive: uses `timeSignature.beatsPerBar` for beat ticks and snap logic
+- Metronome already reactive: `MetronomeGenerator.update(bpm:beatsPerBar:sampleRate:)` called on play/seek with current time signature
+- Changing time signature does NOT reposition existing containers (bars stay at same bar numbers)
+- 8 new tests: setTimeSignature basic, undo/redo, invalid beatsPerBar (0/13/-1), invalid beatUnit (3/5/0), all valid beatUnits (2/4/8/16), beatsPerBar boundary values (1/12), no-op same value, containers not repositioned
+- All 412 tests pass
+
+# ============================================================
+# PRD #60: Workflow & Live Performance (COMPLETE)
+# Issues: #61-#70 (10 vertical slices) — all closed
+# ============================================================
+
+## Issue Dependency Graph
+# #61 Track record arming — no blockers
+# #62 Count-in — no blockers
+# #63 Per-track MIDI routing — no blockers
+# #64 Input monitoring — blocked by #61
+# #65 Section regions — no blockers
+# #66 Container clones — no blockers
+# #67 Automation timeline visualization — no blockers
+# #68 Context menus — blocked by #65, #66
+# #69 Time range selection & section copy — blocked by #65
+# #70 Storyline inspector — blocked by #65
+
+## Completed
+### Iteration 1 — #61 Track record arming: model, UI indicator & serialization
+- Added `isRecordArmed: Bool` (default `false`) to Track model
+- Backward-compatible decoding (defaults to `false` for old project files)
+- `setTrackRecordArmed(trackID:armed:)` on ProjectViewModel with full undo/redo
+- TrackHeaderView: record arm button (red circle icon, filled when armed, outline when unarmed) next to M/S buttons
+- Armed tracks show red tint on header background
+- MainContentView: wired onRecordArmToggle callback to ProjectViewModel
+- duplicateSong copies isRecordArmed to duplicated tracks
+- 4 new tests: Track Codable round-trip with isRecordArmed, backward-compat decode without isRecordArmed, setTrackRecordArmed toggle, undo/redo setTrackRecordArmed
+- All 271 tests pass
+
+### Iteration 2 — #62 Count-in: configurable metronome bars before recording
+- Added `countInBars: Int` (default `0`) to Song model
+- Backward-compatible decoding (defaults to `0` for old project files)
+- New `TransportState.countingIn` state: when record-armed with countInBars > 0, transport enters count-in phase
+- TransportManager: metronome plays during count-in, transitions to `.recording` after N bars elapse
+- `countInDuration(bars:)` method for timing calculations (bars × barDuration at current BPM/time signature)
+- Callbacks: `onCountInComplete` (triggers audio scheduling), `onCountInTick` (updates remaining count)
+- TransportViewModel: wires count-in state, enables metronome during count-in, defers audio scheduling until count-in completes
+- ToolbarView: count-in picker (0, 1, 2, 4 bars) next to metronome toggle, visual countdown display ("Count: N...") during count-in
+- `setCountInBars(songID:bars:)` on ProjectViewModel with full undo/redo
+- LoopsRootView: syncs countInBars between Song model and TransportViewModel bidirectionally
+- duplicateSong copies countInBars to duplicated songs
+- 11 new tests: Song Codable round-trip with countInBars, legacy decode without countInBars, count-in timing calculation, count-in=0 starts immediately, count-in enters countingIn state, count-in without record arm plays normally, stop/pause during count-in, setCountInBars update, undo/redo, duplicateSong copies countInBars
+- All 282 tests pass
+
+### Iteration 3 — #63 Per-track MIDI input device & channel routing
+- Added `midiInputDeviceID: String?` (nil = no filter / system default) to Track model
+- Added `midiInputChannel: UInt8?` (nil = omni, 1-16 = specific channel) to Track model
+- Backward-compatible decoding (defaults to nil for both fields)
+- New `MIDIInputDevice` model: id + displayName for MIDI source identification
+- New `MIDITrackFilter` with static `matches(eventDeviceID:eventChannel:trackDeviceID:trackChannel:)` for per-track filtering
+- MIDIManager: tracks source device IDs via CoreMIDI kMIDIPropertyUniqueID + srcConnRefCon
+- MIDIManager: new `onMIDIEventFromDevice` callback includes source device ID
+- MIDIManager: new `availableInputDevices()` returns `[MIDIInputDevice]`
+- AudioEngineManager: added `midiManager` property for centralized MIDI access
+- `setTrackMIDIInput(trackID:deviceID:channel:)` on ProjectViewModel with full undo/redo
+- TrackHeaderView: MIDI device name + channel labels for MIDI tracks (pianokeys + number icons)
+- MainContentView: MIDI Device and MIDI Channel context menus on MIDI track headers
+- duplicateSong copies midiInputDeviceID and midiInputChannel to duplicated tracks
+- 13 new tests: Track Codable round-trip with MIDI fields, backward-compat decode without MIDI fields, omni channel round-trip, MIDITrackFilter matching/blocking (8 cases), setTrackMIDIInput, undo/redo setTrackMIDIInput
+- All 295 tests pass
+
+### Iteration 4 — #64 Input monitoring: hear input through track effects
+- Added `isMonitoring: Bool` (default `false`) to Track model
+- Backward-compatible decoding (defaults to `false` for old project files)
+- New `InputMonitor` engine class: manages per-track input monitoring audio subgraphs
+- InputMonitor routes engine.inputNode → shared distributor → [per-track AU effects] → monitoring mixer → mainMixer
+- `suppressMonitoring(trackID:)` / `unsuppressMonitoring(trackID:)` for auto-disable during container playback
+- PlaybackScheduler: tracks container→track mapping, auto-suppresses monitoring when containers play on a track, auto-unsuppresses on stop
+- AudioEngineManager: creates/destroys InputMonitor with engine lifecycle
+- TransportViewModel: `setInputMonitoring(track:enabled:)` starts engine if needed, enables/disables monitoring
+- `setTrackMonitoring(trackID:monitoring:)` on ProjectViewModel with full undo/redo
+- TrackHeaderView: headphone icon button (orange when active), orange tint on track header background when monitoring
+- MainContentView: wired onMonitorToggle callback to ProjectViewModel and TransportViewModel
+- duplicateSong copies isMonitoring to duplicated tracks
+- 9 new tests: Track Codable round-trip with isMonitoring, backward-compat decode without isMonitoring, setTrackMonitoring toggle, undo/redo setTrackMonitoring, monitoring auto-disables during playback, monitoring re-enables after playback stops, suppress non-monitored track no-op, disable monitoring removes track, cleanup removes all
+- All 304 tests pass
+
+### Iteration 5 — #65 Section regions: named colored markers on timeline
+- New `SectionRegion` model: `id: ID<SectionRegion>`, `name: String`, `startBar: Int`, `lengthBars: Int`, `color: String` (hex), `notes: String?`, computed `endBar`
+- `Song` gains `sections: [SectionRegion]` (default `[]`)
+- Backward-compatible decoding (defaults to `[]` for old project files)
+- `ProjectViewModel`: addSection, removeSection, moveSection, resizeSection, renameSection, recolorSection, setSectionNotes — all with full undo/redo
+- Overlap validation on add/move/resize (reject if overlapping existing section)
+- `selectedSectionID: ID<SectionRegion>?` selection tracking on ProjectViewModel
+- `SectionLaneView`: colored bands rendered on a dedicated section lane between ruler and track area
+- Drag on empty section lane to create new sections (default name "Section N")
+- Move sections by dragging center, resize by dragging left/right edges
+- Click section to select and navigate playhead to section start
+- Double-click section to rename via popover
+- Section name label displayed on each band
+- `duplicateSong` copies sections with new IDs
+- `MainContentView`: "Sections" label in header column, wired all section callbacks
+- 16 new tests: SectionRegion Codable round-trip, Song with sections round-trip, legacy decode without sections, add section, default name auto-increment, overlap prevention, remove section, move section, move overlap prevention, resize section, resize overlap prevention, rename section, recolor section, undo/redo add, undo/redo remove, duplicateSong copies sections
+- All 320 tests pass
+
+### Iteration 6 — #66 Container linked clones: copy-on-write with override tracking
+- New `ContainerField` enum: `effects`, `automation`, `fades`, `enterActions`, `exitActions`, `name`, `loopSettings`, `instrumentOverride`
+- Added `parentContainerID: ID<Container>?` and `overriddenFields: Set<ContainerField>` to Container model
+- Backward-compatible decoding (defaults to nil / [] for old project files)
+- Computed `isClone` property, `resolved(parent:)` field-by-field resolution (non-overridden fields inherit from parent)
+- `resolved(using:)` convenience with lookup closure for engine use
+- Clone position fields (startBar, lengthBars) always local — only content fields inherit
+- No nested clones: cloning a clone links to the original parent
+- `ProjectViewModel`: `cloneContainer` (overlap-checked), `consolidateContainer` (resolves then disconnects), both with full undo/redo
+- Auto-override: all container editing methods (name, effects, instrument, fades, actions, automation, loopSettings) mark the relevant `ContainerField` as overridden on clones
+- `findContainer(id:)` helper for cross-track parent lookup
+- `duplicateSong` copies parentContainerID and overriddenFields
+- PlaybackScheduler: resolves clone fields in prepare(), play(), automation timer, and triggerStart
+- OfflineRenderer: resolves clone fields before rendering
+- ContainerView: link icon for clones, orange override-count badge, alt-drag clone gesture with dashed ghost preview
+- TrackLaneView + TimelineView: wired `onCloneContainer` callback
+- 14 new tests: ContainerField round-trip, clone fields round-trip, legacy decode, clone inheritance, clone override, no nesting, clone creation, overlap prevention, consolidate, clone undo/redo, consolidate undo/redo, auto-override marking, duplicateSong copies clone fields
+- All 334 tests pass
+
+### Iteration 7 — #67 Automation timeline visualization: overlay curves & sub-lanes
+- New `AutomationOverlayView`: draws automation curves as semi-transparent colored lines on container bodies, breakpoint dots, parameter name labels
+- New `AutomationSubLaneView`: dedicated sub-lane rows for each unique automation parameter with full breakpoint editing
+- `AutomationCoordinateMapping` helper: pure functions for position↔x and value↔y coordinate conversion with clamping
+- `AutomationColors` palette: 8 distinct colors for automation lane differentiation
+- `TimelineViewModel`: `automationExpanded: Set<ID<Track>>` for per-track sub-lane toggle, `toggleAutomationExpanded(trackID:)`, `trackHeight(for:baseHeight:)` for variable per-track heights, `automationLaneCount(for:)` for unique path counting
+- `ContainerView`: automation overlay rendered on container body when automation lanes exist
+- `TrackLaneView`: sub-lane rendering below main lane when expanded, passes breakpoint callbacks (add/update/delete/select)
+- `TrackHeaderView`: automation toggle button (waveform.path.ecg icon, purple when active), "Auto" indicator when track has automation, sub-lane parameter name labels with colored dots when expanded
+- `TimelineView`: variable per-track heights based on automation expansion, `selectedBreakpointID` state, delete key removes selected breakpoint, `uniqueAutomationPaths(for:)` helper
+- `MainContentView`: wires automation toggle, per-track heights, lane labels via `automationLaneLabels(for:)` and `automationPathLabel(_:)` helpers
+- Sub-lane interaction: click to add breakpoint at position/value, drag breakpoints to move, select breakpoints, value tooltip on hover/drag
+- 13 new tests: position-to-x mapping, value-to-y mapping, x-to-position mapping, y-to-value mapping, position round-trip, value round-trip, add breakpoint at click position, drag breakpoint updates, drag clamps to bounds, toggle automation expanded, track height with sub-lanes, track height no automation, lane count multiple containers
+- All 347 tests pass
+
+### Iteration 9 — #69 Time range selection & section copy/paste
+- `TimelineViewModel`: `selectedRange: ClosedRange<Int>?` (transient bar range), `selectedTrackIDs: Set<ID<Track>>` for copy filter, `toggleTrackSelection(trackID:)`, `clearSelectedRange()`
+- `ProjectViewModel`: `clipboardSectionRegion: SectionRegion?` stores section metadata for section copy
+- Enhanced `copyContainersInRange(startBar:endBar:trackFilter:)` with optional track filter (empty = all tracks)
+- `copySectionWithMetadata(sectionID:)`: copies containers in section range + section metadata
+- `pasteContainersToOriginalTracks(atBar:)`: multi-track paste to original tracks with offset, also pastes section region when metadata present
+- Regular `copyContainer` and `copyContainersInRange` clear section metadata from clipboard
+- `RulerView`: drag-to-select bar range (DragGesture), click to clear selection, visual highlight on ruler
+- `TimelineView`: translucent overlay across all tracks for selected range
+- `TrackHeaderView`: `isTrackSelected` visual indicator (accent left border + tinted background)
+- `MainContentView`: Cmd+click track headers to toggle track selection for copy filter
+- Cmd+C: copies containers in selected range (with track filter) or single selected container
+- Cmd+V: pastes clipboard at playhead position to original tracks
+- Section "Copy Section" now uses `copySectionWithMetadata` — paste also creates section region
+- 15 new tests: range copy within range, paste offset adjustment, section copy metadata, track filter, empty range, empty clipboard no-op, regular copy clears section metadata, range copy clears section metadata, multi-track paste skip overlap, empty filter includes all, paste creates independent containers, paste undo/redo, selected range default, set/clear range, toggle track selection
+- All 375 tests pass
+
+### Iteration 10 — #70 Storyline inspector: section-based song progression view
+- New `StorylineDerivation` in LoopsCore: pure derivation of storyline entries from song sections + tracks
+- `StorylineEntry`: section + per-track summaries with human-readable `summary` computed property
+- `TrackActivitySummary`: track info + active containers in section range
+- `ContainerActivitySummary`: container name, record arm state, enter/exit action descriptions, effect names, automation lane count
+- Derivation scans all containers overlapping each section's bar range, aggregates MIDI actions (PC, CC, NoteOn/Off), trigger actions, setParameter actions
+- Record-armed tracks appear in storyline even without active containers
+- `StorylineInspectorView`: vertical scrollable list of section entries with colored badges and bar ranges
+- Disclosure triangle expands per-section details: active containers per track, enter/exit actions, effects, automation lanes
+- Editable notes field per section for performance reminders (e.g., "wait for crowd", "switch to clean tone")
+- Sections without content shown as empty placeholders
+- `MainContentView`: new `InspectorMode` enum (`.container` / `.storyline`) with segmented picker at top of inspector panel
+- Container inspector and storyline inspector switch seamlessly via tab
+- `SectionRegion.notes` field (already existed) wired to `setSectionNotes` (already existed) through UI
+- 11 new tests: storyline derivation with actions, section with no containers, multi-track aggregation, notes Codable round-trip, sections sorted by startBar, container partial overlap included, container outside range excluded, record armed track appears, effects and automation reported, trigger actions summary, multiple sections mixed content
+- All 386 tests pass
+
+### Iteration 8 — #68 Context menus: right-click on containers, tracks, timeline & sections
+- New `ClipboardContainerEntry` model: stores container + source trackID for copy/paste operations
+- `ProjectViewModel`: clipboard (`[ClipboardContainerEntry]`, `clipboardBaseBar`) for container copy/paste
+- `copyContainer(trackID:containerID:)`: copies single container to clipboard
+- `copyContainersInRange(startBar:endBar:)`: copies all containers overlapping bar range (for section copy)
+- `duplicateContainer(trackID:containerID:)`: creates independent copy at next available position with undo
+- `duplicateTrack(trackID:)`: deep-copies track with all containers, properties, effects, MIDI routing with undo
+- `pasteContainers(trackID:atBar:)`: pastes clipboard at target bar with offset calculation, skips overlapping
+- `splitSection(sectionID:atBar:)`: splits section into two at given bar position with undo
+- Container context menu: Copy, Duplicate, Link (Create Clone), Unlink (Consolidate, clone-only), Edit, Arm/Disarm, Delete
+- Track header context menu: Rename, Duplicate Track, Arm/Disarm Recording, Input/Output/MIDI submenus, Delete Track (with confirmation for non-empty tracks)
+- Timeline empty area context menu: Create Container Here, Paste (shown when clipboard non-empty)
+- Section region context menu: Rename, Recolor (8-color submenu), Copy Section, Split at Playhead, Delete
+- Callbacks wired through ContainerView → TrackLaneView → TimelineView → MainContentView
+- 13 new tests: duplicate container, duplicate container overlap, duplicate track deep copy, duplicate track properties, duplicate track undo/redo, copy container to clipboard, paste at position with offset, paste skips overlap, copy section range, split section, split section at boundary fails, split section undo, clone state reflects parentContainerID
+- All 360 tests pass
+
+# ============================================================
+# PRD #50: Container Effects, Enter/Exit Strategies (COMPLETE)
+# Issues: #51-#59 (9 vertical slices) — all closed
+# ============================================================
+
+## Issue Dependency Graph
+# #51 Container effect chain (tracer bullet) — no blockers
+# #52 Container instrument override — blocked by #51
+# #53 Crossfade engine — blocked by #51
+# #54 Enter/exit MIDI actions — blocked by #51
+# #55 Container triggers — blocked by #51, #54
+# #56 Parameter snapshots — blocked by #51, #54
+# #57 Time-based automation — blocked by #56
+# #58 Container detail editor UI — blocked by #51, #54, #57
+# #59 Offline rendering — blocked by #51, #53, #57
+
+## Completed
+### Iteration 1 — #51 Container effect chain: model + single AU + playback
+- Added `insertEffects: [InsertEffect]` and `isEffectChainBypassed: Bool` to Container model
+- Backward-compatible decoding (defaults to [] / false for old project files)
+- Refactored PlaybackScheduler: per-container audio subgraph (AVAudioPlayerNode → [AU Effects] → Track AVAudioMixerNode → mainMixer)
+- AU effects pre-instantiated during async prepare()
+- Bypass routes audio directly to track mixer, skipping effects
+- ContainerInspector shows effect names, per-effect bypass, chain bypass toggle, add/remove
+- ProjectViewModel: add/remove/bypass container effects with full undo/redo
+- Added Codable round-trip tests + legacy decode test
+- All 181 tests pass
+
+### Iteration 2 — #52 Container instrument override
+- Added `instrumentOverride: AudioComponentInfo?` to Container model
+- Backward-compatible decoding (defaults to nil for old project files)
+- PlaybackScheduler builds subgraph: PlayerNode → [Instrument Override] → [AU Effects] → Track Mixer
+- Instrument AU loaded and attached during async prepare(), cleaned up properly
+- ContainerInspector shows instrument override name (MIDI tracks only) with set/remove controls
+- AU instrument picker via Menu using AudioUnitDiscovery.instruments()
+- ProjectViewModel.setContainerInstrumentOverride with full undo/redo
+- Added selectedContainerTrackKind helper to show instrument section only on MIDI tracks
+- Codable round-trip tests + legacy decode test updated
+- All 183 tests pass
+
+### Iteration 3 — #53 Crossfade engine: enter/exit audio fades
+- Added `FadeSettings` model with `duration: Double` (bars) and `curve: CurveType` enum
+- `CurveType` enum: `linear`, `exponential`, `sCurve` with `gain(at:)` curve math
+- Added `enterFade: FadeSettings?` and `exitFade: FadeSettings?` to Container model
+- Backward-compatible decoding (defaults to nil for old project files)
+- PlaybackScheduler: buffer-based fade processing applies per-sample gain envelopes
+- Fade-in ramps 0→1 at container start, fade-out ramps 1→0 at container end
+- Efficient: only uses buffer path when fades present, otherwise unchanged scheduleSegment
+- Handles both single-play and looping (.fill) containers
+- ContainerInspector: fade toggles, duration sliders (0.25–16 bars), curve type pickers
+- ProjectViewModel: setContainerEnterFade/setContainerExitFade with full undo/redo
+- 9 new tests: Codable round-trip, curve math (known values, endpoints, monotonicity)
+- All 192 tests pass
+
+### Iteration 4 — #54 Enter/exit actions: MIDI output
+- New models: `ContainerAction` enum (`.sendMIDI` case), `MIDIDestination` (`.externalPort`/`.internalTrack`), `MIDIActionMessage` (programChange, CC, noteOn, noteOff)
+- Added `onEnterActions: [ContainerAction]` and `onExitActions: [ContainerAction]` to Container model
+- Backward-compatible decoding (defaults to [] for old project files)
+- `MIDIOutput` protocol for testable MIDI sending (external CoreMIDI + internal AU instrument)
+- `CoreMIDIOutput`: real implementation using CoreMIDI output port + AUAudioUnit.scheduleMIDIEventBlock
+- `ActionDispatcher`: receives container enter/exit events, executes MIDI actions via MIDIOutput protocol
+- PlaybackScheduler: fires enter actions on play, exit actions on stop, tracks active containers
+- ContainerInspector: enter/exit action list sections with add menus (PC, CC, NoteOn, NoteOff) and remove buttons
+- ProjectViewModel: add/remove enter/exit actions with full undo/redo
+- 22 new tests: Codable round-trip for all action types, backward-compat, ActionDispatcher with MockMIDIOutput, MIDI byte encoding
+- All 214 tests pass
+
+### Iteration 5 — #55 Enter/exit actions: container triggers
+- New `TriggerAction` enum: `.start`, `.stop`, `.armRecord`, `.disarmRecord`
+- Extended `ContainerAction` with `.triggerContainer(id:, targetID: ID<Container>, action: TriggerAction)` case
+- `ContainerTriggerDelegate` protocol for testable trigger execution (start/stop/arm containers)
+- `ActionDispatcher`: resolves triggerContainer actions via delegate, graceful no-op when delegate absent
+- `PlaybackScheduler` conforms to `ContainerTriggerDelegate`: triggerStart schedules target container audio, triggerStop halts it, setRecordArmed forwards via callback
+- PlaybackScheduler stores playback state (song, BPM, time sig, sample rate) for mid-playback trigger scheduling
+- Refactored PlaybackScheduler.play() to use shared `scheduleContainer()` method (reused by triggerStart)
+- ContainerInspector: accepts `allContainers` param, shows trigger actions with target name + action type, "Add Trigger Action" menu with target container picker and action sub-menu
+- TransportViewModel: wires up ActionDispatcher + CoreMIDIOutput + triggerDelegate on scheduler creation
+- ProjectViewModel: `allContainersInCurrentSong` computed property for target picker
+- 14 new tests: TriggerAction Codable round-trip (all 4 cases), triggerContainer Codable round-trip (start/stop/arm/disarm), mixed action containers, ActionDispatcher trigger dispatch (start/stop/arm/disarm), no-delegate graceful handling, mixed MIDI+trigger ordering, multiple triggers
+- All 228 tests pass
+
+### Iteration 6 — #56 Parameter automation: snapshot values on enter/exit
+- New `EffectPath` model: `trackID: ID<Track>`, `containerID: ID<Container>?` (nil = track-level), `effectIndex: Int`, `parameterAddress: UInt64`
+- Extended `ContainerAction` with `.setParameter(id:, target: EffectPath, value: Float)` case
+- `makeSetParameter(target:value:)` factory method with auto-generated ID
+- New `ParameterResolver` protocol for testable parameter setting via `setParameter(at:value:)`
+- `ActionDispatcher`: handles `.setParameter` actions via `parameterResolver` delegate, graceful no-op when resolver absent
+- `PlaybackScheduler` conforms to `ParameterResolver`: resolves container-level EffectPath to live AUParameter via containerSubgraphs, sets value via `AUParameterTree`
+- `TransportViewModel`: wires up `parameterResolver` on ActionDispatcher creation
+- `ContainerInspector`: accepts `allTracks` param, displays parameter actions with target description (track → container → effect), "Add Parameter Action" menu with target picker flow (track → container/track-level → effect)
+- `ProjectViewModel`: `allTracksInCurrentSong` computed property for target picker
+- 12 new tests: EffectPath Codable round-trip (container-level + track-level), setParameter action round-trip, container with setParameter actions, mixed all-action-types, ActionDispatcher setParameter dispatch (enter/exit), no-resolver graceful handling, multiple parameter actions ordering, mixed MIDI+trigger+parameter, track-level path dispatch
+- All 240 tests pass
+
+### Iteration 7 — #57 Time-based automation envelopes
+- New `AutomationBreakpoint` model: `position: Double` (bar offset within container), `value: Float`, `curve: CurveType`
+- New `AutomationLane` model: `targetPath: EffectPath`, `breakpoints: [AutomationBreakpoint]`
+- `interpolatedValue(atBar:)` engine: sorts breakpoints, interpolates between surrounding points using left breakpoint's curve
+- Edge cases: no breakpoints → nil, single breakpoint → constant, before first / after last → clamp to nearest
+- Added `automationLanes: [AutomationLane]` to Container model
+- Backward-compatible decoding (defaults to [] for old project files)
+- PlaybackScheduler: automation timer (~60 Hz) evaluates lanes during playback, applies interpolated values to AU parameters via `setParameter(at:value:)`
+- Automation can target own effects, other containers' effects, or track-level effects (via EffectPath)
+- ContainerInspector: "Automation Lanes" section with disclosure groups per lane, breakpoint list (position/value/curve), add/remove breakpoints, add lane from parameter target picker, remove lane
+- ProjectViewModel: addAutomationLane, removeAutomationLane, addAutomationBreakpoint, removeAutomationBreakpoint, updateAutomationBreakpoint — all with full undo/redo
+- MainContentView: wired up all 5 automation callbacks to ProjectViewModel
+- 14 new tests: AutomationBreakpoint Codable round-trip, AutomationLane Codable round-trip, Container with automation lanes round-trip, Container without automation lanes (empty array), legacy decode (backward compat), interpolation with no breakpoints, single breakpoint, before first, after last, linear interpolation, exponential interpolation, S-curve interpolation, three-breakpoint interpolation, unsorted breakpoints
+- All 254 tests pass
+
+### Iteration 8 — #58 Container detail editor UI
+- Refactored ContainerInspector into summary cards: effect names, action types, fade durations, automation lane count
+- "Edit Container" button opens detail sheet (ContainerDetailEditor)
+- Detail sheet with 4 tabs: Effects, Actions, Automation, Fades
+- Effects tab: ordered effect list with drag-to-reorder (onMove), per-effect bypass toggle, AU browser grouped by manufacturer, instrument override picker (MIDI tracks only)
+- Actions tab: enter/exit action lists with add/remove, MIDI/trigger/parameter sub-editors, container target picker, MIDI destination picker
+- Automation tab: lane list with Grid-based breakpoint table editor, add/remove lanes and breakpoints
+- Fades tab: enter/exit duration sliders, curve type pickers, visual FadeCurvePreview (Path-based curve rendering)
+- Added `reorderContainerEffects(containerID:from:to:)` to ProjectViewModel with full undo/redo
+- Double-click container on timeline opens detail editor (onDoubleClick callback through ContainerView → TrackLaneView → TimelineView → MainContentView)
+- Return key opens detail editor for selected container (.onKeyPress(.return))
+- All changes go through ProjectViewModel for undo/redo
+- Detail editor respects current selection (reads from projectViewModel.selectedContainer)
+- 7 new tests: reorder effects down, reorder effects up, reorder undo, invalid ID no-op, selectedContainer property, allContainersInCurrentSong, allTracksInCurrentSong
+- All 261 tests pass
+
+### Iteration 9 — #59 Offline rendering with container effects, fades & automation
+- Extended OfflineRenderer to process container audio through AU effect chains offline
+- Three-phase rendering: (1) pre-render containers with looping, fades, and effects, (2) process track-level effects, (3) mix into output
+- Container effect processing uses AVAudioEngine in manual rendering mode per container
+- Fade-in/fade-out gain curves applied to container buffers before effect processing (matching real-time signal flow)
+- Automation lanes evaluated per-chunk during effect processing, targeting container's own AU parameters
+- Instrument override AU loaded and used for containers that have one
+- Bypassed effect chains render dry (effects skipped, matching real-time behavior)
+- MIDI actions logged but not sent during offline render (no external hardware)
+- Container trigger actions simulated: containers on muted tracks are included when triggered by audible containers
+- Track-level effects processed via separate offline AVAudioEngine pass after container mixing
+- `render()` method now `async` to support AU instantiation; ExportAudioView caller updated
+- 6 new tests: enter fade gain ramp, exit fade gain ramp, bypassed chain renders dry, MIDI actions skipped, AU effect produces processed output (Apple Delay on impulse), trigger resolves container from muted track
+- All 267 tests pass

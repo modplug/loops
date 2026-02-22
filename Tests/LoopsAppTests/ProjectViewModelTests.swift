@@ -2046,4 +2046,129 @@ struct ProjectViewModelTests {
         vm.undoManager?.redo()
         #expect(vm.project.songs[0].tracks[0].containers.count == 2)
     }
+
+    // MARK: - Time Signature
+
+    @Test("setTimeSignature updates song time signature")
+    @MainActor
+    func setTimeSignature() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+        vm.setTimeSignature(songID: songID, beatsPerBar: 3, beatUnit: 4)
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 3)
+        #expect(vm.project.songs[0].timeSignature.beatUnit == 4)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("setTimeSignature undo/redo")
+    @MainActor
+    func setTimeSignatureUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 4)
+        #expect(vm.project.songs[0].timeSignature.beatUnit == 4)
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 6, beatUnit: 8)
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 6)
+        #expect(vm.project.songs[0].timeSignature.beatUnit == 8)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 4)
+        #expect(vm.project.songs[0].timeSignature.beatUnit == 4)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 6)
+        #expect(vm.project.songs[0].timeSignature.beatUnit == 8)
+    }
+
+    @Test("setTimeSignature rejects invalid beatsPerBar")
+    @MainActor
+    func setTimeSignatureInvalidBeatsPerBar() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 0, beatUnit: 4)
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 4)
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 13, beatUnit: 4)
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 4)
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: -1, beatUnit: 4)
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 4)
+    }
+
+    @Test("setTimeSignature rejects invalid beatUnit")
+    @MainActor
+    func setTimeSignatureInvalidBeatUnit() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 4, beatUnit: 3)
+        #expect(vm.project.songs[0].timeSignature.beatUnit == 4)
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 4, beatUnit: 5)
+        #expect(vm.project.songs[0].timeSignature.beatUnit == 4)
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 4, beatUnit: 0)
+        #expect(vm.project.songs[0].timeSignature.beatUnit == 4)
+    }
+
+    @Test("setTimeSignature accepts all valid beatUnit values")
+    @MainActor
+    func setTimeSignatureValidBeatUnits() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+
+        for unit in [2, 4, 8, 16] {
+            vm.setTimeSignature(songID: songID, beatsPerBar: 4, beatUnit: unit)
+            #expect(vm.project.songs[0].timeSignature.beatUnit == unit)
+        }
+    }
+
+    @Test("setTimeSignature accepts beatsPerBar boundary values")
+    @MainActor
+    func setTimeSignatureBeatsPerBarBounds() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 1, beatUnit: 4)
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 1)
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 12, beatUnit: 4)
+        #expect(vm.project.songs[0].timeSignature.beatsPerBar == 12)
+    }
+
+    @Test("setTimeSignature no-op when same value")
+    @MainActor
+    func setTimeSignatureNoOpSameValue() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+        vm.hasUnsavedChanges = false
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 4, beatUnit: 4)
+        #expect(!vm.hasUnsavedChanges)
+    }
+
+    @Test("setTimeSignature does not reposition containers")
+    @MainActor
+    func setTimeSignatureDoesNotMoveContainers() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let songID = vm.project.songs[0].id
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+
+        vm.setTimeSignature(songID: songID, beatsPerBar: 3, beatUnit: 4)
+
+        #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 5)
+        #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 4)
+    }
 }

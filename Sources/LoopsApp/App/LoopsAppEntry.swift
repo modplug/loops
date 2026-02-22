@@ -21,7 +21,11 @@ public struct LoopsRootView: View {
     public var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                ToolbarView(viewModel: transportViewModel)
+                ToolbarView(viewModel: transportViewModel, onTimeSignatureChange: { beatsPerBar, beatUnit in
+                    if let songID = viewModel.currentSongID {
+                        viewModel.setTimeSignature(songID: songID, beatsPerBar: beatsPerBar, beatUnit: beatUnit)
+                    }
+                })
                 Divider()
                 MainContentView(
                     projectViewModel: viewModel,
@@ -54,6 +58,9 @@ public struct LoopsRootView: View {
                 viewModel.setCountInBars(songID: songID, bars: newValue)
             }
         }
+        .onChange(of: viewModel.currentSong?.timeSignature) { _, newValue in
+            transportViewModel.timeSignature = newValue ?? TimeSignature()
+        }
         .onAppear {
             transportViewModel.songProvider = { [weak viewModel] in
                 guard let vm = viewModel, let song = vm.currentSong else { return nil }
@@ -61,6 +68,8 @@ public struct LoopsRootView: View {
             }
             // Sync count-in bars from the current song
             transportViewModel.countInBars = viewModel.currentSong?.countInBars ?? 0
+            // Sync time signature from the current song
+            transportViewModel.timeSignature = viewModel.currentSong?.timeSignature ?? TimeSignature()
         }
         .sheet(isPresented: $viewModel.isExportSheetPresented) {
             ExportAudioView(viewModel: viewModel)

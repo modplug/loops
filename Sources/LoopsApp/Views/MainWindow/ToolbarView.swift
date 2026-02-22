@@ -6,10 +6,18 @@ public struct ToolbarView: View {
     @Bindable var viewModel: TransportViewModel
     @State private var bpmText: String = "120.0"
 
+    /// Callback for when the user selects a new time signature.
+    var onTimeSignatureChange: ((Int, Int) -> Void)?
+
     private static let countInOptions = [0, 1, 2, 4]
 
-    public init(viewModel: TransportViewModel) {
+    private static let timeSignaturePresets: [(beatsPerBar: Int, beatUnit: Int)] = [
+        (2, 4), (3, 4), (4, 4), (5, 4), (6, 8), (7, 8)
+    ]
+
+    public init(viewModel: TransportViewModel, onTimeSignatureChange: ((Int, Int) -> Void)? = nil) {
         self.viewModel = viewModel
+        self.onTimeSignatureChange = onTimeSignatureChange
         _bpmText = State(initialValue: String(format: "%.1f", viewModel.bpm))
     }
 
@@ -63,12 +71,29 @@ public struct ToolbarView: View {
                     }
             }
 
-            // Time signature display
-            HStack(spacing: 2) {
+            // Time signature picker
+            Menu {
+                ForEach(Self.timeSignaturePresets, id: \.beatsPerBar) { preset in
+                    Button(action: {
+                        onTimeSignatureChange?(preset.beatsPerBar, preset.beatUnit)
+                    }) {
+                        HStack {
+                            Text("\(preset.beatsPerBar)/\(preset.beatUnit)")
+                            if viewModel.timeSignature.beatsPerBar == preset.beatsPerBar
+                                && viewModel.timeSignature.beatUnit == preset.beatUnit {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
                 Text("\(viewModel.timeSignature.beatsPerBar)/\(viewModel.timeSignature.beatUnit)")
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.primary)
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Time Signature")
 
             Divider().frame(height: 24)
 

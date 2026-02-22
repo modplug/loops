@@ -180,6 +180,19 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    /// Sets the time signature for a song.
+    /// Validates beatsPerBar (1–12) and beatUnit (2, 4, 8, or 16).
+    public func setTimeSignature(songID: ID<Song>, beatsPerBar: Int, beatUnit: Int) {
+        guard let index = project.songs.firstIndex(where: { $0.id == songID }) else { return }
+        guard (1...12).contains(beatsPerBar) else { return }
+        guard [2, 4, 8, 16].contains(beatUnit) else { return }
+        let newTS = TimeSignature(beatsPerBar: beatsPerBar, beatUnit: beatUnit)
+        guard project.songs[index].timeSignature != newTS else { return }
+        registerUndo(actionName: "Set Time Signature")
+        project.songs[index].timeSignature = newTS
+        hasUnsavedChanges = true
+    }
+
     /// Duplicates a song and selects the copy.
     public func duplicateSong(id: ID<Song>) {
         guard let index = project.songs.firstIndex(where: { $0.id == id }) else { return }
