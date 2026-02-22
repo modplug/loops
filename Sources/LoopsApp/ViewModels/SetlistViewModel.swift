@@ -169,6 +169,27 @@ public final class SetlistViewModel {
         project.project.songs.first(where: { $0.id == entry.songID })
     }
 
+    /// Updates currentSongProgress based on the playhead position and song length.
+    /// songLengthBars should be the last bar with content (1-based endBar).
+    public func updateSongProgress(playheadBar: Double, songLengthBars: Int) {
+        guard isPerformMode, songLengthBars > 1 else {
+            currentSongProgress = 0.0
+            return
+        }
+        // playheadBar is 1-based, songLengthBars is the endBar (exclusive)
+        // progress = (playhead - 1) / (length - 1), clamped to 0...1
+        let progress = (playheadBar - 1.0) / Double(songLengthBars - 1)
+        currentSongProgress = min(max(progress, 0.0), 1.0)
+    }
+
+    /// Returns the active section at the given bar position for the current perform song.
+    public func activeSectionID(atBar bar: Double) -> ID<SectionRegion>? {
+        guard let entry = currentPerformEntry,
+              let song = song(for: entry) else { return nil }
+        let barInt = Int(bar)
+        return song.sections.first(where: { $0.startBar <= barInt && $0.endBar > barInt })?.id
+    }
+
     // MARK: - Private
 
     private var selectedSetlistIndex: Int? {

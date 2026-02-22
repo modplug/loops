@@ -723,3 +723,35 @@
 - `LoopsRootView`: wired `onRecordingPeaksUpdated` → `updateRecordingPeaks` and `onRecordingComplete` → `setContainerRecording`
 - 10 new tests: armed state serialization round-trip, armed defaults false, CAF writer produces valid readable file, recording duration matches bar range (120 BPM/4 bars = 352800 samples), set recording clears live peaks, live peaks shown during recording, container record arm undo/redo, peaksFromSamples correctness, samplesPerBar calculation, armed visual state persists through encode/decode
 - All 731 tests pass
+
+### Iteration 17 — #99 MIDI monitoring: log view, activity dots, inspector badges
+- `MIDIManager`: added `onRawMIDIMessage: ((UInt32, String?) -> Void)?` callback — fires for every received MIDI word before existing dispatch
+- `MIDIManager`: `parseMessage` now handles NoteOff (0x80), Program Change (0xC0), Pitch Bend (0xE0) in addition to existing NoteOn and CC
+- New `MIDILogMessage` enum in LoopsCore: `.noteOn`, `.noteOff`, `.controlChange`, `.programChange`, `.pitchBend`, `.other` with `displayString` (note names like "C4", CC names like "Sustain")
+- New `MIDILogEntry` model: `id`, `timestamp`, `deviceID`, `deviceName`, `channel`, `message` with `fromRawWord(_:deviceID:deviceName:)` factory for parsing raw MIDI words
+- `MIDILogMessage.noteName(_:)` static helper: MIDI note number → "C4", "D#5" etc.
+- `MIDILogMessage.ccName(_:)` static helper: CC number → "Sustain", "Modulation", "Volume" etc. for common controllers
+- New `MIDIActivityMonitor` (`@Observable @MainActor`): taps into MIDIManager raw callback, maintains circular buffer (~500 entries) of `MIDILogEntry`, per-track activity tracking via `MIDITrackFilter.matches()` with ~300ms activity window
+- `MIDIActivityMonitor`: `recordMessage(word:deviceID:)`, `isTrackActive(_:)`, `clearLog()`, `clearAll()`, `isPaused` (pauses log but still tracks activity), `updateTracks(_:)`, `updateDeviceNames(_:)`
+- New `MIDILogWindowManager`: singleton floating NSWindow manager for MIDI log view (reuses PluginWindowManager pattern)
+- New `MIDILogView`: scrolling table with timestamp, device, channel, message columns; device and channel filter dropdowns; clear and pause buttons; auto-scrolls to bottom
+- `TrackHeaderView`: added `isMIDIActive: Bool` parameter — small green circle next to MIDI track names with 300ms fade animation, only visible on `.midi` kind tracks
+- `ContainerInspector`: added `isMIDIActive: Bool` and `playheadBar: Double` parameters — green "MIDI" pill badge near container name when track has MIDI activity AND playhead is within container's bar range
+- `MainContentView`: added `midiActivityMonitor: MIDIActivityMonitor?` parameter, passes `isMIDIActive` to TrackHeaderView and ContainerInspector, Cmd+Shift+L keyboard shortcut toggles MIDI log window
+- `LoopsRootView`: creates `MIDIActivityMonitor`, wires `onRawMIDIMessage` to monitor, passes to MainContentView, syncs tracks on song change
+- 30 new tests: MIDILogEntry note names (C4/D#5/A0/C-1/G9), CC names (Sustain/Modulation/Volume/Expression/unknown), display strings (all message types), fromRawWord parsing (NoteOn/NoteOff/NoteOn-vel0-as-NoteOff/CC/PC/PitchBend), MIDIActivityMonitor circular buffer, buffer eviction, per-track activity matching, omni channel, activity expiration, pause stops logging but tracks activity, clear log, device name lookup, multiple message types
+- All 761 tests pass
+
+### Iteration 18 — #100 Setlist sidebar: highlight current entry and show song progress
+- `SetlistViewModel`: added `updateSongProgress(playheadBar:songLengthBars:)` — converts playhead position to 0.0–1.0 progress, clamped, only active during perform mode
+- `SetlistViewModel`: added `activeSectionID(atBar:)` — returns the section region containing the current playhead position for the current perform song
+- `SetlistEntryListView`: current entry (matching `currentEntryIndex` during perform mode) gets accent background highlight (25% opacity), play icon, and bold font
+- `SetlistEntryListView`: progress bar shown on current entry — thin accent-colored bar fill proportional to `currentSongProgress`
+- `SetlistEntryListView`: section regions displayed under song name when song has sections — colored dots with section names, active section gets tinted background
+- `SetlistEntryListView`: added `playheadBar` parameter for section activity tracking, `entryIndex(for:)` helper for index lookup
+- `SetlistSidebarView`: added `playheadBar` parameter, passes through to `SetlistEntryListView`
+- `MainContentView`: passes `timelineViewModel.playheadBar` to `SetlistSidebarView` for real-time section tracking
+- `LoopsRootView`: extended `onPlayheadChanged` callback to update `setlistViewModel.updateSongProgress` during perform mode using computed song length
+- Highlighting clears automatically when exiting perform mode (progress update returns 0 when `isPerformMode` is false)
+- 7 new tests: advance updates index and resets progress, progress calculation at various positions (0/middle/end/beyond/before), progress zero outside perform mode, progress zero for empty song, active section ID tracks playhead, highlight clears on exit perform mode, previous song resets progress
+- All 768 tests pass

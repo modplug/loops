@@ -393,4 +393,165 @@ struct SetlistViewModelTests {
         // hasUnsavedChanges should still be false because no entry was modified
         #expect(!projectVM.hasUnsavedChanges)
     }
+
+    // MARK: - Song Progress & Highlighting (#100)
+
+    @Test("Advancing to next song updates currentEntryIndex and resets progress")
+    @MainActor
+    func advanceUpdatesIndexAndResetsProgress() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        projectVM.addSong()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        vm.addEntry(songID: projectVM.project.songs[1].id)
+
+        vm.enterPerformMode()
+        // Simulate some progress on song 1
+        vm.updateSongProgress(playheadBar: 5.0, songLengthBars: 9)
+        #expect(vm.currentSongProgress > 0.0)
+
+        // Advance to song 2 — progress resets
+        vm.advanceToNextSong()
+        #expect(vm.currentEntryIndex == 1)
+        #expect(vm.currentSongProgress == 0.0)
+    }
+
+    @Test("Progress calculation at various playhead positions")
+    @MainActor
+    func progressCalculation() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        vm.enterPerformMode()
+
+        // Song length = 9 bars (endBar), playhead at bar 1 → progress = 0.0
+        vm.updateSongProgress(playheadBar: 1.0, songLengthBars: 9)
+        #expect(vm.currentSongProgress == 0.0)
+
+        // Playhead at bar 5 → progress = (5-1)/(9-1) = 0.5
+        vm.updateSongProgress(playheadBar: 5.0, songLengthBars: 9)
+        #expect(abs(vm.currentSongProgress - 0.5) < 0.001)
+
+        // Playhead at bar 9 → progress = (9-1)/(9-1) = 1.0
+        vm.updateSongProgress(playheadBar: 9.0, songLengthBars: 9)
+        #expect(vm.currentSongProgress == 1.0)
+
+        // Playhead beyond song → clamped to 1.0
+        vm.updateSongProgress(playheadBar: 20.0, songLengthBars: 9)
+        #expect(vm.currentSongProgress == 1.0)
+
+        // Playhead before bar 1 → clamped to 0.0
+        vm.updateSongProgress(playheadBar: 0.5, songLengthBars: 9)
+        #expect(vm.currentSongProgress == 0.0)
+    }
+
+    @Test("Progress is zero when not in perform mode")
+    @MainActor
+    func progressZeroOutsidePerformMode() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+
+        // Not in perform mode — progress stays 0
+        vm.updateSongProgress(playheadBar: 5.0, songLengthBars: 9)
+        #expect(vm.currentSongProgress == 0.0)
+    }
+
+    @Test("Progress is zero when song length is 1 or less")
+    @MainActor
+    func progressZeroForEmptySong() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        vm.enterPerformMode()
+
+        // Song length = 1 (empty song) → progress stays 0
+        vm.updateSongProgress(playheadBar: 1.0, songLengthBars: 1)
+        #expect(vm.currentSongProgress == 0.0)
+    }
+
+    @Test("Active section ID tracks playhead position")
+    @MainActor
+    func activeSectionIDTracksPlayhead() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        // Add sections to the song
+        projectVM.addSection(name: "Intro", startBar: 1, lengthBars: 4, color: "#FF0000")
+        projectVM.addSection(name: "Verse", startBar: 5, lengthBars: 8, color: "#00FF00")
+
+        let introID = projectVM.project.songs[0].sections[0].id
+        let verseID = projectVM.project.songs[0].sections[1].id
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        vm.enterPerformMode()
+
+        // Playhead in intro (bars 1-4)
+        #expect(vm.activeSectionID(atBar: 2.0) == introID)
+
+        // Playhead in verse (bars 5-12)
+        #expect(vm.activeSectionID(atBar: 7.0) == verseID)
+
+        // Playhead outside any section
+        #expect(vm.activeSectionID(atBar: 20.0) == nil)
+    }
+
+    @Test("Highlight clears when exiting perform mode")
+    @MainActor
+    func highlightClearsOnExitPerformMode() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+
+        vm.enterPerformMode()
+        vm.updateSongProgress(playheadBar: 5.0, songLengthBars: 9)
+        #expect(vm.isPerformMode)
+        #expect(vm.currentSongProgress > 0.0)
+
+        vm.exitPerformMode()
+        #expect(!vm.isPerformMode)
+        // Progress should not be visible when not in perform mode
+        // (updateSongProgress returns 0 when isPerformMode is false)
+        vm.updateSongProgress(playheadBar: 5.0, songLengthBars: 9)
+        #expect(vm.currentSongProgress == 0.0)
+    }
+
+    @Test("Going to previous song resets progress")
+    @MainActor
+    func previousSongResetsProgress() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        projectVM.addSong()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        vm.addEntry(songID: projectVM.project.songs[1].id)
+
+        vm.enterPerformMode()
+        vm.advanceToNextSong()
+        vm.updateSongProgress(playheadBar: 5.0, songLengthBars: 9)
+        #expect(vm.currentSongProgress > 0.0)
+
+        vm.goToPreviousSong()
+        #expect(vm.currentEntryIndex == 0)
+        #expect(vm.currentSongProgress == 0.0)
+    }
 }

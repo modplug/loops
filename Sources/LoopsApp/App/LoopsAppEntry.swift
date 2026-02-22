@@ -88,8 +88,15 @@ public struct LoopsRootView: View {
                 return (song: song, recordings: vm.project.sourceRecordings, audioDir: vm.audioDirectory)
             }
             // Bridge playhead updates directly, bypassing SwiftUI observation
-            transportViewModel.onPlayheadChanged = { [weak timelineViewModel] bar in
+            transportViewModel.onPlayheadChanged = { [weak timelineViewModel, weak viewModel, weak setlistViewModel] bar in
                 timelineViewModel?.playheadBar = bar
+                if let slVM = setlistViewModel, slVM.isPerformMode,
+                   let song = viewModel?.currentSong {
+                    let containerMax = song.tracks.flatMap(\.containers).map(\.endBar).max() ?? 1
+                    let sectionMax = song.sections.map(\.endBar).max() ?? 1
+                    let songLength = max(containerMax, sectionMax, 1)
+                    slVM.updateSongProgress(playheadBar: bar, songLengthBars: songLength)
+                }
             }
             // Sync count-in bars from the current song
             transportViewModel.countInBars = viewModel.currentSong?.countInBars ?? 0

@@ -4,13 +4,10 @@ import LoopsCore
 /// Sidebar view for managing setlists: list of setlists and their entries.
 public struct SetlistSidebarView: View {
     @Bindable var viewModel: SetlistViewModel
+    var playheadBar: Double = 1.0
     @State private var setlistToDelete: Setlist?
     @State private var renamingSetlistID: ID<Setlist>?
     @State private var renamingText: String = ""
-
-    public init(viewModel: SetlistViewModel) {
-        self.viewModel = viewModel
-    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -48,7 +45,7 @@ public struct SetlistSidebarView: View {
 
                 // Entries for selected setlist
                 if let setlist = viewModel.selectedSetlist {
-                    SetlistEntryListView(viewModel: viewModel, setlist: setlist)
+                    SetlistEntryListView(viewModel: viewModel, setlist: setlist, playheadBar: playheadBar)
                 }
             }
         }
@@ -120,6 +117,7 @@ public struct SetlistSidebarView: View {
 public struct SetlistEntryListView: View {
     @Bindable var viewModel: SetlistViewModel
     let setlist: Setlist
+    var playheadBar: Double = 1.0
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -158,13 +156,51 @@ public struct SetlistEntryListView: View {
         .frame(maxHeight: 300)
     }
 
+    private func entryIndex(for entry: SetlistEntry) -> Int? {
+        setlist.entries.firstIndex(where: { $0.id == entry.id })
+    }
+
     @ViewBuilder
     private func entryRow(entry: SetlistEntry) -> some View {
         let isSelected = viewModel.selectedSetlistEntryID == entry.id
+        let index = entryIndex(for: entry)
+        let isCurrent = viewModel.isPerformMode && index == viewModel.currentEntryIndex
+        let song = viewModel.song(for: entry)
+        let activeSectionID = isCurrent ? viewModel.activeSectionID(atBar: playheadBar) : nil
+
         VStack(alignment: .leading, spacing: 2) {
-            Text(viewModel.songName(for: entry))
-                .font(.body)
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                if isCurrent {
+                    Image(systemName: "play.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentColor)
+                }
+                Text(viewModel.songName(for: entry))
+                    .font(.body)
+                    .fontWeight(isCurrent ? .semibold : .regular)
+                    .lineLimit(1)
+            }
+
+            // Progress bar for current entry
+            if isCurrent {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.accentColor.opacity(0.15))
+                            .frame(height: 4)
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.accentColor)
+                            .frame(width: geo.size.width * viewModel.currentSongProgress, height: 4)
+                    }
+                }
+                .frame(height: 4)
+            }
+
+            // Section regions
+            if let song, !song.sections.isEmpty {
+                sectionList(sections: song.sections.sorted(by: { $0.startBar < $1.startBar }),
+                            activeSectionID: activeSectionID)
+            }
 
             HStack(spacing: 4) {
                 Text("→")
@@ -175,7 +211,11 @@ public struct SetlistEntryListView: View {
             .foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
-        .listRowBackground(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+        .listRowBackground(
+            isCurrent ? Color.accentColor.opacity(0.25) :
+            isSelected ? Color.accentColor.opacity(0.1) :
+            Color.clear
+        )
         .onTapGesture { viewModel.selectedSetlistEntryID = entry.id }
         .contextMenu {
             Menu("Transition") {
@@ -197,6 +237,41 @@ public struct SetlistEntryListView: View {
                 viewModel.removeEntry(id: entry.id)
             }
         }
+    }
+
+    @ViewBuilder
+    private func sectionList(sections: [SectionRegion], activeSectionID: ID<SectionRegion>?) -> some View {
+        HStack(spacing: 3) {
+            ForEach(sections) { section in
+                let isActive = activeSectionID == section.id
+                HStack(spacing: 2) {
+                    Circle()
+                        .fill(colorFromHex(section.color))
+                        .frame(width: 6, height: 6)
+                    Text(section.name)
+                        .font(.system(size: 9))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(isActive
+                              ? colorFromHex(section.color).opacity(0.3)
+                              : Color.clear)
+                )
+                .foregroundStyle(isActive ? .primary : .secondary)
+            }
+        }
+    }
+
+    private func colorFromHex(_ hex: String) -> Color {
+        let trimmed = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard let rgb = Int(trimmed, radix: 16) else { return .gray }
+        let r = Double((rgb >> 16) & 0xFF) / 255.0
+        let g = Double((rgb >> 8) & 0xFF) / 255.0
+        let b = Double(rgb & 0xFF) / 255.0
+        return Color(red: r, green: g, blue: b)
     }
 
     private func transitionLabel(_ mode: TransitionMode) -> some View {

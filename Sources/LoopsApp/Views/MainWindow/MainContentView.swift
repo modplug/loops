@@ -344,7 +344,7 @@ public struct MainContentView: View {
                 SongListView(viewModel: projectViewModel)
             case .setlists:
                 if let setlistVM = setlistViewModel {
-                    SetlistSidebarView(viewModel: setlistVM)
+                    SetlistSidebarView(viewModel: setlistVM, playheadBar: timelineViewModel.playheadBar)
                 } else {
                     Text("Setlists unavailable")
                         .foregroundStyle(.secondary)
