@@ -1,12 +1,16 @@
 import Testing
 import Foundation
+import AVFoundation
 @testable import LoopsEngine
 @testable import LoopsCore
 
-/// Audio hardware tests are skipped on CI where no real audio device is available.
-private let isCI = ProcessInfo.processInfo.environment["CI"] != nil
+/// Audio hardware tests require a live AVAudioEngine which can crash with an
+/// unrecoverable ObjC exception in sandboxed test runners (SPM, CI).
+/// Opt in with: LOOPS_AUDIO_TESTS=1 swift test
+private let audioHardwareTestsEnabled =
+    ProcessInfo.processInfo.environment["LOOPS_AUDIO_TESTS"] != nil
 
-@Suite("AudioEngineManager Tests")
+@Suite("AudioEngineManager Tests", .serialized)
 struct AudioEngineManagerTests {
 
     @Test("Engine can be created")
@@ -15,7 +19,8 @@ struct AudioEngineManagerTests {
         #expect(!manager.isRunning)
     }
 
-    @Test("Engine starts and stops cleanly", .disabled(if: isCI, "No audio hardware on CI"))
+    @Test("Engine starts and stops cleanly",
+          .enabled(if: audioHardwareTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
     func engineStartStop() throws {
         let manager = AudioEngineManager()
         try manager.start()
@@ -26,7 +31,8 @@ struct AudioEngineManagerTests {
         #expect(!manager.isRunning)
     }
 
-    @Test("Engine restarts cleanly", .disabled(if: isCI, "No audio hardware on CI"))
+    @Test("Engine restarts cleanly",
+          .enabled(if: audioHardwareTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
     func engineRestart() throws {
         let manager = AudioEngineManager()
         try manager.start()
@@ -39,11 +45,12 @@ struct AudioEngineManagerTests {
         #expect(!manager.isRunning)
     }
 
-    @Test("Engine start is idempotent", .disabled(if: isCI, "No audio hardware on CI"))
+    @Test("Engine start is idempotent",
+          .enabled(if: audioHardwareTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
     func engineStartIdempotent() throws {
         let manager = AudioEngineManager()
         try manager.start()
-        try manager.start() // second start should be a no-op
+        try manager.start()
         #expect(manager.isRunning)
         manager.stop()
     }
@@ -51,11 +58,12 @@ struct AudioEngineManagerTests {
     @Test("Engine stop is idempotent")
     func engineStopIdempotent() {
         let manager = AudioEngineManager()
-        manager.stop() // stop when not running should be a no-op
+        manager.stop()
         #expect(!manager.isRunning)
     }
 
-    @Test("Engine reports output format", .disabled(if: isCI, "No audio hardware on CI"))
+    @Test("Engine reports output format",
+          .enabled(if: audioHardwareTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
     func engineOutputFormat() throws {
         let manager = AudioEngineManager()
         try manager.start()
@@ -76,8 +84,7 @@ struct AudioEngineManagerTests {
     @Test("DeviceManager can enumerate devices")
     func deviceEnumeration() {
         let deviceManager = DeviceManager()
-        // CI may not have audio devices, so just check it doesn't crash
-        let _  = deviceManager.allDevices()
+        let _ = deviceManager.allDevices()
         let _ = deviceManager.inputDevices()
         let _ = deviceManager.outputDevices()
     }
@@ -85,23 +92,22 @@ struct AudioEngineManagerTests {
     @Test("DeviceManager default device queries don't crash")
     func defaultDeviceQueries() {
         let deviceManager = DeviceManager()
-        // These may return nil on CI but should not crash
         let _ = deviceManager.defaultInputDeviceID()
         let _ = deviceManager.defaultOutputDeviceID()
     }
 
-    @Test("Buffer size validation", .disabled(if: isCI, "No audio hardware on CI"))
+    @Test("Buffer size validation",
+          .enabled(if: audioHardwareTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
     func bufferSizeValidation() throws {
         let manager = AudioEngineManager()
         try manager.start()
-        // Valid buffer size should not throw
         try manager.setBufferSize(256)
-        // Invalid buffer size should be silently ignored
         try manager.setBufferSize(100)
         manager.stop()
     }
 
-    @Test("Apply settings does not crash", .disabled(if: isCI, "No audio hardware on CI"))
+    @Test("Apply settings does not crash",
+          .enabled(if: audioHardwareTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
     func applySettings() throws {
         let manager = AudioEngineManager()
         try manager.start()

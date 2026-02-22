@@ -8,6 +8,7 @@ import LoopsCore
 public final class AudioEngineManager: @unchecked Sendable {
     public let engine: AVAudioEngine
     public let deviceManager: DeviceManager
+    public private(set) var metronome: MetronomeGenerator?
 
     public private(set) var isRunning: Bool = false
     public private(set) var currentSampleRate: Double = 44100.0
@@ -41,11 +42,26 @@ public final class AudioEngineManager: @unchecked Sendable {
             )
         }
         do {
+            // Create and connect metronome before starting the engine
+            let outputFormat = engine.outputNode.outputFormat(forBus: 0)
+            let sampleRate = outputFormat.sampleRate > 0 ? outputFormat.sampleRate : 44100.0
+
+            let met = MetronomeGenerator(sampleRate: sampleRate)
+            engine.attach(met.sourceNode)
+            let monoFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+            engine.connect(met.sourceNode, to: engine.mainMixerNode, format: monoFormat)
+            metronome = met
+
             try engine.start()
             isRunning = true
             currentSampleRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
             installDeviceChangeObserver()
         } catch {
+            // Clean up on failure
+            if let met = metronome {
+                engine.detach(met.sourceNode)
+                metronome = nil
+            }
             throw LoopsError.engineStartFailed(
                 underlying: error.localizedDescription
             )
@@ -56,6 +72,10 @@ public final class AudioEngineManager: @unchecked Sendable {
     public func stop() {
         guard isRunning else { return }
         engine.stop()
+        if let met = metronome {
+            engine.detach(met.sourceNode)
+            metronome = nil
+        }
         isRunning = false
     }
 
@@ -84,13 +104,23 @@ public final class AudioEngineManager: @unchecked Sendable {
         }
     }
 
-    /// Applies audio device settings, selecting devices and buffer size.
+    /// Applies audio device settings, selecting the device and buffer size.
     public func applySettings(_ settings: AudioDeviceSettings) throws {
         let wasRunning = isRunning
         if wasRunning { stop() }
 
-        // Apply buffer size
-        if let deviceID = deviceManager.defaultOutputDeviceID() {
+        // Apply single audio interface for both input and output
+        if let uid = settings.deviceUID,
+           let device = deviceManager.device(forUID: uid) {
+            if device.hasOutput {
+                setOutputDeviceOnUnit(deviceID: device.id)
+            }
+            if device.hasInput {
+                setInputDeviceOnUnit(deviceID: device.id)
+            }
+            // Apply buffer size to this device
+            setDeviceBufferSize(deviceID: device.id, size: UInt32(settings.bufferSize))
+        } else if let deviceID = deviceManager.defaultOutputDeviceID() {
             setDeviceBufferSize(deviceID: deviceID, size: UInt32(settings.bufferSize))
         }
 
@@ -137,6 +167,7 @@ public final class AudioEngineManager: @unchecked Sendable {
         // AVAudioEngine automatically stops on config change.
         // We restart to handle hot-plugged devices gracefully.
         isRunning = false
+        metronome = nil
         do {
             try start()
         } catch {
@@ -159,6 +190,36 @@ public final class AudioEngineManager: @unchecked Sendable {
             0, nil,
             UInt32(MemoryLayout<UInt32>.size),
             &bufferSize
+        )
+    }
+
+    private func setOutputDeviceOnUnit(deviceID: AudioDeviceID) {
+        var id = deviceID
+        let outputUnit = engine.outputNode.audioUnit
+        guard let unit = outputUnit else { return }
+        AudioUnitSetProperty(
+            unit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &id,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+    }
+
+    private func setInputDeviceOnUnit(deviceID: AudioDeviceID) {
+        // Accessing engine.inputNode may crash if no input device exists.
+        // Only call this when we've verified the device is available.
+        var id = deviceID
+        let inputUnit = engine.inputNode.audioUnit
+        guard let unit = inputUnit else { return }
+        AudioUnitSetProperty(
+            unit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &id,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
         )
     }
 }

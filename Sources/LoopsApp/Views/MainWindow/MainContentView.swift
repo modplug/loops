@@ -1,5 +1,6 @@
 import SwiftUI
 import LoopsCore
+import LoopsEngine
 
 /// Sidebar tab selection.
 public enum SidebarTab: String, CaseIterable {
@@ -11,17 +12,23 @@ public enum SidebarTab: String, CaseIterable {
 public struct MainContentView: View {
     @Bindable var projectViewModel: ProjectViewModel
     @Bindable var timelineViewModel: TimelineViewModel
+    var transportViewModel: TransportViewModel?
     var setlistViewModel: SetlistViewModel?
+    var engineManager: AudioEngineManager?
+    var settingsViewModel: SettingsViewModel?
     @State private var trackToDelete: Track?
     @State private var editingTrackID: ID<Track>?
     @State private var editingTrackName: String = ""
     @State private var isSidebarVisible: Bool = true
     @State private var sidebarTab: SidebarTab = .songs
 
-    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, setlistViewModel: SetlistViewModel? = nil) {
+    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
         self.projectViewModel = projectViewModel
         self.timelineViewModel = timelineViewModel
+        self.transportViewModel = transportViewModel
         self.setlistViewModel = setlistViewModel
+        self.engineManager = engineManager
+        self.settingsViewModel = settingsViewModel
     }
 
     private var currentSong: Song? {
@@ -33,7 +40,6 @@ public struct MainContentView: View {
             // Sidebar
             if isSidebarVisible {
                 VStack(spacing: 0) {
-                    // Tab picker
                     Picker("", selection: $sidebarTab) {
                         ForEach(SidebarTab.allCases, id: \.self) { tab in
                             Text(tab.rawValue).tag(tab)
@@ -62,38 +68,69 @@ public struct MainContentView: View {
             // Timeline center area
             if let song = currentSong {
                 VStack(spacing: 0) {
-                    // Track headers + timeline
+                    // Ruler row (fixed, not scrollable vertically)
                     HStack(spacing: 0) {
-                        // Track headers column
-                        VStack(spacing: 0) {
-                            // Ruler spacer
-                            Color.clear.frame(width: 160, height: 28)
-                            Divider()
+                        Color.clear.frame(width: 160, height: 20)
+                        Divider()
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            RulerView(
+                                totalBars: timelineViewModel.totalBars,
+                                pixelsPerBar: timelineViewModel.pixelsPerBar,
+                                timeSignature: song.timeSignature
+                            )
+                        }
+                    }
+                    .frame(height: 20)
+                    Divider()
 
-                            ScrollView(.vertical, showsIndicators: false) {
+                    // Track area — grid fills available space, scrollbar at bottom.
+                    GeometryReader { geo in
+                        ScrollView(.vertical, showsIndicators: true) {
+                            HStack(alignment: .top, spacing: 0) {
+                                // Track headers — fixed width, scroll vertically with tracks
                                 VStack(spacing: 0) {
                                     ForEach(song.tracks) { track in
                                         trackHeaderWithActions(track: track)
                                     }
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(width: 160)
+                                .frame(minHeight: geo.size.height)
+                                .background(Color(nsColor: .controlBackgroundColor))
+
+                                Divider()
+
+                                // Timeline — scrolls horizontally inside, vertically with parent
+                                ScrollView(.horizontal, showsIndicators: true) {
+                                    TimelineView(
+                                        viewModel: timelineViewModel,
+                                        projectViewModel: projectViewModel,
+                                        song: song,
+                                        minHeight: geo.size.height
+                                    )
                                 }
                             }
-
-                            Divider()
-
-                            // Add Track button
-                            addTrackMenu
-                                .padding(4)
+                            .frame(minHeight: geo.size.height)
                         }
-                        .frame(width: 160)
+                    }
+                    .scrollWheelHandler(
+                        onCmdScroll: { delta in
+                            if delta > 0 {
+                                timelineViewModel.zoomIn()
+                            } else {
+                                timelineViewModel.zoomOut()
+                            }
+                        }
+                    )
 
-                        Divider()
+                    Divider()
 
-                        // Timeline
-                        TimelineView(
-                            viewModel: timelineViewModel,
-                            projectViewModel: projectViewModel,
-                            song: song
-                        )
+                    // Add Track button
+                    HStack {
+                        addTrackMenu
+                            .padding(4)
+                            .frame(width: 160)
+                        Spacer()
                     }
                 }
             } else {
@@ -160,11 +197,17 @@ public struct MainContentView: View {
                 }
             }
         }
+        .onKeyPress(.space) {
+            transportViewModel?.togglePlayPause()
+            return .handled
+        }
     }
 
     private func trackHeaderWithActions(track: Track) -> some View {
         TrackHeaderView(
             track: track,
+            inputPortName: inputPortName(for: track.inputPortID),
+            outputPortName: outputPortName(for: track.outputPortID),
             onMuteToggle: { projectViewModel.toggleMute(trackID: track.id) },
             onSoloToggle: { projectViewModel.toggleSolo(trackID: track.id) }
         )
@@ -173,6 +216,33 @@ public struct MainContentView: View {
                 editingTrackID = track.id
                 editingTrackName = track.name
             }
+
+            if track.kind == .audio, let svm = settingsViewModel {
+                Divider()
+                Menu("Input") {
+                    Button("Default") {
+                        projectViewModel.setTrackInputPort(trackID: track.id, portID: nil)
+                    }
+                    if !svm.inputPorts.isEmpty { Divider() }
+                    ForEach(svm.inputPorts) { port in
+                        Button(port.displayName) {
+                            projectViewModel.setTrackInputPort(trackID: track.id, portID: port.id)
+                        }
+                    }
+                }
+                Menu("Output") {
+                    Button("Default") {
+                        projectViewModel.setTrackOutputPort(trackID: track.id, portID: nil)
+                    }
+                    if !svm.outputPorts.isEmpty { Divider() }
+                    ForEach(svm.outputPorts) { port in
+                        Button(port.displayName) {
+                            projectViewModel.setTrackOutputPort(trackID: track.id, portID: port.id)
+                        }
+                    }
+                }
+            }
+
             Divider()
             Button("Delete Track", role: .destructive) {
                 trackToDelete = track
@@ -226,5 +296,52 @@ public struct MainContentView: View {
                 .font(.caption)
         }
         .menuStyle(.borderlessButton)
+    }
+
+    func inputPortName(for portID: String?) -> String {
+        guard let portID, let svm = settingsViewModel else { return "Default" }
+        return svm.inputPorts.first { $0.id == portID }?.displayName ?? "Default"
+    }
+
+    func outputPortName(for portID: String?) -> String {
+        guard let portID, let svm = settingsViewModel else { return "Default" }
+        return svm.outputPorts.first { $0.id == portID }?.displayName ?? "Default"
+    }
+}
+
+// MARK: - Cmd+Scroll Wheel Zoom (non-blocking)
+
+/// Uses a local event monitor to intercept Cmd+scroll events for zoom
+/// without blocking normal scroll, scrollbar dragging, or shift+scroll.
+private struct ScrollWheelHandlerModifier: ViewModifier {
+    let onCmdScroll: (CGFloat) -> Void
+
+    @State private var monitor: AnyObject?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                    if event.modifierFlags.contains(.command) {
+                        let delta = event.scrollingDeltaY
+                        if delta != 0 {
+                            onCmdScroll(delta)
+                        }
+                        return nil // consume the event
+                    }
+                    return event // pass through
+                } as AnyObject
+            }
+            .onDisappear {
+                if let monitor {
+                    NSEvent.removeMonitor(monitor)
+                }
+            }
+    }
+}
+
+extension View {
+    func scrollWheelHandler(onCmdScroll: @escaping (CGFloat) -> Void) -> some View {
+        modifier(ScrollWheelHandlerModifier(onCmdScroll: onCmdScroll))
     }
 }

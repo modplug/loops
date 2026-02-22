@@ -11,8 +11,15 @@ let package = Package(
         .library(name: "LoopsCore", targets: ["LoopsCore"]),
         .library(name: "LoopsEngine", targets: ["LoopsEngine"]),
         .library(name: "LoopsApp", targets: ["LoopsApp"]),
+        .executable(name: "Loops", targets: ["LoopsRunner"]),
     ],
     targets: [
+        .executableTarget(
+            name: "LoopsRunner",
+            dependencies: ["LoopsApp", "LoopsEngine"],
+            path: "LoopsApp/LoopsApp",
+            exclude: ["LoopsApp.entitlements"]
+        ),
         .target(
             name: "LoopsCore",
             dependencies: [],

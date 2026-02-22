@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import LoopsApp
 import LoopsEngine
 
@@ -10,10 +11,18 @@ struct LoopsMainApp: App {
     @State private var transportViewModel: TransportViewModel?
     @State private var settingsViewModel: SettingsViewModel?
 
+    init() {
+        // SPM executables don't have a proper .app bundle, so macOS
+        // won't activate the menu bar by default. Setting the policy
+        // to .regular makes it behave like a normal app.
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
     var body: some Scene {
         WindowGroup {
             if let transportVM = transportViewModel {
-                LoopsRootView(viewModel: viewModel, transportViewModel: transportVM)
+                LoopsRootView(viewModel: viewModel, transportViewModel: transportVM, engineManager: engineManager, settingsViewModel: settingsViewModel)
             } else {
                 Text("Loading...")
                     .frame(minWidth: 800, minHeight: 500)
@@ -38,16 +47,15 @@ struct LoopsMainApp: App {
     }
 
     private func initialize() {
-        do {
-            try engineManager.start()
-        } catch {
-            // Engine start failure is non-fatal at launch
-        }
+        // Audio engine start is deferred — it will start when
+        // the user first plays or records. Starting at launch can
+        // crash with an unrecoverable ObjC exception if the process
+        // lacks audio entitlements (e.g. SPM executable without codesigning).
         if settingsViewModel == nil {
             settingsViewModel = SettingsViewModel(engineManager: engineManager)
         }
         if transportViewModel == nil {
-            transportViewModel = TransportViewModel(transport: transportManager)
+            transportViewModel = TransportViewModel(transport: transportManager, engineManager: engineManager)
         }
     }
 }

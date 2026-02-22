@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import LoopsCore
 
 /// Renders a single track's horizontal lane on the timeline.
@@ -9,12 +10,15 @@ public struct TrackLaneView: View {
     let totalBars: Int
     let height: CGFloat
     let selectedContainerID: ID<Container>?
+    /// Closure to look up waveform peaks for a container.
+    var waveformPeaksForContainer: ((_ container: Container) -> [Float]?)?
     var onContainerSelect: ((_ containerID: ID<Container>) -> Void)?
     var onContainerDelete: ((_ containerID: ID<Container>) -> Void)?
     var onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Bool)?
     var onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Int, _ newLength: Int) -> Bool)?
     var onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)?
     var onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)?
+    var onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)?
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
@@ -26,24 +30,28 @@ public struct TrackLaneView: View {
         totalBars: Int,
         height: CGFloat = 80,
         selectedContainerID: ID<Container>? = nil,
+        waveformPeaksForContainer: ((_ container: Container) -> [Float]?)? = nil,
         onContainerSelect: ((_ containerID: ID<Container>) -> Void)? = nil,
         onContainerDelete: ((_ containerID: ID<Container>) -> Void)? = nil,
         onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Bool)? = nil,
         onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
         onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)? = nil,
-        onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)? = nil
+        onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)? = nil,
+        onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
         self.totalBars = totalBars
         self.height = height
         self.selectedContainerID = selectedContainerID
+        self.waveformPeaksForContainer = waveformPeaksForContainer
         self.onContainerSelect = onContainerSelect
         self.onContainerDelete = onContainerDelete
         self.onContainerMove = onContainerMove
         self.onContainerResizeLeft = onContainerResizeLeft
         self.onContainerResizeRight = onContainerResizeRight
         self.onCreateContainer = onCreateContainer
+        self.onDropAudioFile = onDropAudioFile
     }
 
     public var body: some View {
@@ -73,6 +81,7 @@ public struct TrackLaneView: View {
                     height: height - 4,
                     isSelected: container.id == selectedContainerID,
                     trackColor: trackColor,
+                    waveformPeaks: waveformPeaksForContainer?(container),
                     onSelect: { onContainerSelect?(container.id) },
                     onDelete: { onContainerDelete?(container.id) },
                     onMove: { newStart in onContainerMove?(container.id, newStart) ?? false },
@@ -83,6 +92,22 @@ public struct TrackLaneView: View {
             }
         }
         .frame(width: CGFloat(totalBars) * pixelsPerBar, height: height)
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers, location in
+            guard let onDrop = onDropAudioFile else { return false }
+            guard let provider = providers.first else { return false }
+            let barAtDrop = max(Int(location.x / pixelsPerBar) + 1, 1)
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                guard let data = data as? Data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                let ext = url.pathExtension.lowercased()
+                let supported: Set<String> = ["wav", "aiff", "aif", "caf", "mp3", "m4a"]
+                guard supported.contains(ext) else { return }
+                DispatchQueue.main.async {
+                    onDrop(url, barAtDrop)
+                }
+            }
+            return true
+        }
     }
 
     private var createContainerGesture: some Gesture {

@@ -28,6 +28,10 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var sendLevels: [SendLevel]
     /// For MIDI tracks only
     public var instrumentComponent: AudioComponentInfo?
+    /// Stable ID of the input port assigned to this track (nil = default).
+    public var inputPortID: String?
+    /// Stable ID of the output port assigned to this track (nil = default).
+    public var outputPortID: String?
     public var orderIndex: Int
 
     public init(
@@ -42,6 +46,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         insertEffects: [InsertEffect] = [],
         sendLevels: [SendLevel] = [],
         instrumentComponent: AudioComponentInfo? = nil,
+        inputPortID: String? = nil,
+        outputPortID: String? = nil,
         orderIndex: Int = 0
     ) {
         self.id = id
@@ -55,6 +61,64 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.insertEffects = insertEffects
         self.sendLevels = sendLevels
         self.instrumentComponent = instrumentComponent
+        self.inputPortID = inputPortID
+        self.outputPortID = outputPortID
         self.orderIndex = orderIndex
+    }
+
+    // MARK: - Backward-compatible decoding
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, kind, volume, pan, isMuted, isSoloed
+        case containers, insertEffects, sendLevels
+        case instrumentComponent
+        case inputPortID, outputPortID
+        case orderIndex
+        // Legacy key
+        case inputDeviceUID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(ID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        kind = try c.decode(TrackKind.self, forKey: .kind)
+        volume = try c.decode(Float.self, forKey: .volume)
+        pan = try c.decode(Float.self, forKey: .pan)
+        isMuted = try c.decode(Bool.self, forKey: .isMuted)
+        isSoloed = try c.decode(Bool.self, forKey: .isSoloed)
+        containers = try c.decode([Container].self, forKey: .containers)
+        insertEffects = try c.decode([InsertEffect].self, forKey: .insertEffects)
+        sendLevels = try c.decode([SendLevel].self, forKey: .sendLevels)
+        instrumentComponent = try c.decodeIfPresent(AudioComponentInfo.self, forKey: .instrumentComponent)
+        outputPortID = try c.decodeIfPresent(String.self, forKey: .outputPortID)
+        orderIndex = try c.decode(Int.self, forKey: .orderIndex)
+
+        // Migrate legacy inputDeviceUID → inputPortID
+        if let portID = try c.decodeIfPresent(String.self, forKey: .inputPortID) {
+            inputPortID = portID
+        } else {
+            // Legacy: inputDeviceUID was just a device UID, not a port ID.
+            // We discard it since there's no way to map it to a specific port.
+            inputPortID = nil
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(volume, forKey: .volume)
+        try c.encode(pan, forKey: .pan)
+        try c.encode(isMuted, forKey: .isMuted)
+        try c.encode(isSoloed, forKey: .isSoloed)
+        try c.encode(containers, forKey: .containers)
+        try c.encode(insertEffects, forKey: .insertEffects)
+        try c.encode(sendLevels, forKey: .sendLevels)
+        try c.encodeIfPresent(instrumentComponent, forKey: .instrumentComponent)
+        try c.encodeIfPresent(inputPortID, forKey: .inputPortID)
+        try c.encodeIfPresent(outputPortID, forKey: .outputPortID)
+        try c.encode(orderIndex, forKey: .orderIndex)
     }
 }

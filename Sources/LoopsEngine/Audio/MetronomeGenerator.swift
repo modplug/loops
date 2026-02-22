@@ -8,49 +8,58 @@ import LoopsCore
 public final class MetronomeGenerator: @unchecked Sendable {
     public let sourceNode: AVAudioSourceNode
 
-    private var sampleRate: Double = 44100.0
-    private var bpm: Double = 120.0
-    private var beatsPerBar: Int = 4
-    private var isEnabled: Bool = false
+    private let renderState: RenderState
 
-    // Click synthesis state
-    private var sampleCounter: Int64 = 0
-    private var clickDurationSamples: Int = 0
     private let clickFrequencyHz: Double = 1000.0
     private let accentFrequencyHz: Double = 1500.0
     private let clickDurationMs: Double = 15.0
 
-    public init(sampleRate: Double = 44100.0) {
-        self.sampleRate = sampleRate
-        self.clickDurationSamples = Int(sampleRate * clickDurationMs / 1000.0)
+    /// Shared mutable state read by the audio render thread.
+    /// Property access on individual primitives is safe for prototype
+    /// purposes — worst case is a one-buffer stale read.
+    private final class RenderState {
+        var sampleRate: Double
+        var bpm: Double = 120.0
+        var beatsPerBar: Int = 4
+        var sampleCounter: Int64 = 0
+        var clickDurationSamples: Int
+        let clickFrequencyHz: Double
+        let accentFrequencyHz: Double
 
-        // Capture for closure
-        var localSampleRate = sampleRate
-        var localBpm = 120.0
-        var localBeatsPerBar = 4
-        var localEnabled = false
-        var localSampleCounter: Int64 = 0
-        let localClickFreq = clickFrequencyHz
-        let localAccentFreq = accentFrequencyHz
-        var localClickDuration = Int(sampleRate * clickDurationMs / 1000.0)
+        init(sampleRate: Double, clickFreq: Double, accentFreq: Double, clickDurationMs: Double) {
+            self.sampleRate = sampleRate
+            self.clickDurationSamples = Int(sampleRate * clickDurationMs / 1000.0)
+            self.clickFrequencyHz = clickFreq
+            self.accentFrequencyHz = accentFreq
+        }
+    }
+
+    public init(sampleRate: Double = 44100.0) {
+        let state = RenderState(
+            sampleRate: sampleRate,
+            clickFreq: clickFrequencyHz,
+            accentFreq: accentFrequencyHz,
+            clickDurationMs: clickDurationMs
+        )
+        self.renderState = state
 
         self.sourceNode = AVAudioSourceNode { _, _, frameCount, bufferList -> OSStatus in
             let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
-            let samplesPerBeat = Int(localSampleRate * 60.0 / localBpm)
+            let sr = state.sampleRate
+            let currentBpm = state.bpm
+            let samplesPerBeat = max(Int(sr * 60.0 / currentBpm), 1)
 
             for frame in 0..<Int(frameCount) {
                 var sample: Float = 0.0
 
-                if localEnabled {
-                    let posInBeat = Int(localSampleCounter) % samplesPerBeat
-                    let beatIndex = (Int(localSampleCounter) / samplesPerBeat) % localBeatsPerBar
+                let posInBeat = Int(state.sampleCounter) % samplesPerBeat
+                let beatIndex = (Int(state.sampleCounter) / samplesPerBeat) % state.beatsPerBar
 
-                    if posInBeat < localClickDuration {
-                        let freq = beatIndex == 0 ? localAccentFreq : localClickFreq
-                        let phase = Double(posInBeat) / localSampleRate
-                        let envelope = 1.0 - (Double(posInBeat) / Double(localClickDuration))
-                        sample = Float(sin(2.0 * .pi * freq * phase) * envelope * 0.3)
-                    }
+                if posInBeat < state.clickDurationSamples {
+                    let freq = beatIndex == 0 ? state.accentFrequencyHz : state.clickFrequencyHz
+                    let phase = Double(posInBeat) / sr
+                    let envelope = 1.0 - (Double(posInBeat) / Double(state.clickDurationSamples))
+                    sample = Float(sin(2.0 * .pi * freq * phase) * envelope * 0.5)
                 }
 
                 for buffer in buffers {
@@ -58,48 +67,30 @@ public final class MetronomeGenerator: @unchecked Sendable {
                     channelData[frame] = sample
                 }
 
-                localSampleCounter += 1
+                state.sampleCounter += 1
             }
             return noErr
         }
 
-        // Store references for update methods
-        self._sampleRate = localSampleRate
-        self._bpm = localBpm
-        self._beatsPerBar = localBeatsPerBar
-        self._enabled = localEnabled
-        self._sampleCounter = localSampleCounter
-        self._clickDuration = localClickDuration
-
-        // The source node closure captures local vars, so we need a different approach.
-        // We'll use the sourceNode's volume to enable/disable.
+        // Start silent — volume is used as the enable/disable switch
         sourceNode.volume = 0
     }
 
-    // Internal state mirrors
-    private var _sampleRate: Double
-    private var _bpm: Double
-    private var _beatsPerBar: Int
-    private var _enabled: Bool
-    private var _sampleCounter: Int64
-    private var _clickDuration: Int
-
     /// Updates the metronome parameters.
     public func update(bpm: Double, beatsPerBar: Int, sampleRate: Double) {
-        self.bpm = bpm
-        self.beatsPerBar = beatsPerBar
-        self.sampleRate = sampleRate
-        self.clickDurationSamples = Int(sampleRate * clickDurationMs / 1000.0)
+        renderState.bpm = bpm
+        renderState.beatsPerBar = beatsPerBar
+        renderState.sampleRate = sampleRate
+        renderState.clickDurationSamples = Int(sampleRate * clickDurationMs / 1000.0)
     }
 
     /// Enables or disables the metronome output.
     public func setEnabled(_ enabled: Bool) {
-        isEnabled = enabled
         sourceNode.volume = enabled ? 1.0 : 0.0
     }
 
-    /// Resets the sample counter (e.g., when transport resets).
+    /// Resets the sample counter (e.g., when transport resets to bar 1).
     public func reset() {
-        sampleCounter = 0
+        renderState.sampleCounter = 0
     }
 }

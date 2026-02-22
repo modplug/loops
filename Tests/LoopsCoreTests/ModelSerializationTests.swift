@@ -98,7 +98,7 @@ struct ModelSerializationTests {
 
     // MARK: - Track
 
-    @Test("Track round-trips")
+    @Test("Track round-trips with port IDs")
     func trackRoundTrip() throws {
         let container = Container(name: "Intro", startBar: 1, lengthBars: 4)
         let track = Track(
@@ -109,10 +109,41 @@ struct ModelSerializationTests {
             isMuted: false,
             isSoloed: true,
             containers: [container],
+            inputPortID: "device:0:0",
+            outputPortID: "device:0:2",
             orderIndex: 0
         )
         let decoded = try roundTrip(track)
         #expect(track == decoded)
+        #expect(decoded.inputPortID == "device:0:0")
+        #expect(decoded.outputPortID == "device:0:2")
+    }
+
+    @Test("Track migrates from legacy inputDeviceUID")
+    func trackLegacyMigration() throws {
+        // Simulate the old format with inputDeviceUID
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Guitar",
+            "kind": "audio",
+            "volume": 1.0,
+            "pan": 0.0,
+            "isMuted": false,
+            "isSoloed": false,
+            "containers": [],
+            "insertEffects": [],
+            "sendLevels": [],
+            "inputDeviceUID": "BuiltInMic",
+            "orderIndex": 0
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Track.self, from: data)
+        // Legacy inputDeviceUID is discarded (can't map to port)
+        #expect(decoded.inputPortID == nil)
+        #expect(decoded.outputPortID == nil)
+        #expect(decoded.name == "Guitar")
     }
 
     @Test("TrackKind all cases round-trip")
@@ -202,17 +233,77 @@ struct ModelSerializationTests {
         #expect(effect == decoded)
     }
 
+    // MARK: - ChannelPort
+
+    @Test("InputPort round-trips")
+    func inputPortRoundTrip() throws {
+        let port = InputPort(
+            deviceUID: "TestDevice:0",
+            streamIndex: 0,
+            channelOffset: 0,
+            layout: .stereo,
+            defaultName: "In 1/2",
+            customName: "Guitar"
+        )
+        let decoded = try roundTrip(port)
+        #expect(port == decoded)
+        #expect(decoded.id == "TestDevice:0:0:0")
+        #expect(decoded.displayName == "Guitar")
+    }
+
+    @Test("OutputPort round-trips with nil customName")
+    func outputPortRoundTrip() throws {
+        let port = OutputPort(
+            deviceUID: "TestDevice:0",
+            streamIndex: 1,
+            channelOffset: 2,
+            layout: .mono,
+            defaultName: "Out 3"
+        )
+        let decoded = try roundTrip(port)
+        #expect(port == decoded)
+        #expect(decoded.customName == nil)
+        #expect(decoded.displayName == "Out 3")
+    }
+
     // MARK: - AudioDeviceSettings
 
     @Test("AudioDeviceSettings round-trips")
     func audioDeviceSettingsRoundTrip() throws {
         let settings = AudioDeviceSettings(
-            inputDeviceUID: "BuiltInMicrophoneDevice",
-            outputDeviceUID: "BuiltInSpeakerDevice",
-            bufferSize: 512
+            deviceUID: "MyInterface",
+            sampleRate: 48000.0,
+            bufferSize: 512,
+            inputPorts: [
+                InputPort(deviceUID: "MyInterface", streamIndex: 0, channelOffset: 0, layout: .stereo, defaultName: "In 1/2", customName: "Guitar")
+            ],
+            outputPorts: [
+                OutputPort(deviceUID: "MyInterface", streamIndex: 0, channelOffset: 0, layout: .stereo, defaultName: "Out 1/2", customName: "Main Mix")
+            ]
         )
         let decoded = try roundTrip(settings)
         #expect(settings == decoded)
+        #expect(decoded.inputPorts.count == 1)
+        #expect(decoded.outputPorts.count == 1)
+        #expect(decoded.inputPorts[0].customName == "Guitar")
+    }
+
+    @Test("AudioDeviceSettings migrates from legacy format")
+    func audioDeviceSettingsLegacyMigration() throws {
+        let legacyJSON = """
+        {
+            "inputDeviceUID": "BuiltInMic",
+            "outputDeviceUID": "BuiltInSpeaker",
+            "bufferSize": 256
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(AudioDeviceSettings.self, from: data)
+        // Legacy outputDeviceUID becomes deviceUID
+        #expect(decoded.deviceUID == "BuiltInSpeaker")
+        #expect(decoded.bufferSize == 256)
+        #expect(decoded.inputPorts.isEmpty)
+        #expect(decoded.outputPorts.isEmpty)
     }
 
     // MARK: - BarBeatPosition

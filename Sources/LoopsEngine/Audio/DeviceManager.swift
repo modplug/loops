@@ -112,6 +112,119 @@ public final class DeviceManager: Sendable {
         allDevices().first { $0.uid == uid }
     }
 
+    // MARK: - Stream / Port Enumeration
+
+    /// Describes a single stream on a device (its index and channel count).
+    public struct AudioStream: Sendable {
+        public let streamIndex: Int
+        public let channelCount: Int
+    }
+
+    /// Returns the streams for a device in the given scope (input or output).
+    public func streams(for deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> [AudioStream] {
+        var size: UInt32 = 0
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size)
+        guard status == noErr, size > 0 else { return [] }
+
+        let rawPointer = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { rawPointer.deallocate() }
+
+        let bufferListPointer = rawPointer.bindMemory(to: AudioBufferList.self, capacity: 1)
+        let result = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, bufferListPointer)
+        guard result == noErr else { return [] }
+
+        let bufferList = UnsafeMutableAudioBufferListPointer(bufferListPointer)
+        var streams: [AudioStream] = []
+        for (index, buffer) in bufferList.enumerated() {
+            let count = Int(buffer.mNumberChannels)
+            if count > 0 {
+                streams.append(AudioStream(streamIndex: index, channelCount: count))
+            }
+        }
+        return streams
+    }
+
+    /// Enumerates all input ports for a device.
+    public func inputPorts(for device: AudioDevice) -> [InputPort] {
+        buildPorts(deviceUID: device.uid, deviceID: device.id, scope: kAudioObjectPropertyScopeInput, prefix: "In")
+    }
+
+    /// Enumerates all output ports for a device.
+    public func outputPorts(for device: AudioDevice) -> [OutputPort] {
+        buildPorts(deviceUID: device.uid, deviceID: device.id, scope: kAudioObjectPropertyScopeOutput, prefix: "Out")
+    }
+
+    /// Builds both stereo pairs and individual mono ports for every channel,
+    /// mirroring Bitwig's layout where each pair appears as both a stereo
+    /// entry and two mono entries.
+    private func buildPorts<Direction: Sendable>(
+        deviceUID: String,
+        deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope,
+        prefix: String
+    ) -> [ChannelPort<Direction>] {
+        let deviceStreams = streams(for: deviceID, scope: scope)
+        var ports: [ChannelPort<Direction>] = []
+        var globalChannel = 1
+
+        for stream in deviceStreams {
+            var offset = 0
+            var remaining = stream.channelCount
+
+            while remaining >= 2 {
+                // Stereo pair
+                let stereoName = "\(prefix) \(globalChannel) L/\(globalChannel + 1) R"
+                ports.append(ChannelPort<Direction>(
+                    deviceUID: deviceUID,
+                    streamIndex: stream.streamIndex,
+                    channelOffset: offset,
+                    layout: .stereo,
+                    defaultName: stereoName
+                ))
+                // Left mono
+                let leftName = "\(prefix) \(globalChannel) L"
+                ports.append(ChannelPort<Direction>(
+                    deviceUID: deviceUID,
+                    streamIndex: stream.streamIndex,
+                    channelOffset: offset,
+                    layout: .mono,
+                    defaultName: leftName
+                ))
+                // Right mono
+                let rightName = "\(prefix) \(globalChannel + 1) R"
+                ports.append(ChannelPort<Direction>(
+                    deviceUID: deviceUID,
+                    streamIndex: stream.streamIndex,
+                    channelOffset: offset + 1,
+                    layout: .mono,
+                    defaultName: rightName
+                ))
+                offset += 2
+                globalChannel += 2
+                remaining -= 2
+            }
+
+            if remaining == 1 {
+                let name = "\(prefix) \(globalChannel)"
+                ports.append(ChannelPort<Direction>(
+                    deviceUID: deviceUID,
+                    streamIndex: stream.streamIndex,
+                    channelOffset: offset,
+                    layout: .mono,
+                    defaultName: name
+                ))
+                globalChannel += 1
+            }
+        }
+
+        return ports
+    }
+
     // MARK: - Private
 
     private func deviceInfo(for deviceID: AudioDeviceID) -> AudioDevice? {
@@ -160,29 +273,7 @@ public final class DeviceManager: Sendable {
     }
 
     private func channelCount(for deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
-        var size: UInt32 = 0
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size)
-        guard status == noErr, size > 0 else { return 0 }
-
-        // Allocate raw memory with proper size for the variable-length AudioBufferList
-        let rawPointer = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
-        defer { rawPointer.deallocate() }
-
-        let bufferListPointer = rawPointer.bindMemory(to: AudioBufferList.self, capacity: 1)
-        let result = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, bufferListPointer)
-        guard result == noErr else { return 0 }
-
-        let bufferList = UnsafeMutableAudioBufferListPointer(bufferListPointer)
-        var totalChannels = 0
-        for buffer in bufferList {
-            totalChannels += Int(buffer.mNumberChannels)
-        }
-        return totalChannels
+        streams(for: deviceID, scope: scope).reduce(0) { $0 + $1.channelCount }
     }
 
     private func supportedSampleRates(for deviceID: AudioDeviceID) -> [Double] {

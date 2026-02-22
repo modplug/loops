@@ -6,35 +6,41 @@ public struct GridOverlayView: View {
     let totalBars: Int
     let pixelsPerBar: CGFloat
     let timeSignature: TimeSignature
-    let trackCount: Int
-    let trackHeight: CGFloat
+    let height: CGFloat
 
     public init(
         totalBars: Int,
         pixelsPerBar: CGFloat,
         timeSignature: TimeSignature,
-        trackCount: Int,
-        trackHeight: CGFloat = 80
+        height: CGFloat
     ) {
         self.totalBars = totalBars
         self.pixelsPerBar = pixelsPerBar
         self.timeSignature = timeSignature
-        self.trackCount = trackCount
-        self.trackHeight = trackHeight
+        self.height = height
     }
 
     public var body: some View {
         Canvas { context, size in
             let totalHeight = size.height
 
+            // Alternating bar shading (Bitwig-style)
+            for bar in 0..<totalBars {
+                if bar % 2 == 1 {
+                    let x = CGFloat(bar) * pixelsPerBar
+                    let rect = CGRect(x: x, y: 0, width: pixelsPerBar, height: totalHeight)
+                    context.fill(Path(rect), with: .color(.primary.opacity(0.03)))
+                }
+            }
+
             for bar in 0...totalBars {
                 let x = CGFloat(bar) * pixelsPerBar
 
-                // Bar line (stronger)
+                // Bar line
                 var barPath = Path()
                 barPath.move(to: CGPoint(x: x, y: 0))
                 barPath.addLine(to: CGPoint(x: x, y: totalHeight))
-                context.stroke(barPath, with: .color(.secondary.opacity(0.4)), lineWidth: 1)
+                context.stroke(barPath, with: .color(.secondary.opacity(0.25)), lineWidth: 0.5)
 
                 // Beat lines (lighter)
                 if pixelsPerBar > 50 && bar < totalBars {
@@ -44,23 +50,14 @@ public struct GridOverlayView: View {
                         var beatPath = Path()
                         beatPath.move(to: CGPoint(x: beatX, y: 0))
                         beatPath.addLine(to: CGPoint(x: beatX, y: totalHeight))
-                        context.stroke(beatPath, with: .color(.secondary.opacity(0.15)), lineWidth: 0.5)
+                        context.stroke(beatPath, with: .color(.secondary.opacity(0.08)), lineWidth: 0.5)
                     }
                 }
-            }
-
-            // Horizontal track separator lines
-            for i in 0...trackCount {
-                let y = CGFloat(i) * trackHeight
-                var trackLine = Path()
-                trackLine.move(to: CGPoint(x: 0, y: y))
-                trackLine.addLine(to: CGPoint(x: size.width, y: y))
-                context.stroke(trackLine, with: .color(.secondary.opacity(0.3)), lineWidth: 0.5)
             }
         }
         .frame(
             width: CGFloat(totalBars) * pixelsPerBar,
-            height: CGFloat(trackCount) * trackHeight
+            height: height
         )
     }
 }

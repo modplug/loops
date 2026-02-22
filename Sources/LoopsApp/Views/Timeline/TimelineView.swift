@@ -1,93 +1,94 @@
 import SwiftUI
 import LoopsCore
 
-/// The main timeline view combining ruler, grid, track lanes, and playhead.
+/// The main timeline view combining grid, track lanes, and playhead.
+/// Scrolling is managed by the parent view (MainContentView).
 public struct TimelineView: View {
     @Bindable var viewModel: TimelineViewModel
     @Bindable var projectViewModel: ProjectViewModel
     let song: Song
     let trackHeight: CGFloat
+    let minHeight: CGFloat
 
-    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, trackHeight: CGFloat = 80) {
+    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, trackHeight: CGFloat = 80, minHeight: CGFloat = 0) {
         self.viewModel = viewModel
         self.projectViewModel = projectViewModel
         self.song = song
         self.trackHeight = trackHeight
+        self.minHeight = minHeight
     }
 
-    private var totalContentHeight: CGFloat {
+    public var totalContentHeight: CGFloat {
         CGFloat(max(song.tracks.count, 1)) * trackHeight
     }
 
+    /// The height used for the grid and playhead — fills available space.
+    private var displayHeight: CGFloat {
+        max(totalContentHeight, minHeight)
+    }
+
     public var body: some View {
-        VStack(spacing: 0) {
-            // Ruler at the top
-            ScrollView(.horizontal, showsIndicators: false) {
-                RulerView(
-                    totalBars: viewModel.totalBars,
-                    pixelsPerBar: viewModel.pixelsPerBar,
-                    timeSignature: song.timeSignature
-                )
-            }
-            .frame(height: 28)
+        ZStack(alignment: .topLeading) {
+            // Grid overlay — fills available space
+            GridOverlayView(
+                totalBars: viewModel.totalBars,
+                pixelsPerBar: viewModel.pixelsPerBar,
+                timeSignature: song.timeSignature,
+                height: displayHeight
+            )
 
-            Divider()
-
-            // Main timeline area with tracks
-            ScrollView([.horizontal, .vertical], showsIndicators: true) {
-                ZStack(alignment: .topLeading) {
-                    // Grid overlay
-                    GridOverlayView(
-                        totalBars: viewModel.totalBars,
+            // Track lanes stacked vertically
+            VStack(spacing: 0) {
+                ForEach(song.tracks) { track in
+                    TrackLaneView(
+                        track: track,
                         pixelsPerBar: viewModel.pixelsPerBar,
-                        timeSignature: song.timeSignature,
-                        trackCount: song.tracks.count,
-                        trackHeight: trackHeight
-                    )
-
-                    // Track lanes stacked vertically
-                    VStack(spacing: 0) {
-                        ForEach(song.tracks) { track in
-                            TrackLaneView(
-                                track: track,
-                                pixelsPerBar: viewModel.pixelsPerBar,
-                                totalBars: viewModel.totalBars,
-                                height: trackHeight,
-                                selectedContainerID: projectViewModel.selectedContainerID,
-                                onContainerSelect: { containerID in
-                                    projectViewModel.selectedContainerID = containerID
-                                },
-                                onContainerDelete: { containerID in
-                                    projectViewModel.removeContainer(trackID: track.id, containerID: containerID)
-                                },
-                                onContainerMove: { containerID, newStartBar in
-                                    projectViewModel.moveContainer(trackID: track.id, containerID: containerID, newStartBar: newStartBar)
-                                },
-                                onContainerResizeLeft: { containerID, newStart, newLength in
-                                    projectViewModel.resizeContainer(trackID: track.id, containerID: containerID, newStartBar: newStart, newLengthBars: newLength)
-                                },
-                                onContainerResizeRight: { containerID, newLength in
-                                    projectViewModel.resizeContainer(trackID: track.id, containerID: containerID, newLengthBars: newLength)
-                                },
-                                onCreateContainer: { startBar, lengthBars in
-                                    let _ = projectViewModel.addContainer(trackID: track.id, startBar: startBar, lengthBars: lengthBars)
-                                }
+                        totalBars: viewModel.totalBars,
+                        height: trackHeight,
+                        selectedContainerID: projectViewModel.selectedContainerID,
+                        waveformPeaksForContainer: { container in
+                            projectViewModel.waveformPeaks(for: container)
+                        },
+                        onContainerSelect: { containerID in
+                            projectViewModel.selectedContainerID = containerID
+                        },
+                        onContainerDelete: { containerID in
+                            projectViewModel.removeContainer(trackID: track.id, containerID: containerID)
+                        },
+                        onContainerMove: { containerID, newStartBar in
+                            projectViewModel.moveContainer(trackID: track.id, containerID: containerID, newStartBar: newStartBar)
+                        },
+                        onContainerResizeLeft: { containerID, newStart, newLength in
+                            projectViewModel.resizeContainer(trackID: track.id, containerID: containerID, newStartBar: newStart, newLengthBars: newLength)
+                        },
+                        onContainerResizeRight: { containerID, newLength in
+                            projectViewModel.resizeContainer(trackID: track.id, containerID: containerID, newLengthBars: newLength)
+                        },
+                        onCreateContainer: { startBar, lengthBars in
+                            let _ = projectViewModel.addContainer(trackID: track.id, startBar: startBar, lengthBars: lengthBars)
+                        },
+                        onDropAudioFile: { url, startBar in
+                            let _ = try? projectViewModel.importAudio(
+                                url: url,
+                                trackID: track.id,
+                                startBar: startBar,
+                                audioDirectory: projectViewModel.audioDirectory
                             )
                         }
-                    }
-
-                    // Playhead
-                    PlayheadView(
-                        xPosition: viewModel.playheadX,
-                        height: totalContentHeight
                     )
                 }
-                .frame(
-                    width: viewModel.totalWidth,
-                    height: totalContentHeight
-                )
             }
+
+            // Playhead — extends full height
+            PlayheadView(
+                xPosition: viewModel.playheadX,
+                height: displayHeight
+            )
         }
+        .frame(
+            width: viewModel.totalWidth,
+            height: displayHeight
+        )
         .onKeyPress("+") {
             viewModel.zoomIn()
             return .handled

@@ -266,6 +266,24 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    /// Sets the input port for a track.
+    public func setTrackInputPort(trackID: ID<Track>, portID: String?) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Set Input Port")
+        project.songs[currentSongIndex].tracks[index].inputPortID = portID
+        hasUnsavedChanges = true
+    }
+
+    /// Sets the output port for a track.
+    public func setTrackOutputPort(trackID: ID<Track>, portID: String?) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Set Output Port")
+        project.songs[currentSongIndex].tracks[index].outputPortID = portID
+        hasUnsavedChanges = true
+    }
+
     /// Sets the pan on a track.
     public func setTrackPan(trackID: ID<Track>, pan: Float) {
         guard !project.songs.isEmpty else { return }
@@ -463,6 +481,20 @@ public final class ProjectViewModel {
             }
         }
         return nil
+    }
+
+    // MARK: - Audio Directory
+
+    /// Returns the audio directory for this project.
+    /// Uses the project bundle's Audio/ folder if saved, otherwise a temp directory.
+    public var audioDirectory: URL {
+        if let projectURL = projectURL {
+            return projectURL.appendingPathComponent("Audio")
+        }
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loops-audio")
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        return tempDir
     }
 
     // MARK: - Audio Import

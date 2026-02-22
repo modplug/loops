@@ -14,9 +14,16 @@ public final class TransportViewModel {
     public var timeSignature: TimeSignature = TimeSignature()
 
     private let transport: TransportManager
+    private let engineManager: AudioEngineManager?
+    private var playbackScheduler: PlaybackScheduler?
 
-    public init(transport: TransportManager) {
+    /// Closure to fetch the current song context for playback.
+    /// Set by the view layer so play() always uses the latest data.
+    public var songProvider: (() -> (song: Song, recordings: [ID<SourceRecording>: SourceRecording], audioDir: URL)?)?
+
+    public init(transport: TransportManager, engineManager: AudioEngineManager? = nil) {
         self.transport = transport
+        self.engineManager = engineManager
         syncFromTransport()
         transport.onPositionUpdate = { [weak self] bar in
             Task { @MainActor [weak self] in
@@ -28,16 +35,52 @@ public final class TransportViewModel {
     public func play() {
         transport.bpm = bpm
         transport.timeSignature = timeSignature
+
+        // Start audio engine when playing (needed for metronome and future playback)
+        if let engine = engineManager {
+            if !engine.isRunning {
+                try? engine.start()
+            }
+            // Update metronome parameters
+            engine.metronome?.update(
+                bpm: bpm,
+                beatsPerBar: timeSignature.beatsPerBar,
+                sampleRate: engine.currentSampleRate
+            )
+            engine.metronome?.reset()
+            engine.metronome?.setEnabled(isMetronomeEnabled)
+
+            // Prepare and schedule audio playback with latest song data
+            if let context = songProvider?() {
+                if playbackScheduler == nil {
+                    playbackScheduler = PlaybackScheduler(engine: engine.engine, audioDirURL: context.audioDir)
+                }
+                playbackScheduler?.prepare(song: context.song, sourceRecordings: context.recordings)
+                playbackScheduler?.play(
+                    song: context.song,
+                    fromBar: playheadBar,
+                    bpm: bpm,
+                    timeSignature: timeSignature,
+                    sampleRate: engine.currentSampleRate
+                )
+            }
+        }
+
         transport.play()
         syncFromTransport()
     }
 
     public func pause() {
+        playbackScheduler?.stop()
+        engineManager?.metronome?.setEnabled(false)
         transport.pause()
         syncFromTransport()
     }
 
     public func stop() {
+        playbackScheduler?.stop()
+        engineManager?.metronome?.setEnabled(false)
+        engineManager?.metronome?.reset()
         transport.stop()
         syncFromTransport()
     }
@@ -58,6 +101,11 @@ public final class TransportViewModel {
     public func toggleMetronome() {
         transport.toggleMetronome()
         syncFromTransport()
+
+        // If currently playing, immediately update metronome output
+        if isPlaying {
+            engineManager?.metronome?.setEnabled(isMetronomeEnabled)
+        }
     }
 
     public func setPlayheadPosition(_ bar: Double) {
@@ -68,6 +116,14 @@ public final class TransportViewModel {
     public func updateBPM(_ newBPM: Double) {
         bpm = min(max(newBPM, 20.0), 300.0)
         transport.bpm = bpm
+        // Live-update metronome BPM if playing
+        if isPlaying {
+            engineManager?.metronome?.update(
+                bpm: bpm,
+                beatsPerBar: timeSignature.beatsPerBar,
+                sampleRate: engineManager?.currentSampleRate ?? 44100.0
+            )
+        }
     }
 
     private func syncFromTransport() {

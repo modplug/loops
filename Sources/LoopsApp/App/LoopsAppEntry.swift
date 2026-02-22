@@ -6,12 +6,16 @@ import LoopsEngine
 public struct LoopsRootView: View {
     @Bindable var viewModel: ProjectViewModel
     @Bindable var transportViewModel: TransportViewModel
+    let engineManager: AudioEngineManager?
+    var settingsViewModel: SettingsViewModel?
     @State private var timelineViewModel = TimelineViewModel()
     @State private var setlistViewModel: SetlistViewModel?
 
-    public init(viewModel: ProjectViewModel, transportViewModel: TransportViewModel) {
+    public init(viewModel: ProjectViewModel, transportViewModel: TransportViewModel, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
         self.viewModel = viewModel
         self.transportViewModel = transportViewModel
+        self.engineManager = engineManager
+        self.settingsViewModel = settingsViewModel
     }
 
     public var body: some View {
@@ -22,7 +26,10 @@ public struct LoopsRootView: View {
                 MainContentView(
                     projectViewModel: viewModel,
                     timelineViewModel: timelineViewModel,
-                    setlistViewModel: setlistViewModel
+                    transportViewModel: transportViewModel,
+                    setlistViewModel: setlistViewModel,
+                    engineManager: engineManager,
+                    settingsViewModel: settingsViewModel
                 )
             }
 
@@ -38,6 +45,12 @@ public struct LoopsRootView: View {
         }
         .onChange(of: transportViewModel.playheadBar) { _, newValue in
             timelineViewModel.playheadBar = newValue
+        }
+        .onAppear {
+            transportViewModel.songProvider = { [weak viewModel] in
+                guard let vm = viewModel, let song = vm.currentSong else { return nil }
+                return (song: song, recordings: vm.project.sourceRecordings, audioDir: vm.audioDirectory)
+            }
         }
         .sheet(isPresented: $viewModel.isExportSheetPresented) {
             ExportAudioView(viewModel: viewModel)
