@@ -313,8 +313,16 @@ struct ModelSerializationTests {
         #expect(container == decoded)
         #expect(decoded.onEnterActions.count == 1)
         #expect(decoded.onExitActions.count == 1)
-        #expect(decoded.onEnterActions[0].message == .programChange(channel: 0, program: 5))
-        #expect(decoded.onExitActions[0].message == .controlChange(channel: 0, controller: 64, value: 0))
+        if case .sendMIDI(_, let msg, _) = decoded.onEnterActions[0] {
+            #expect(msg == .programChange(channel: 0, program: 5))
+        } else {
+            Issue.record("Expected sendMIDI enter action")
+        }
+        if case .sendMIDI(_, let msg, _) = decoded.onExitActions[0] {
+            #expect(msg == .controlChange(channel: 0, controller: 64, value: 0))
+        } else {
+            Issue.record("Expected sendMIDI exit action")
+        }
     }
 
     @Test("Container without actions round-trips with empty arrays")
@@ -354,6 +362,104 @@ struct ModelSerializationTests {
             let decoded = try roundTrip(dest)
             #expect(dest == decoded)
         }
+    }
+
+    // MARK: - TriggerAction & triggerContainer
+
+    @Test("TriggerAction all cases round-trip")
+    func triggerActionAllCasesRoundTrip() throws {
+        let actions: [TriggerAction] = [.start, .stop, .armRecord, .disarmRecord]
+        for action in actions {
+            let decoded = try roundTrip(action)
+            #expect(action == decoded)
+        }
+    }
+
+    @Test("ContainerAction triggerContainer start round-trips")
+    func containerActionTriggerStartRoundTrip() throws {
+        let targetID = ID<Container>()
+        let action = ContainerAction.makeTriggerContainer(targetID: targetID, action: .start)
+        let decoded = try roundTrip(action)
+        #expect(action == decoded)
+        if case .triggerContainer(_, let decodedTarget, let decodedAction) = decoded {
+            #expect(decodedTarget == targetID)
+            #expect(decodedAction == .start)
+        } else {
+            Issue.record("Expected triggerContainer case")
+        }
+    }
+
+    @Test("ContainerAction triggerContainer stop round-trips")
+    func containerActionTriggerStopRoundTrip() throws {
+        let targetID = ID<Container>()
+        let action = ContainerAction.makeTriggerContainer(targetID: targetID, action: .stop)
+        let decoded = try roundTrip(action)
+        #expect(action == decoded)
+    }
+
+    @Test("ContainerAction triggerContainer armRecord round-trips")
+    func containerActionTriggerArmRoundTrip() throws {
+        let targetID = ID<Container>()
+        let action = ContainerAction.makeTriggerContainer(targetID: targetID, action: .armRecord)
+        let decoded = try roundTrip(action)
+        #expect(action == decoded)
+    }
+
+    @Test("ContainerAction triggerContainer disarmRecord round-trips")
+    func containerActionTriggerDisarmRoundTrip() throws {
+        let targetID = ID<Container>()
+        let action = ContainerAction.makeTriggerContainer(targetID: targetID, action: .disarmRecord)
+        let decoded = try roundTrip(action)
+        #expect(action == decoded)
+    }
+
+    @Test("Container with trigger actions round-trips")
+    func containerWithTriggerActionsRoundTrip() throws {
+        let targetID = ID<Container>()
+        let enterAction = ContainerAction.makeTriggerContainer(targetID: targetID, action: .start)
+        let exitAction = ContainerAction.makeTriggerContainer(targetID: targetID, action: .stop)
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            onEnterActions: [enterAction],
+            onExitActions: [exitAction]
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.onEnterActions.count == 1)
+        #expect(decoded.onExitActions.count == 1)
+        if case .triggerContainer(_, let t, let a) = decoded.onEnterActions[0] {
+            #expect(t == targetID)
+            #expect(a == .start)
+        } else {
+            Issue.record("Expected triggerContainer enter action")
+        }
+        if case .triggerContainer(_, let t, let a) = decoded.onExitActions[0] {
+            #expect(t == targetID)
+            #expect(a == .stop)
+        } else {
+            Issue.record("Expected triggerContainer exit action")
+        }
+    }
+
+    @Test("Container with mixed MIDI and trigger actions round-trips")
+    func containerMixedActionsRoundTrip() throws {
+        let targetID = ID<Container>()
+        let midiAction = ContainerAction.makeSendMIDI(
+            message: .programChange(channel: 0, program: 5),
+            destination: .externalPort(name: "MIDI Out")
+        )
+        let triggerAction = ContainerAction.makeTriggerContainer(targetID: targetID, action: .start)
+        let container = Container(
+            name: "Mixed",
+            startBar: 1,
+            lengthBars: 4,
+            onEnterActions: [midiAction, triggerAction]
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.onEnterActions.count == 2)
     }
 
     // MARK: - Track

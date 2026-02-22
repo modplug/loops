@@ -18,6 +18,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// Optional action dispatcher for container enter/exit MIDI actions.
     public var actionDispatcher: ActionDispatcher?
 
+    /// Callback when a container trigger sets record-armed state.
+    /// Parameters: containerID, armed.
+    public var onRecordArmedChanged: ((ID<Container>, Bool) -> Void)?
+
     /// Per-container audio subgraph.
     private struct ContainerSubgraph {
         let playerNode: AVAudioPlayerNode
@@ -34,6 +38,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
     /// Containers currently playing, for firing exit actions on stop.
     private var activeContainers: [Container] = []
+
+    /// Stored playback state for trigger-based scheduling.
+    private var currentSong: Song?
+    private var currentBPM: Double = 120.0
+    private var currentTimeSignature: TimeSignature = TimeSignature()
+    private var currentSampleRate: Double = 44100.0
 
     public init(engine: AVAudioEngine, audioDirURL: URL) {
         self.engine = engine
@@ -79,6 +89,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
         timeSignature: TimeSignature,
         sampleRate: Double
     ) {
+        // Store playback state for trigger-based scheduling
+        currentSong = song
+        currentBPM = bpm
+        currentTimeSignature = timeSignature
+        currentSampleRate = sampleRate
+
         let samplesPerBar = self.samplesPerBar(bpm: bpm, timeSignature: timeSignature, sampleRate: sampleRate)
 
         for track in song.tracks {
@@ -86,88 +102,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
             // Schedule each container that has a recording
             for container in track.containers {
-                guard let recordingID = container.sourceRecordingID,
-                      let audioFile = audioFiles[recordingID],
-                      let subgraph = containerSubgraphs[container.id] else { continue }
-
-                let containerStartSample = Int64(Double(container.startBar - 1) * samplesPerBar)
-                let containerEndSample = Int64(Double(container.endBar - 1) * samplesPerBar)
-                let playheadSample = Int64((fromBar - 1.0) * samplesPerBar)
-
-                // Skip containers that end before the playhead
-                if containerEndSample <= playheadSample { continue }
-
-                let startOffset: AVAudioFramePosition
-                let frameCount: AVAudioFrameCount
-
-                if playheadSample >= containerStartSample {
-                    // Playhead is inside this container
-                    startOffset = AVAudioFramePosition(playheadSample - containerStartSample)
-                    let remaining = containerEndSample - playheadSample
-                    let fileFrames = audioFile.length - startOffset
-                    frameCount = AVAudioFrameCount(min(remaining, fileFrames))
-                } else {
-                    // Container starts in the future
-                    startOffset = 0
-                    let containerLength = containerEndSample - containerStartSample
-                    let fileFrames = audioFile.length
-                    frameCount = AVAudioFrameCount(min(containerLength, fileFrames))
-                }
-
-                guard frameCount > 0 else { continue }
-
-                let hasFades = container.enterFade != nil || container.exitFade != nil
-
-                // For fill loop mode: schedule repeating segments
-                if container.loopSettings.loopCount == .fill {
-                    if hasFades {
-                        scheduleFadingLoopPlayback(
-                            player: subgraph.playerNode,
-                            audioFile: audioFile,
-                            containerStartSample: containerStartSample,
-                            containerEndSample: containerEndSample,
-                            playheadSample: playheadSample,
-                            samplesPerBar: samplesPerBar,
-                            enterFade: container.enterFade,
-                            exitFade: container.exitFade
-                        )
-                    } else {
-                        scheduleLoopingPlayback(
-                            player: subgraph.playerNode,
-                            audioFile: audioFile,
-                            containerStartSample: containerStartSample,
-                            containerEndSample: containerEndSample,
-                            playheadSample: playheadSample,
-                            samplesPerBar: samplesPerBar
-                        )
-                    }
-                } else {
-                    if hasFades {
-                        scheduleFadingPlayback(
-                            player: subgraph.playerNode,
-                            audioFile: audioFile,
-                            startOffset: startOffset,
-                            frameCount: frameCount,
-                            containerPosition: playheadSample >= containerStartSample
-                                ? playheadSample - containerStartSample : Int64(0),
-                            containerLengthSamples: containerEndSample - containerStartSample,
-                            samplesPerBar: samplesPerBar,
-                            enterFade: container.enterFade,
-                            exitFade: container.exitFade
-                        )
-                    } else {
-                        subgraph.playerNode.scheduleSegment(
-                            audioFile,
-                            startingFrame: startOffset,
-                            frameCount: frameCount,
-                            at: nil
-                        )
-                    }
-                }
-
-                subgraph.playerNode.play()
-                activeContainers.append(container)
-                actionDispatcher?.containerDidEnter(container)
+                scheduleContainer(
+                    container: container,
+                    fromBar: fromBar,
+                    samplesPerBar: samplesPerBar
+                )
             }
         }
     }
@@ -181,6 +120,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             actionDispatcher?.containerDidExit(container)
         }
         activeContainers.removeAll()
+        currentSong = nil
     }
 
     /// Cleans up all nodes and audio files.
@@ -208,6 +148,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         trackMixers.removeAll()
 
         audioFiles.removeAll()
+        currentSong = nil
     }
 
     /// Updates track mix parameters (volume, pan, mute).
@@ -218,6 +159,96 @@ public final class PlaybackScheduler: @unchecked Sendable {
     }
 
     // MARK: - Private
+
+    /// Schedules a single container for playback, handling fades and looping.
+    private func scheduleContainer(
+        container: Container,
+        fromBar: Double,
+        samplesPerBar: Double
+    ) {
+        guard let recordingID = container.sourceRecordingID,
+              let audioFile = audioFiles[recordingID],
+              let subgraph = containerSubgraphs[container.id] else { return }
+
+        let containerStartSample = Int64(Double(container.startBar - 1) * samplesPerBar)
+        let containerEndSample = Int64(Double(container.endBar - 1) * samplesPerBar)
+        let playheadSample = Int64((fromBar - 1.0) * samplesPerBar)
+
+        // Skip containers that end before the playhead
+        if containerEndSample <= playheadSample { return }
+
+        let startOffset: AVAudioFramePosition
+        let frameCount: AVAudioFrameCount
+
+        if playheadSample >= containerStartSample {
+            // Playhead is inside this container
+            startOffset = AVAudioFramePosition(playheadSample - containerStartSample)
+            let remaining = containerEndSample - playheadSample
+            let fileFrames = audioFile.length - startOffset
+            frameCount = AVAudioFrameCount(min(remaining, fileFrames))
+        } else {
+            // Container starts in the future
+            startOffset = 0
+            let containerLength = containerEndSample - containerStartSample
+            let fileFrames = audioFile.length
+            frameCount = AVAudioFrameCount(min(containerLength, fileFrames))
+        }
+
+        guard frameCount > 0 else { return }
+
+        let hasFades = container.enterFade != nil || container.exitFade != nil
+
+        // For fill loop mode: schedule repeating segments
+        if container.loopSettings.loopCount == .fill {
+            if hasFades {
+                scheduleFadingLoopPlayback(
+                    player: subgraph.playerNode,
+                    audioFile: audioFile,
+                    containerStartSample: containerStartSample,
+                    containerEndSample: containerEndSample,
+                    playheadSample: playheadSample,
+                    samplesPerBar: samplesPerBar,
+                    enterFade: container.enterFade,
+                    exitFade: container.exitFade
+                )
+            } else {
+                scheduleLoopingPlayback(
+                    player: subgraph.playerNode,
+                    audioFile: audioFile,
+                    containerStartSample: containerStartSample,
+                    containerEndSample: containerEndSample,
+                    playheadSample: playheadSample,
+                    samplesPerBar: samplesPerBar
+                )
+            }
+        } else {
+            if hasFades {
+                scheduleFadingPlayback(
+                    player: subgraph.playerNode,
+                    audioFile: audioFile,
+                    startOffset: startOffset,
+                    frameCount: frameCount,
+                    containerPosition: playheadSample >= containerStartSample
+                        ? playheadSample - containerStartSample : Int64(0),
+                    containerLengthSamples: containerEndSample - containerStartSample,
+                    samplesPerBar: samplesPerBar,
+                    enterFade: container.enterFade,
+                    exitFade: container.exitFade
+                )
+            } else {
+                subgraph.playerNode.scheduleSegment(
+                    audioFile,
+                    startingFrame: startOffset,
+                    frameCount: frameCount,
+                    at: nil
+                )
+            }
+        }
+
+        subgraph.playerNode.play()
+        activeContainers.append(container)
+        actionDispatcher?.containerDidEnter(container)
+    }
 
     /// Builds the per-container audio subgraph:
     /// `AVAudioPlayerNode → [Instrument Override] → [AU Effects (if not bypassed)] → trackMixer`
@@ -457,5 +488,39 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 }
             }
         }
+    }
+}
+
+// MARK: - ContainerTriggerDelegate
+
+extension PlaybackScheduler: ContainerTriggerDelegate {
+    public func triggerStart(containerID: ID<Container>) {
+        guard let song = currentSong else { return }
+        for track in song.tracks {
+            guard let container = track.containers.first(where: { $0.id == containerID }) else { continue }
+            // Skip if already active
+            guard !activeContainers.contains(where: { $0.id == containerID }) else { return }
+            let spb = samplesPerBar(bpm: currentBPM, timeSignature: currentTimeSignature, sampleRate: currentSampleRate)
+            scheduleContainer(
+                container: container,
+                fromBar: Double(container.startBar),
+                samplesPerBar: spb
+            )
+            return
+        }
+    }
+
+    public func triggerStop(containerID: ID<Container>) {
+        guard let subgraph = containerSubgraphs[containerID] else { return }
+        subgraph.playerNode.stop()
+        if let index = activeContainers.firstIndex(where: { $0.id == containerID }) {
+            let container = activeContainers[index]
+            actionDispatcher?.containerDidExit(container)
+            activeContainers.remove(at: index)
+        }
+    }
+
+    public func setRecordArmed(containerID: ID<Container>, armed: Bool) {
+        onRecordArmedChanged?(containerID, armed)
     }
 }

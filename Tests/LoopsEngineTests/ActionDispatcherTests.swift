@@ -199,6 +199,205 @@ struct ActionDispatcherTests {
     }
 }
 
+/// Mock trigger delegate that records all trigger calls for verification.
+final class MockTriggerDelegate: ContainerTriggerDelegate, @unchecked Sendable {
+    enum TriggerCall: Equatable {
+        case start(ID<Container>)
+        case stop(ID<Container>)
+        case setRecordArmed(ID<Container>, Bool)
+    }
+
+    var calls: [TriggerCall] = []
+
+    func triggerStart(containerID: ID<Container>) {
+        calls.append(.start(containerID))
+    }
+
+    func triggerStop(containerID: ID<Container>) {
+        calls.append(.stop(containerID))
+    }
+
+    func setRecordArmed(containerID: ID<Container>, armed: Bool) {
+        calls.append(.setRecordArmed(containerID, armed))
+    }
+}
+
+@Suite("ActionDispatcher Trigger Tests")
+struct ActionDispatcherTriggerTests {
+
+    @Test("Trigger start dispatches to delegate")
+    func triggerStartDispatches() {
+        let mock = MockMIDIOutput()
+        let triggerMock = MockTriggerDelegate()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.triggerDelegate = triggerMock
+
+        let targetID = ID<Container>()
+        let action = ContainerAction.makeTriggerContainer(targetID: targetID, action: .start)
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            onEnterActions: [action]
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(triggerMock.calls.count == 1)
+        #expect(triggerMock.calls[0] == .start(targetID))
+        #expect(mock.sentMessages.isEmpty)
+    }
+
+    @Test("Trigger stop dispatches to delegate")
+    func triggerStopDispatches() {
+        let mock = MockMIDIOutput()
+        let triggerMock = MockTriggerDelegate()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.triggerDelegate = triggerMock
+
+        let targetID = ID<Container>()
+        let action = ContainerAction.makeTriggerContainer(targetID: targetID, action: .stop)
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            onExitActions: [action]
+        )
+
+        dispatcher.containerDidExit(container)
+
+        #expect(triggerMock.calls.count == 1)
+        #expect(triggerMock.calls[0] == .stop(targetID))
+    }
+
+    @Test("Trigger armRecord dispatches to delegate")
+    func triggerArmRecordDispatches() {
+        let mock = MockMIDIOutput()
+        let triggerMock = MockTriggerDelegate()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.triggerDelegate = triggerMock
+
+        let targetID = ID<Container>()
+        let action = ContainerAction.makeTriggerContainer(targetID: targetID, action: .armRecord)
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            onEnterActions: [action]
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(triggerMock.calls.count == 1)
+        #expect(triggerMock.calls[0] == .setRecordArmed(targetID, true))
+    }
+
+    @Test("Trigger disarmRecord dispatches to delegate")
+    func triggerDisarmRecordDispatches() {
+        let mock = MockMIDIOutput()
+        let triggerMock = MockTriggerDelegate()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.triggerDelegate = triggerMock
+
+        let targetID = ID<Container>()
+        let action = ContainerAction.makeTriggerContainer(targetID: targetID, action: .disarmRecord)
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            onExitActions: [action]
+        )
+
+        dispatcher.containerDidExit(container)
+
+        #expect(triggerMock.calls.count == 1)
+        #expect(triggerMock.calls[0] == .setRecordArmed(targetID, false))
+    }
+
+    @Test("Trigger without delegate does nothing (graceful)")
+    func triggerWithoutDelegateIsGraceful() {
+        let mock = MockMIDIOutput()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        // No triggerDelegate set
+
+        let targetID = ID<Container>()
+        let action = ContainerAction.makeTriggerContainer(targetID: targetID, action: .start)
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            onEnterActions: [action]
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(mock.sentMessages.isEmpty)
+        // No crash = pass
+    }
+
+    @Test("Mixed MIDI and trigger actions fire correctly")
+    func mixedActionsFireCorrectly() {
+        let mock = MockMIDIOutput()
+        let triggerMock = MockTriggerDelegate()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.triggerDelegate = triggerMock
+
+        let targetID = ID<Container>()
+        let actions: [ContainerAction] = [
+            .makeSendMIDI(
+                message: .programChange(channel: 0, program: 5),
+                destination: .externalPort(name: "Out")
+            ),
+            .makeTriggerContainer(targetID: targetID, action: .start),
+            .makeSendMIDI(
+                message: .noteOn(channel: 0, note: 60, velocity: 127),
+                destination: .externalPort(name: "Out")
+            ),
+        ]
+        let container = Container(
+            name: "Bridge",
+            startBar: 1,
+            lengthBars: 4,
+            onEnterActions: actions
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(mock.sentMessages.count == 2)
+        #expect(mock.sentMessages[0].message == .programChange(channel: 0, program: 5))
+        #expect(mock.sentMessages[1].message == .noteOn(channel: 0, note: 60, velocity: 127))
+        #expect(triggerMock.calls.count == 1)
+        #expect(triggerMock.calls[0] == .start(targetID))
+    }
+
+    @Test("Multiple trigger actions fire in order")
+    func multipleTriggerActionsFireInOrder() {
+        let mock = MockMIDIOutput()
+        let triggerMock = MockTriggerDelegate()
+        let dispatcher = ActionDispatcher(midiOutput: mock)
+        dispatcher.triggerDelegate = triggerMock
+
+        let target1 = ID<Container>()
+        let target2 = ID<Container>()
+        let actions: [ContainerAction] = [
+            .makeTriggerContainer(targetID: target1, action: .start),
+            .makeTriggerContainer(targetID: target2, action: .armRecord),
+        ]
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            onEnterActions: actions
+        )
+
+        dispatcher.containerDidEnter(container)
+
+        #expect(triggerMock.calls.count == 2)
+        #expect(triggerMock.calls[0] == .start(target1))
+        #expect(triggerMock.calls[1] == .setRecordArmed(target2, true))
+    }
+}
+
 @Suite("MIDIActionMessage MIDI Bytes Tests")
 struct MIDIActionMessageBytesTests {
 

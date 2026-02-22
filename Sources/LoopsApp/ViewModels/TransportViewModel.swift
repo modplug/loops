@@ -53,7 +53,11 @@ public final class TransportViewModel {
             // Prepare and schedule audio playback with latest song data
             if let context = songProvider?() {
                 if playbackScheduler == nil {
-                    playbackScheduler = PlaybackScheduler(engine: engine.engine, audioDirURL: context.audioDir)
+                    let scheduler = PlaybackScheduler(engine: engine.engine, audioDirURL: context.audioDir)
+                    let dispatcher = ActionDispatcher(midiOutput: CoreMIDIOutput())
+                    dispatcher.triggerDelegate = scheduler
+                    scheduler.actionDispatcher = dispatcher
+                    playbackScheduler = scheduler
                 }
                 let scheduler = playbackScheduler
                 let bar = playheadBar

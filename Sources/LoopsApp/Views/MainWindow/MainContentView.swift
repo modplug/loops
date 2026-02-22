@@ -149,6 +149,7 @@ public struct MainContentView: View {
                     ContainerInspector(
                         container: container,
                         trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
+                        allContainers: projectViewModel.allContainersInCurrentSong,
                         onUpdateLoopSettings: { settings in
                             projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)
                         },

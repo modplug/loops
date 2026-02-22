@@ -6,6 +6,8 @@ import LoopsEngine
 public struct ContainerInspector: View {
     let container: Container
     let trackKind: TrackKind
+    /// All containers in the current song, used for trigger target picking.
+    let allContainers: [Container]
     var onUpdateLoopSettings: ((LoopSettings) -> Void)?
     var onUpdateName: ((String) -> Void)?
     var onAddEffect: ((InsertEffect) -> Void)?
@@ -41,6 +43,7 @@ public struct ContainerInspector: View {
     public init(
         container: Container,
         trackKind: TrackKind = .audio,
+        allContainers: [Container] = [],
         onUpdateLoopSettings: ((LoopSettings) -> Void)? = nil,
         onUpdateName: ((String) -> Void)? = nil,
         onAddEffect: ((InsertEffect) -> Void)? = nil,
@@ -57,6 +60,7 @@ public struct ContainerInspector: View {
     ) {
         self.container = container
         self.trackKind = trackKind
+        self.allContainers = allContainers
         self.onUpdateLoopSettings = onUpdateLoopSettings
         self.onUpdateName = onUpdateName
         self.onAddEffect = onAddEffect
@@ -291,6 +295,16 @@ public struct ContainerInspector: View {
         }
     }
 
+    /// Other containers in the song that can be targeted by trigger actions.
+    private var triggerTargets: [Container] {
+        allContainers.filter { $0.id != container.id }
+    }
+
+    /// Look up a container name by ID from allContainers.
+    private func containerName(for targetID: ID<Container>) -> String {
+        allContainers.first(where: { $0.id == targetID })?.name ?? "Unknown"
+    }
+
     @ViewBuilder
     private func actionListView(
         actions: [ContainerAction],
@@ -304,15 +318,7 @@ public struct ContainerInspector: View {
         } else {
             ForEach(actions) { action in
                 HStack {
-                    Image(systemName: "music.note")
-                        .foregroundStyle(.blue)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(action.message.summary)
-                            .font(.callout)
-                        Text(action.destination.summary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    actionRowView(action: action)
                     Spacer()
                     Button(role: .destructive) {
                         onRemove?(action.id)
@@ -371,6 +377,53 @@ public struct ContainerInspector: View {
             }
         }
         .font(.caption)
+        if !triggerTargets.isEmpty {
+            Menu("Add Trigger Action") {
+                ForEach(triggerTargets) { target in
+                    Menu(target.name) {
+                        Button("Start") {
+                            onAdd?(.makeTriggerContainer(targetID: target.id, action: .start))
+                        }
+                        Button("Stop") {
+                            onAdd?(.makeTriggerContainer(targetID: target.id, action: .stop))
+                        }
+                        Button("Arm Record") {
+                            onAdd?(.makeTriggerContainer(targetID: target.id, action: .armRecord))
+                        }
+                        Button("Disarm Record") {
+                            onAdd?(.makeTriggerContainer(targetID: target.id, action: .disarmRecord))
+                        }
+                    }
+                }
+            }
+            .font(.caption)
+        }
+    }
+
+    @ViewBuilder
+    private func actionRowView(action: ContainerAction) -> some View {
+        switch action {
+        case .sendMIDI(_, let message, let destination):
+            Image(systemName: "music.note")
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(message.summary)
+                    .font(.callout)
+                Text(destination.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .triggerContainer(_, let targetID, let triggerAction):
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(triggerAction.summary)
+                    .font(.callout)
+                Text(containerName(for: targetID))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private func loadFromContainer() {
@@ -480,6 +533,17 @@ extension MIDIDestination {
             return "→ \(name)"
         case .internalTrack(let trackID):
             return "→ Track \(trackID.rawValue.uuidString.prefix(8))"
+        }
+    }
+}
+
+extension TriggerAction {
+    var summary: String {
+        switch self {
+        case .start: return "Start"
+        case .stop: return "Stop"
+        case .armRecord: return "Arm Record"
+        case .disarmRecord: return "Disarm Record"
         }
     }
 }

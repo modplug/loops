@@ -16,28 +16,25 @@ public enum MIDIActionMessage: Codable, Equatable, Sendable {
     case noteOff(channel: UInt8, note: UInt8, velocity: UInt8)
 }
 
+/// What to do to a target container when a trigger fires.
+public enum TriggerAction: Codable, Equatable, Sendable, Hashable {
+    case start
+    case stop
+    case armRecord
+    case disarmRecord
+}
+
 /// An action that fires when a container enters or exits.
 public enum ContainerAction: Codable, Equatable, Sendable, Identifiable {
     case sendMIDI(id: ID<ContainerAction>, message: MIDIActionMessage, destination: MIDIDestination)
+    case triggerContainer(id: ID<ContainerAction>, targetID: ID<Container>, action: TriggerAction)
 
     public var id: ID<ContainerAction> {
         switch self {
         case .sendMIDI(let id, _, _):
             return id
-        }
-    }
-
-    public var message: MIDIActionMessage {
-        switch self {
-        case .sendMIDI(_, let message, _):
-            return message
-        }
-    }
-
-    public var destination: MIDIDestination {
-        switch self {
-        case .sendMIDI(_, _, let destination):
-            return destination
+        case .triggerContainer(let id, _, _):
+            return id
         }
     }
 
@@ -47,5 +44,13 @@ public enum ContainerAction: Codable, Equatable, Sendable, Identifiable {
         destination: MIDIDestination
     ) -> ContainerAction {
         .sendMIDI(id: ID(), message: message, destination: destination)
+    }
+
+    /// Creates a new triggerContainer action with an auto-generated ID.
+    public static func makeTriggerContainer(
+        targetID: ID<Container>,
+        action: TriggerAction
+    ) -> ContainerAction {
+        .triggerContainer(id: ID(), targetID: targetID, action: action)
     }
 }
