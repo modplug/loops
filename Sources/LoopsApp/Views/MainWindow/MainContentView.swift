@@ -339,7 +339,8 @@ public struct MainContentView: View {
             inputPortName: inputPortName(for: track.inputPortID),
             outputPortName: outputPortName(for: track.outputPortID),
             onMuteToggle: { projectViewModel.toggleMute(trackID: track.id) },
-            onSoloToggle: { projectViewModel.toggleSolo(trackID: track.id) }
+            onSoloToggle: { projectViewModel.toggleSolo(trackID: track.id) },
+            onRecordArmToggle: { projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed) }
         )
         .contextMenu {
             Button("Rename...") {

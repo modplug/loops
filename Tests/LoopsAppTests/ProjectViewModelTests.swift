@@ -112,6 +112,20 @@ struct ProjectViewModelTests {
         #expect(vm.project.songs[0].tracks[0].isSoloed)
     }
 
+    @Test("Set track record armed")
+    @MainActor
+    func setTrackRecordArmed() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(!vm.project.songs[0].tracks[0].isRecordArmed)
+        vm.setTrackRecordArmed(trackID: trackID, armed: true)
+        #expect(vm.project.songs[0].tracks[0].isRecordArmed)
+        vm.setTrackRecordArmed(trackID: trackID, armed: false)
+        #expect(!vm.project.songs[0].tracks[0].isRecordArmed)
+    }
+
     @Test("Current song returns first song")
     @MainActor
     func currentSong() {
@@ -518,6 +532,24 @@ struct ProjectViewModelTests {
 
         vm.undoManager?.undo()
         #expect(!vm.project.songs[0].tracks[0].isSoloed)
+    }
+
+    @Test("Undo set track record armed restores state")
+    @MainActor
+    func undoSetTrackRecordArmed() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackRecordArmed(trackID: trackID, armed: true)
+        #expect(vm.project.songs[0].tracks[0].isRecordArmed)
+
+        vm.undoManager?.undo()
+        #expect(!vm.project.songs[0].tracks[0].isRecordArmed)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].isRecordArmed)
     }
 
     @Test("Undo add container restores empty track")

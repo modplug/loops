@@ -12,6 +12,7 @@ public struct TrackHeaderView: View {
     var outputPortName: String?
     var onMuteToggle: (() -> Void)?
     var onSoloToggle: (() -> Void)?
+    var onRecordArmToggle: (() -> Void)?
 
     public init(
         track: Track,
@@ -19,7 +20,8 @@ public struct TrackHeaderView: View {
         inputPortName: String? = nil,
         outputPortName: String? = nil,
         onMuteToggle: (() -> Void)? = nil,
-        onSoloToggle: (() -> Void)? = nil
+        onSoloToggle: (() -> Void)? = nil,
+        onRecordArmToggle: (() -> Void)? = nil
     ) {
         self.track = track
         self.height = height
@@ -27,6 +29,7 @@ public struct TrackHeaderView: View {
         self.outputPortName = outputPortName
         self.onMuteToggle = onMuteToggle
         self.onSoloToggle = onSoloToggle
+        self.onRecordArmToggle = onRecordArmToggle
     }
 
     public var body: some View {
@@ -63,6 +66,18 @@ public struct TrackHeaderView: View {
                         .cornerRadius(3)
                 }
                 .buttonStyle(.plain)
+
+                Button(action: { onRecordArmToggle?() }) {
+                    Circle()
+                        .fill(track.isRecordArmed ? Color.red : Color.clear)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(track.isRecordArmed ? Color.red : Color.secondary, lineWidth: 1.5)
+                        )
+                        .frame(width: 14, height: 14)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 18, height: 18)
             }
 
             // I/O routing labels (audio tracks only)
@@ -92,7 +107,11 @@ public struct TrackHeaderView: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .frame(width: 160, height: height)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(
+            track.isRecordArmed
+                ? Color.red.opacity(0.1)
+                : Color(nsColor: .controlBackgroundColor)
+        )
         .overlay(
             Rectangle()
                 .frame(height: 0.5)

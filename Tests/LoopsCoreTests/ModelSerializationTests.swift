@@ -512,6 +512,42 @@ struct ModelSerializationTests {
         #expect(decoded.name == "Guitar")
     }
 
+    @Test("Track with isRecordArmed round-trips")
+    func trackRecordArmedRoundTrip() throws {
+        let track = Track(
+            name: "Vocals",
+            kind: .audio,
+            isRecordArmed: true,
+            orderIndex: 0
+        )
+        let decoded = try roundTrip(track)
+        #expect(track == decoded)
+        #expect(decoded.isRecordArmed == true)
+    }
+
+    @Test("Track decodes from legacy JSON without isRecordArmed")
+    func trackLegacyWithoutRecordArmed() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Bass",
+            "kind": "audio",
+            "volume": 1.0,
+            "pan": 0.0,
+            "isMuted": false,
+            "isSoloed": false,
+            "containers": [],
+            "insertEffects": [],
+            "sendLevels": [],
+            "orderIndex": 0
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Track.self, from: data)
+        #expect(decoded.isRecordArmed == false)
+        #expect(decoded.name == "Bass")
+    }
+
     @Test("TrackKind all cases round-trip")
     func trackKindRoundTrip() throws {
         for kind in TrackKind.allCases {

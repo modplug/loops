@@ -32,6 +32,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var inputPortID: String?
     /// Stable ID of the output port assigned to this track (nil = default).
     public var outputPortID: String?
+    public var isRecordArmed: Bool
     public var orderIndex: Int
 
     public init(
@@ -48,6 +49,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         instrumentComponent: AudioComponentInfo? = nil,
         inputPortID: String? = nil,
         outputPortID: String? = nil,
+        isRecordArmed: Bool = false,
         orderIndex: Int = 0
     ) {
         self.id = id
@@ -63,6 +65,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.instrumentComponent = instrumentComponent
         self.inputPortID = inputPortID
         self.outputPortID = outputPortID
+        self.isRecordArmed = isRecordArmed
         self.orderIndex = orderIndex
     }
 
@@ -73,6 +76,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         case containers, insertEffects, sendLevels
         case instrumentComponent
         case inputPortID, outputPortID
+        case isRecordArmed
         case orderIndex
         // Legacy key
         case inputDeviceUID
@@ -92,6 +96,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         sendLevels = try c.decode([SendLevel].self, forKey: .sendLevels)
         instrumentComponent = try c.decodeIfPresent(AudioComponentInfo.self, forKey: .instrumentComponent)
         outputPortID = try c.decodeIfPresent(String.self, forKey: .outputPortID)
+        isRecordArmed = try c.decodeIfPresent(Bool.self, forKey: .isRecordArmed) ?? false
         orderIndex = try c.decode(Int.self, forKey: .orderIndex)
 
         // Migrate legacy inputDeviceUID → inputPortID
@@ -119,6 +124,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(instrumentComponent, forKey: .instrumentComponent)
         try c.encodeIfPresent(inputPortID, forKey: .inputPortID)
         try c.encodeIfPresent(outputPortID, forKey: .outputPortID)
+        try c.encode(isRecordArmed, forKey: .isRecordArmed)
         try c.encode(orderIndex, forKey: .orderIndex)
     }
 }

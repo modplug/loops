@@ -188,6 +188,7 @@ public final class ProjectViewModel {
                     insertEffects: track.insertEffects,
                     sendLevels: track.sendLevels,
                     instrumentComponent: track.instrumentComponent,
+                    isRecordArmed: track.isRecordArmed,
                     orderIndex: track.orderIndex
                 )
             }
@@ -254,6 +255,16 @@ public final class ProjectViewModel {
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         registerUndo(actionName: "Toggle Solo")
         project.songs[currentSongIndex].tracks[index].isSoloed.toggle()
+        hasUnsavedChanges = true
+    }
+
+    /// Sets the record-arm state on a track.
+    public func setTrackRecordArmed(trackID: ID<Track>, armed: Bool) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard project.songs[currentSongIndex].tracks[index].isRecordArmed != armed else { return }
+        registerUndo(actionName: armed ? "Arm Track" : "Disarm Track")
+        project.songs[currentSongIndex].tracks[index].isRecordArmed = armed
         hasUnsavedChanges = true
     }
 
