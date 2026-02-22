@@ -139,6 +139,88 @@ struct MIDIDispatcherTests {
         dispatcher.dispatch(.noteOn(channel: 1, note: 48))
         #expect(triggered == .metronomeToggle)
     }
+
+    // MARK: - Concurrent Stress Tests
+
+    @Test("Concurrent dispatch vs updateMappings")
+    func concurrentDispatchVsUpdateMappings() async {
+        let dispatcher = MIDIDispatcher()
+        let triggers: [MIDITrigger] = (0..<20).map { .controlChange(channel: 0, controller: UInt8($0)) }
+        let mappings = triggers.map { MIDIMapping(control: .playPause, trigger: $0) }
+        dispatcher.updateMappings(mappings)
+
+        // Background: hammer dispatch (reads mappings dictionary)
+        let reader = Task.detached(priority: .high) {
+            for i in 0..<10000 {
+                let trigger = triggers[i % triggers.count]
+                dispatcher.dispatch(trigger)
+            }
+        }
+
+        // Foreground: repeatedly update mappings (writes mappings dictionary)
+        for _ in 0..<1000 {
+            dispatcher.updateMappings(mappings)
+        }
+
+        await reader.value
+    }
+
+    @Test("Concurrent dispatch with CC vs updateParameterMappings")
+    func concurrentDispatchCCVsUpdateParameterMappings() async {
+        let dispatcher = MIDIDispatcher()
+        let triggers: [MIDITrigger] = (0..<20).map { .controlChange(channel: 0, controller: UInt8($0)) }
+        let trackID = ID<Track>()
+        let paramMappings = triggers.map {
+            MIDIParameterMapping(
+                trigger: $0,
+                targetPath: EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 0),
+                minValue: 0.0,
+                maxValue: 1.0
+            )
+        }
+        dispatcher.updateParameterMappings(paramMappings)
+
+        // Background: hammer dispatch with CC values (reads parameterMappings dictionary)
+        let reader = Task.detached(priority: .high) {
+            for i in 0..<10000 {
+                let trigger = triggers[i % triggers.count]
+                dispatcher.dispatch(trigger, ccValue: UInt8(i % 128))
+            }
+        }
+
+        // Foreground: repeatedly update parameter mappings (writes parameterMappings dictionary)
+        for _ in 0..<1000 {
+            dispatcher.updateParameterMappings(paramMappings)
+        }
+
+        await reader.value
+    }
+
+    @Test("Concurrent dispatch vs isLearning toggle")
+    func concurrentDispatchVsLearningToggle() async {
+        let dispatcher = MIDIDispatcher()
+        let mappings = [
+            MIDIMapping(control: .playPause, trigger: .controlChange(channel: 0, controller: 64)),
+            MIDIMapping(control: .stop, trigger: .controlChange(channel: 0, controller: 65)),
+        ]
+        dispatcher.updateMappings(mappings)
+
+        // Background: hammer dispatch (reads isLearning + mappings)
+        let reader = Task.detached(priority: .high) {
+            for i in 0..<10000 {
+                dispatcher.dispatch(.controlChange(channel: 0, controller: UInt8(64 + (i % 2))))
+            }
+        }
+
+        // Foreground: toggle isLearning + update mappings
+        for _ in 0..<1000 {
+            dispatcher.isLearning = true
+            dispatcher.updateMappings(mappings)
+            dispatcher.isLearning = false
+        }
+
+        await reader.value
+    }
 }
 
 @Suite("MIDILearnController Tests")

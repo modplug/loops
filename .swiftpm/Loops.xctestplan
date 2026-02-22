@@ -1,0 +1,18 @@
+{
+  "configurations" : [
+    {
+      "id" : "B5B93CAD-01C1-4935-8BF9-2FE545DC2BC1",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+
+  ],
+  "version" : 1
+}

@@ -4,6 +4,7 @@ import LoopsCore
 
 /// Manages CoreMIDI client, input ports, and connects to all available sources.
 public final class MIDIManager: @unchecked Sendable {
+    private let lock = NSLock()
     private var client: MIDIClientRef = 0
     private var inputPort: MIDIPortRef = 0
     public private(set) var isActive: Bool = false
@@ -45,14 +46,17 @@ public final class MIDIManager: @unchecked Sendable {
             ._1_0,
             &inputPort
         ) { [weak self] eventList, srcConnRefCon in
+            guard let self else { return }
             let deviceID: String?
             if let refCon = srcConnRefCon {
                 let uniqueID = Int(bitPattern: refCon)
-                deviceID = self?.sourceRefToDeviceID[uniqueID]
+                self.lock.lock()
+                deviceID = self.sourceRefToDeviceID[uniqueID]
+                self.lock.unlock()
             } else {
                 deviceID = nil
             }
-            self?.handleEventList(eventList, deviceID: deviceID)
+            self.handleEventList(eventList, deviceID: deviceID)
         }
         guard status == noErr else {
             throw LoopsError.midiPortCreationFailed(status: status)
@@ -69,7 +73,9 @@ public final class MIDIManager: @unchecked Sendable {
         MIDIClientDispose(client)
         inputPort = 0
         client = 0
+        lock.lock()
         sourceRefToDeviceID.removeAll()
+        lock.unlock()
         isActive = false
     }
 
@@ -107,17 +113,20 @@ public final class MIDIManager: @unchecked Sendable {
     // MARK: - Private
 
     private func connectAllSources() {
-        sourceRefToDeviceID.removeAll()
         let count = MIDIGetNumberOfSources()
+        var newMapping: [Int: String] = [:]
         for i in 0..<count {
             let source = MIDIGetSource(i)
             var uniqueID: MIDIUniqueID = 0
             MIDIObjectGetIntegerProperty(source, kMIDIPropertyUniqueID, &uniqueID)
             let idInt = Int(uniqueID)
-            sourceRefToDeviceID[idInt] = String(uniqueID)
+            newMapping[idInt] = String(uniqueID)
             let refCon = UnsafeMutableRawPointer(bitPattern: idInt)
             MIDIPortConnectSource(inputPort, source, refCon)
         }
+        lock.lock()
+        sourceRefToDeviceID = newMapping
+        lock.unlock()
     }
 
     private func handleNotification(_ notification: UnsafePointer<MIDINotification>) {

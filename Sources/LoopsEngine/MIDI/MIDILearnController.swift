@@ -10,6 +10,7 @@ public enum MIDILearnTarget: Sendable {
 /// Manages the MIDI learn workflow: start learning for a control or parameter,
 /// receive a MIDI event, create the mapping.
 public final class MIDILearnController: @unchecked Sendable {
+    private let lock = NSLock()
     private let dispatcher: MIDIDispatcher
     public private(set) var learningControl: MappableControl?
     public private(set) var learningTarget: MIDILearnTarget?
@@ -29,27 +30,41 @@ public final class MIDILearnController: @unchecked Sendable {
 
     /// Starts learning mode for the specified transport control.
     public func startLearning(for control: MappableControl) {
+        lock.lock()
         learningControl = control
         learningTarget = .control(control)
+        lock.unlock()
         dispatcher.isLearning = true
     }
 
     /// Starts learning mode for a parameter target (effect path with value range).
     public func startParameterLearning(for targetPath: EffectPath, minValue: Float = 0.0, maxValue: Float = 1.0) {
+        lock.lock()
         learningControl = nil
         learningTarget = .parameter(targetPath, minValue: minValue, maxValue: maxValue)
+        lock.unlock()
         dispatcher.isLearning = true
     }
 
     /// Cancels learn mode without creating a mapping.
     public func cancelLearning() {
+        lock.lock()
         learningControl = nil
         learningTarget = nil
+        lock.unlock()
         dispatcher.isLearning = false
     }
 
     private func handleLearnedEvent(_ trigger: MIDITrigger) {
-        guard let target = learningTarget else { return }
+        lock.lock()
+        guard let target = learningTarget else {
+            lock.unlock()
+            return
+        }
+        learningControl = nil
+        learningTarget = nil
+        lock.unlock()
+        dispatcher.isLearning = false
 
         switch target {
         case .control(let control):
@@ -57,9 +72,6 @@ public final class MIDILearnController: @unchecked Sendable {
                 control: control,
                 trigger: trigger
             )
-            learningControl = nil
-            learningTarget = nil
-            dispatcher.isLearning = false
             onMappingLearned?(mapping)
 
         case .parameter(let path, let minValue, let maxValue):
@@ -69,9 +81,6 @@ public final class MIDILearnController: @unchecked Sendable {
                 minValue: minValue,
                 maxValue: maxValue
             )
-            learningControl = nil
-            learningTarget = nil
-            dispatcher.isLearning = false
             onParameterMappingLearned?(mapping)
         }
     }

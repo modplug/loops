@@ -6,13 +6,27 @@ import LoopsCore
 /// Sends MIDI messages via CoreMIDI to external destinations
 /// and via AUAudioUnit.scheduleMIDIEvent to internal AU instruments.
 public final class CoreMIDIOutput: @unchecked Sendable, MIDIOutput {
+    private let lock = NSLock()
     private var client: MIDIClientRef = 0
     private var outputPort: MIDIPortRef = 0
     private var isSetup = false
 
     /// Lookup for internal AU instrument nodes, keyed by track ID.
     /// Set by the PlaybackScheduler before playback starts.
-    public var trackInstrumentUnits: [ID<Track>: AVAudioUnit] = [:]
+    private var _trackInstrumentUnits: [ID<Track>: AVAudioUnit] = [:]
+    public var trackInstrumentUnits: [ID<Track>: AVAudioUnit] {
+        get {
+            lock.lock()
+            let units = _trackInstrumentUnits
+            lock.unlock()
+            return units
+        }
+        set {
+            lock.lock()
+            _trackInstrumentUnits = newValue
+            lock.unlock()
+        }
+    }
 
     public init() {}
 
@@ -48,7 +62,10 @@ public final class CoreMIDIOutput: @unchecked Sendable, MIDIOutput {
     }
 
     public func send(_ message: MIDIActionMessage, toTrack trackID: ID<Track>) {
-        guard let unit = trackInstrumentUnits[trackID] else { return }
+        lock.lock()
+        let unit = _trackInstrumentUnits[trackID]
+        lock.unlock()
+        guard let unit else { return }
         let bytes = message.midiBytes
         let auUnit = unit.auAudioUnit
         auUnit.scheduleMIDIEventBlock?(AUEventSampleTimeImmediate, 0, bytes.count, bytes)

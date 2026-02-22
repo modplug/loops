@@ -3,6 +3,7 @@ import LoopsCore
 
 /// Dispatches MIDI events to mapped controls, parameter mappings, or the learn controller.
 public final class MIDIDispatcher: @unchecked Sendable {
+    private let lock = NSLock()
     private var mappings: [MIDITrigger: MappableControl] = [:]
     private var parameterMappings: [MIDITrigger: [MIDIParameterMapping]] = [:]
 
@@ -22,18 +23,22 @@ public final class MIDIDispatcher: @unchecked Sendable {
 
     /// Updates the transport control mapping table.
     public func updateMappings(_ mappings: [MIDIMapping]) {
+        lock.lock()
         self.mappings.removeAll()
         for mapping in mappings {
             self.mappings[mapping.trigger] = mapping.control
         }
+        lock.unlock()
     }
 
     /// Updates the parameter mapping table.
     public func updateParameterMappings(_ mappings: [MIDIParameterMapping]) {
+        lock.lock()
         parameterMappings.removeAll()
         for mapping in mappings {
             parameterMappings[mapping.trigger, default: []].append(mapping)
         }
+        lock.unlock()
     }
 
     /// Processes a received MIDI trigger (without CC value — for note/button events).
@@ -43,7 +48,11 @@ public final class MIDIDispatcher: @unchecked Sendable {
             return
         }
 
-        if let control = mappings[trigger] {
+        lock.lock()
+        let control = mappings[trigger]
+        lock.unlock()
+
+        if let control {
             onControlTriggered?(control)
         }
     }
@@ -55,11 +64,16 @@ public final class MIDIDispatcher: @unchecked Sendable {
             return
         }
 
-        if let control = mappings[trigger] {
+        lock.lock()
+        let control = mappings[trigger]
+        let paramMappings = parameterMappings[trigger]
+        lock.unlock()
+
+        if let control {
             onControlTriggered?(control)
         }
 
-        if let paramMappings = parameterMappings[trigger] {
+        if let paramMappings {
             for mapping in paramMappings {
                 let scaled = mapping.scaledValue(ccValue: ccValue)
                 onParameterValue?(mapping.targetPath, scaled)
