@@ -332,4 +332,39 @@ struct TrackInspectorTests {
         vm.selectTrackByIndex(1)
         #expect(vm.selectedTrackID == vm.project.songs[0].tracks[1].id)
     }
+
+    // MARK: - Track Selection Single-Select Model
+
+    @Test("Selecting a different track deselects the previous one")
+    @MainActor
+    func selectDifferentTrackDeselectsPrevious() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        let track0 = vm.project.songs[0].tracks[0].id
+        let track1 = vm.project.songs[0].tracks[1].id
+
+        vm.selectedTrackID = track0
+        #expect(vm.selectedTrackID == track0)
+
+        vm.selectedTrackID = track1
+        #expect(vm.selectedTrackID == track1)
+        // Only one track selected at a time (single-select model)
+    }
+
+    @Test("Selecting a track sets selection and inspector shows track properties")
+    @MainActor
+    func selectTrackSetsSelectionAndInspector() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let track = vm.project.songs[0].tracks[0]
+
+        vm.selectedTrackID = track.id
+        #expect(vm.selectedTrackID == track.id)
+        #expect(vm.selectedTrack?.id == track.id)
+        #expect(vm.selectedTrack?.name == track.name)
+        #expect(vm.selectedContainerID == nil)
+    }
 }

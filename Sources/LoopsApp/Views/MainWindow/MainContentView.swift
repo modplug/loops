@@ -540,6 +540,7 @@ public struct MainContentView: View {
         MixerView(
             tracks: song.tracks,
             mixerViewModel: mixerViewModel ?? MixerViewModel(),
+            selectedTrackID: projectViewModel.selectedTrackID,
             onVolumeChange: { trackID, volume in
                 projectViewModel.setTrackVolume(trackID: trackID, volume: volume)
             },
@@ -566,6 +567,9 @@ public struct MainContentView: View {
                 if let track = song.tracks.first(where: { $0.id == trackID }) {
                     transportViewModel?.setInputMonitoring(track: track, enabled: monitoring)
                 }
+            },
+            onTrackSelect: { trackID in
+                projectViewModel.selectedTrackID = trackID
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -734,7 +738,7 @@ public struct MainContentView: View {
         let isExpanded = timelineViewModel.automationExpanded.contains(track.id)
         let laneLabels = automationLaneLabels(for: track)
         let perTrackHeight = timelineViewModel.trackHeight(for: track, baseHeight: 80)
-        let isSelected = timelineViewModel.selectedTrackIDs.contains(track.id)
+        let isSelected = projectViewModel.selectedTrackID == track.id
         return TrackHeaderView(
             track: track,
             height: perTrackHeight,

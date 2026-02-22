@@ -5,31 +5,37 @@ import LoopsCore
 public struct MixerView: View {
     let tracks: [Track]
     let mixerViewModel: MixerViewModel
+    var selectedTrackID: ID<Track>?
     var onVolumeChange: ((ID<Track>, Float) -> Void)?
     var onPanChange: ((ID<Track>, Float) -> Void)?
     var onMuteToggle: ((ID<Track>) -> Void)?
     var onSoloToggle: ((ID<Track>) -> Void)?
     var onRecordArmToggle: ((ID<Track>, Bool) -> Void)?
     var onMonitorToggle: ((ID<Track>, Bool) -> Void)?
+    var onTrackSelect: ((ID<Track>) -> Void)?
 
     public init(
         tracks: [Track],
         mixerViewModel: MixerViewModel,
+        selectedTrackID: ID<Track>? = nil,
         onVolumeChange: ((ID<Track>, Float) -> Void)? = nil,
         onPanChange: ((ID<Track>, Float) -> Void)? = nil,
         onMuteToggle: ((ID<Track>) -> Void)? = nil,
         onSoloToggle: ((ID<Track>) -> Void)? = nil,
         onRecordArmToggle: ((ID<Track>, Bool) -> Void)? = nil,
-        onMonitorToggle: ((ID<Track>, Bool) -> Void)? = nil
+        onMonitorToggle: ((ID<Track>, Bool) -> Void)? = nil,
+        onTrackSelect: ((ID<Track>) -> Void)? = nil
     ) {
         self.tracks = tracks
         self.mixerViewModel = mixerViewModel
+        self.selectedTrackID = selectedTrackID
         self.onVolumeChange = onVolumeChange
         self.onPanChange = onPanChange
         self.onMuteToggle = onMuteToggle
         self.onSoloToggle = onSoloToggle
         self.onRecordArmToggle = onRecordArmToggle
         self.onMonitorToggle = onMonitorToggle
+        self.onTrackSelect = onTrackSelect
     }
 
     private var regularTracks: [Track] {
@@ -71,6 +77,7 @@ public struct MixerView: View {
         MixerStripView(
             track: track,
             level: mixerViewModel.trackLevels[track.id] ?? 0.0,
+            isTrackSelected: selectedTrackID == track.id,
             onVolumeChange: { newVolume in
                 onVolumeChange?(track.id, newVolume)
             },
@@ -88,6 +95,9 @@ public struct MixerView: View {
             },
             onMonitorToggle: {
                 onMonitorToggle?(track.id, !track.isMonitoring)
+            },
+            onTrackSelect: {
+                onTrackSelect?(track.id)
             }
         )
     }

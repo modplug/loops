@@ -5,12 +5,14 @@ import LoopsCore
 public struct MixerStripView: View {
     let track: Track
     let level: Float
+    var isTrackSelected: Bool
     var onVolumeChange: ((Float) -> Void)?
     var onPanChange: ((Float) -> Void)?
     var onMuteToggle: (() -> Void)?
     var onSoloToggle: (() -> Void)?
     var onRecordArmToggle: (() -> Void)?
     var onMonitorToggle: (() -> Void)?
+    var onTrackSelect: (() -> Void)?
 
     @State private var volume: Float
     @State private var pan: Float
@@ -18,21 +20,25 @@ public struct MixerStripView: View {
     public init(
         track: Track,
         level: Float = 0.0,
+        isTrackSelected: Bool = false,
         onVolumeChange: ((Float) -> Void)? = nil,
         onPanChange: ((Float) -> Void)? = nil,
         onMuteToggle: (() -> Void)? = nil,
         onSoloToggle: (() -> Void)? = nil,
         onRecordArmToggle: (() -> Void)? = nil,
-        onMonitorToggle: (() -> Void)? = nil
+        onMonitorToggle: (() -> Void)? = nil,
+        onTrackSelect: (() -> Void)? = nil
     ) {
         self.track = track
         self.level = level
+        self.isTrackSelected = isTrackSelected
         self.onVolumeChange = onVolumeChange
         self.onPanChange = onPanChange
         self.onMuteToggle = onMuteToggle
         self.onSoloToggle = onSoloToggle
         self.onRecordArmToggle = onRecordArmToggle
         self.onMonitorToggle = onMonitorToggle
+        self.onTrackSelect = onTrackSelect
         _volume = State(initialValue: track.volume)
         _pan = State(initialValue: track.pan)
     }
@@ -120,12 +126,28 @@ public struct MixerStripView: View {
             }
         }
         .padding(6)
-        .background(isMaster ? Color(nsColor: .controlBackgroundColor).opacity(0.8) : Color(nsColor: .controlBackgroundColor))
+        .background(
+            isTrackSelected
+                ? Color.accentColor.opacity(0.15)
+                : isMaster
+                    ? Color(nsColor: .controlBackgroundColor).opacity(0.8)
+                    : Color(nsColor: .controlBackgroundColor)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 4)
-                .stroke(isMaster ? Color.gray.opacity(0.5) : Color.clear, lineWidth: 1)
+                .stroke(
+                    isTrackSelected
+                        ? Color.accentColor
+                        : isMaster
+                            ? Color.gray.opacity(0.5)
+                            : Color.clear,
+                    lineWidth: isTrackSelected ? 1.5 : 1
+                )
         )
         .cornerRadius(4)
+        .onTapGesture {
+            onTrackSelect?()
+        }
         .onChange(of: track.volume) { _, newValue in
             volume = newValue
         }
