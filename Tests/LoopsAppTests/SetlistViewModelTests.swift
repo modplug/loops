@@ -284,4 +284,113 @@ struct SetlistViewModelTests {
         #expect(vm.currentPerformEntry?.songID == projectVM.project.songs[1].id)
         #expect(vm.nextPerformEntry == nil)
     }
+
+    @Test("Selected setlist entry property")
+    @MainActor
+    func selectedSetlistEntry() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        let entryID = projectVM.project.setlists[0].entries[0].id
+
+        #expect(vm.selectedSetlistEntry == nil)
+
+        vm.selectedSetlistEntryID = entryID
+        #expect(vm.selectedSetlistEntry != nil)
+        #expect(vm.selectedSetlistEntry?.id == entryID)
+    }
+
+    @Test("Selected setlist entry nil when no setlist selected")
+    @MainActor
+    func selectedSetlistEntryNilWithoutSetlist() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.selectedSetlistEntryID = ID<SetlistEntry>()
+        #expect(vm.selectedSetlistEntry == nil)
+    }
+
+    @Test("Update fade in on entry")
+    @MainActor
+    func updateFadeIn() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        let entryID = projectVM.project.setlists[0].entries[0].id
+
+        #expect(projectVM.project.setlists[0].entries[0].fadeIn == nil)
+
+        let fade = FadeSettings(duration: 2.0, curve: .exponential)
+        vm.updateFadeIn(entryID: entryID, fadeIn: fade)
+        #expect(projectVM.project.setlists[0].entries[0].fadeIn == fade)
+        #expect(projectVM.hasUnsavedChanges)
+    }
+
+    @Test("Clear fade in on entry")
+    @MainActor
+    func clearFadeIn() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        let entryID = projectVM.project.setlists[0].entries[0].id
+
+        vm.updateFadeIn(entryID: entryID, fadeIn: FadeSettings(duration: 1.0, curve: .linear))
+        #expect(projectVM.project.setlists[0].entries[0].fadeIn != nil)
+
+        vm.updateFadeIn(entryID: entryID, fadeIn: nil)
+        #expect(projectVM.project.setlists[0].entries[0].fadeIn == nil)
+    }
+
+    @Test("Transition mode enum covers all cases")
+    @MainActor
+    func transitionModeAllCases() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        let entryID = projectVM.project.setlists[0].entries[0].id
+
+        // Manual advance (default)
+        #expect(projectVM.project.setlists[0].entries[0].transitionToNext == .manualAdvance)
+
+        // Seamless
+        vm.updateTransition(entryID: entryID, transition: .seamless)
+        #expect(projectVM.project.setlists[0].entries[0].transitionToNext == .seamless)
+
+        // Gap with duration
+        vm.updateTransition(entryID: entryID, transition: .gap(durationSeconds: 5.0))
+        #expect(projectVM.project.setlists[0].entries[0].transitionToNext == .gap(durationSeconds: 5.0))
+
+        // Manual advance again
+        vm.updateTransition(entryID: entryID, transition: .manualAdvance)
+        #expect(projectVM.project.setlists[0].entries[0].transitionToNext == .manualAdvance)
+    }
+
+    @Test("Update fade in with invalid entry ID is no-op")
+    @MainActor
+    func updateFadeInInvalidEntryID() {
+        let projectVM = ProjectViewModel()
+        projectVM.newProject()
+        let vm = SetlistViewModel(project: projectVM)
+
+        vm.createSetlist(name: "Test")
+        vm.addEntry(songID: projectVM.project.songs[0].id)
+        projectVM.hasUnsavedChanges = false
+
+        vm.updateFadeIn(entryID: ID<SetlistEntry>(), fadeIn: FadeSettings(duration: 1.0, curve: .linear))
+        // hasUnsavedChanges should still be false because no entry was modified
+        #expect(!projectVM.hasUnsavedChanges)
+    }
 }

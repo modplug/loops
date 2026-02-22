@@ -10,6 +10,9 @@ public final class SetlistViewModel {
     /// The currently selected setlist ID in the sidebar.
     public var selectedSetlistID: ID<Setlist>?
 
+    /// The currently selected setlist entry ID for inspector display.
+    public var selectedSetlistEntryID: ID<SetlistEntry>?
+
     /// Whether perform mode is active.
     public var isPerformMode: Bool = false
 
@@ -29,6 +32,13 @@ public final class SetlistViewModel {
     public var selectedSetlist: Setlist? {
         guard let id = selectedSetlistID else { return nil }
         return project.project.setlists.first(where: { $0.id == id })
+    }
+
+    /// The currently selected setlist entry, if any.
+    public var selectedSetlistEntry: SetlistEntry? {
+        guard let setlist = selectedSetlist,
+              let entryID = selectedSetlistEntryID else { return nil }
+        return setlist.entries.first(where: { $0.id == entryID })
     }
 
     /// Creates a new setlist.
@@ -90,6 +100,14 @@ public final class SetlistViewModel {
         guard let setlistIndex = selectedSetlistIndex else { return }
         guard let entryIndex = project.project.setlists[setlistIndex].entries.firstIndex(where: { $0.id == entryID }) else { return }
         project.project.setlists[setlistIndex].entries[entryIndex].transitionToNext = transition
+        project.hasUnsavedChanges = true
+    }
+
+    /// Updates the fade-in settings for a specific entry.
+    public func updateFadeIn(entryID: ID<SetlistEntry>, fadeIn: FadeSettings?) {
+        guard let setlistIndex = selectedSetlistIndex else { return }
+        guard let entryIndex = project.project.setlists[setlistIndex].entries.firstIndex(where: { $0.id == entryID }) else { return }
+        project.project.setlists[setlistIndex].entries[entryIndex].fadeIn = fadeIn
         project.hasUnsavedChanges = true
     }
 

@@ -736,6 +736,52 @@ struct ModelSerializationTests {
         #expect(setlist == decoded)
     }
 
+    @Test("SetlistEntry with fadeIn round-trips")
+    func setlistEntryWithFadeInRoundTrip() throws {
+        let songID = ID<Song>()
+        let entry = SetlistEntry(
+            songID: songID,
+            transitionToNext: .gap(durationSeconds: 3.0),
+            fadeIn: FadeSettings(duration: 2.0, curve: .sCurve)
+        )
+        let decoded = try roundTrip(entry)
+        #expect(entry == decoded)
+        #expect(decoded.fadeIn?.duration == 2.0)
+        #expect(decoded.fadeIn?.curve == .sCurve)
+    }
+
+    @Test("SetlistEntry without fadeIn backward compatible")
+    func setlistEntryWithoutFadeInBackwardCompat() throws {
+        // Simulate legacy JSON without fadeIn field
+        let songID = ID<Song>()
+        let entry = SetlistEntry(songID: songID, transitionToNext: .seamless)
+        let data = try encoder.encode(entry)
+        // Remove fadeIn from JSON to simulate old format
+        var json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        json.removeValue(forKey: "fadeIn")
+        let modifiedData = try JSONSerialization.data(withJSONObject: json)
+        let decoded = try decoder.decode(SetlistEntry.self, from: modifiedData)
+        #expect(decoded.fadeIn == nil)
+        #expect(decoded.songID == songID)
+        #expect(decoded.transitionToNext == .seamless)
+    }
+
+    @Test("SetlistEntry all transition modes with fadeIn round-trip")
+    func setlistEntryAllTransitionModesWithFadeIn() throws {
+        let songID = ID<Song>()
+        let fade = FadeSettings(duration: 4.0, curve: .exponential)
+        let entries = [
+            SetlistEntry(songID: songID, transitionToNext: .seamless, fadeIn: fade),
+            SetlistEntry(songID: songID, transitionToNext: .gap(durationSeconds: 5.0), fadeIn: fade),
+            SetlistEntry(songID: songID, transitionToNext: .manualAdvance, fadeIn: fade),
+        ]
+        for entry in entries {
+            let decoded = try roundTrip(entry)
+            #expect(entry == decoded)
+            #expect(decoded.fadeIn != nil)
+        }
+    }
+
     // MARK: - FadeSettings
 
     @Test("FadeSettings round-trips")

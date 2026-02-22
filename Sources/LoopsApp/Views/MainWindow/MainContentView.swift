@@ -662,6 +662,18 @@ public struct MainContentView: View {
             )
         } else if let track = projectViewModel.selectedTrack {
             trackInspectorContent(track: track)
+        } else if let setlistVM = setlistViewModel,
+                  let entry = setlistVM.selectedSetlistEntry {
+            SetlistEntryInspectorView(
+                entry: entry,
+                songName: setlistVM.songName(for: entry),
+                onUpdateTransition: { transition in
+                    setlistVM.updateTransition(entryID: entry.id, transition: transition)
+                },
+                onUpdateFadeIn: { fadeIn in
+                    setlistVM.updateFadeIn(entryID: entry.id, fadeIn: fadeIn)
+                }
+            )
         } else {
             Text("Select a container or track")
                 .foregroundStyle(.secondary)

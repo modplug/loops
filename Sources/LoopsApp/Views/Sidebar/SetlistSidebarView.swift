@@ -160,6 +160,7 @@ public struct SetlistEntryListView: View {
 
     @ViewBuilder
     private func entryRow(entry: SetlistEntry) -> some View {
+        let isSelected = viewModel.selectedSetlistEntryID == entry.id
         VStack(alignment: .leading, spacing: 2) {
             Text(viewModel.songName(for: entry))
                 .font(.body)
@@ -173,6 +174,9 @@ public struct SetlistEntryListView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
+        .contentShape(Rectangle())
+        .listRowBackground(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+        .onTapGesture { viewModel.selectedSetlistEntryID = entry.id }
         .contextMenu {
             Menu("Transition") {
                 Button("Seamless") {
