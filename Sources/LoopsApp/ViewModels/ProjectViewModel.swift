@@ -245,6 +245,7 @@ public final class ProjectViewModel {
                     midiInputChannel: track.midiInputChannel,
                     isRecordArmed: track.isRecordArmed,
                     isMonitoring: track.isMonitoring,
+                    trackAutomationLanes: track.trackAutomationLanes,
                     orderIndex: track.orderIndex
                 )
             },
@@ -953,6 +954,57 @@ public final class ProjectViewModel {
         }
     }
 
+    // MARK: - Track Automation Lanes
+
+    /// Adds an automation lane to a track (for volume/pan automation).
+    public func addTrackAutomationLane(trackID: ID<Track>, lane: AutomationLane) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Add Track Automation Lane")
+        project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.append(lane)
+        hasUnsavedChanges = true
+    }
+
+    /// Removes an automation lane from a track.
+    public func removeTrackAutomationLane(trackID: ID<Track>, laneID: ID<AutomationLane>) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Remove Track Automation Lane")
+        project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.removeAll { $0.id == laneID }
+        hasUnsavedChanges = true
+    }
+
+    /// Adds a breakpoint to a track-level automation lane.
+    public func addTrackAutomationBreakpoint(trackID: ID<Track>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.firstIndex(where: { $0.id == laneID }) else { return }
+        registerUndo(actionName: "Add Breakpoint")
+        project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints.append(breakpoint)
+        hasUnsavedChanges = true
+    }
+
+    /// Removes a breakpoint from a track-level automation lane.
+    public func removeTrackAutomationBreakpoint(trackID: ID<Track>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.firstIndex(where: { $0.id == laneID }) else { return }
+        registerUndo(actionName: "Remove Breakpoint")
+        project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints.removeAll { $0.id == breakpointID }
+        hasUnsavedChanges = true
+    }
+
+    /// Updates a breakpoint in a track-level automation lane.
+    public func updateTrackAutomationBreakpoint(trackID: ID<Track>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.firstIndex(where: { $0.id == laneID }) else { return }
+        guard let bpIndex = project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints.firstIndex(where: { $0.id == breakpoint.id }) else { return }
+        registerUndo(actionName: "Edit Breakpoint")
+        project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints[bpIndex] = breakpoint
+        hasUnsavedChanges = true
+    }
+
     /// Returns the selected container if one is selected.
     public var selectedContainer: Container? {
         guard let id = selectedContainerID, let song = currentSong else { return nil }
@@ -1259,6 +1311,7 @@ public final class ProjectViewModel {
             midiInputChannel: source.midiInputChannel,
             isRecordArmed: source.isRecordArmed,
             isMonitoring: source.isMonitoring,
+            trackAutomationLanes: source.trackAutomationLanes,
             orderIndex: project.songs[currentSongIndex].tracks.count
         )
         project.songs[currentSongIndex].tracks.insert(copy, at: trackIndex + 1)

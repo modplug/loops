@@ -781,6 +781,38 @@ public struct MainContentView: View {
                 }
             }
 
+            Divider()
+            Menu("Track Automation") {
+                let hasVolumeLane = track.trackAutomationLanes.contains { $0.targetPath.isTrackVolume }
+                let hasPanLane = track.trackAutomationLanes.contains { $0.targetPath.isTrackPan }
+                if !hasVolumeLane {
+                    Button("Add Volume Automation") {
+                        let lane = AutomationLane(targetPath: .trackVolume(trackID: track.id))
+                        projectViewModel.addTrackAutomationLane(trackID: track.id, lane: lane)
+                        timelineViewModel.automationExpanded.insert(track.id)
+                    }
+                } else {
+                    Button("Remove Volume Automation") {
+                        if let lane = track.trackAutomationLanes.first(where: { $0.targetPath.isTrackVolume }) {
+                            projectViewModel.removeTrackAutomationLane(trackID: track.id, laneID: lane.id)
+                        }
+                    }
+                }
+                if !hasPanLane {
+                    Button("Add Pan Automation") {
+                        let lane = AutomationLane(targetPath: .trackPan(trackID: track.id))
+                        projectViewModel.addTrackAutomationLane(trackID: track.id, lane: lane)
+                        timelineViewModel.automationExpanded.insert(track.id)
+                    }
+                } else {
+                    Button("Remove Pan Automation") {
+                        if let lane = track.trackAutomationLanes.first(where: { $0.targetPath.isTrackPan }) {
+                            projectViewModel.removeTrackAutomationLane(trackID: track.id, laneID: lane.id)
+                        }
+                    }
+                }
+            }
+
             if track.kind != .master {
                 Divider()
                 Button("Delete Track", role: .destructive) {
@@ -924,6 +956,12 @@ public struct MainContentView: View {
     func automationLaneLabels(for track: Track) -> [String] {
         var seen = Set<EffectPath>()
         var labels: [String] = []
+        // Track-level automation lanes first
+        for lane in track.trackAutomationLanes {
+            if seen.insert(lane.targetPath).inserted {
+                labels.append(automationPathLabel(lane.targetPath))
+            }
+        }
         for container in track.containers {
             for lane in container.automationLanes {
                 if seen.insert(lane.targetPath).inserted {
@@ -935,6 +973,8 @@ public struct MainContentView: View {
     }
 
     private func automationPathLabel(_ path: EffectPath) -> String {
+        if path.isTrackVolume { return "Volume" }
+        if path.isTrackPan { return "Pan" }
         let trackName = currentSong?.tracks.first(where: { $0.id == path.trackID })?.name ?? "?"
         if let containerID = path.containerID {
             let cName = currentSong?.tracks.flatMap(\.containers).first(where: { $0.id == containerID })?.name ?? "?"

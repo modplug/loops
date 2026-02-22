@@ -35,6 +35,9 @@ public struct TrackLaneView: View {
     var onUpdateBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onDeleteBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
     var onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)?
+    var onAddTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    var onUpdateTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    var onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
@@ -69,7 +72,10 @@ public struct TrackLaneView: View {
         onAddBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
         onUpdateBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
         onDeleteBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)? = nil,
-        onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)? = nil
+        onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)? = nil,
+        onAddTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
+        onUpdateTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
+        onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)? = nil
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
@@ -100,6 +106,9 @@ public struct TrackLaneView: View {
         self.onUpdateBreakpoint = onUpdateBreakpoint
         self.onDeleteBreakpoint = onDeleteBreakpoint
         self.onSelectBreakpoint = onSelectBreakpoint
+        self.onAddTrackBreakpoint = onAddTrackBreakpoint
+        self.onUpdateTrackBreakpoint = onUpdateTrackBreakpoint
+        self.onDeleteTrackBreakpoint = onDeleteTrackBreakpoint
     }
 
     private var baseHeight: CGFloat {
@@ -181,7 +190,11 @@ public struct TrackLaneView: View {
                         onAddBreakpoint: onAddBreakpoint,
                         onUpdateBreakpoint: onUpdateBreakpoint,
                         onDeleteBreakpoint: onDeleteBreakpoint,
-                        onSelectBreakpoint: onSelectBreakpoint
+                        onSelectBreakpoint: onSelectBreakpoint,
+                        trackAutomationLane: track.trackAutomationLanes.first(where: { $0.targetPath == targetPath }),
+                        onAddTrackBreakpoint: onAddTrackBreakpoint,
+                        onUpdateTrackBreakpoint: onUpdateTrackBreakpoint,
+                        onDeleteTrackBreakpoint: onDeleteTrackBreakpoint
                     )
                     .overlay(
                         Rectangle()

@@ -253,7 +253,7 @@ public struct TrackHeaderView: View {
     }
 
     private var hasAutomation: Bool {
-        track.containers.contains { !$0.automationLanes.isEmpty }
+        !track.trackAutomationLanes.isEmpty || track.containers.contains { !$0.automationLanes.isEmpty }
     }
 
     private var trackColor: Color {

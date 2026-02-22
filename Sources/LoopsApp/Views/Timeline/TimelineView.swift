@@ -135,6 +135,18 @@ public struct TimelineView: View {
                         },
                         onSelectBreakpoint: { bpID in
                             selectedBreakpointID = bpID
+                        },
+                        onAddTrackBreakpoint: { laneID, breakpoint in
+                            projectViewModel.addTrackAutomationBreakpoint(trackID: track.id, laneID: laneID, breakpoint: breakpoint)
+                        },
+                        onUpdateTrackBreakpoint: { laneID, breakpoint in
+                            projectViewModel.updateTrackAutomationBreakpoint(trackID: track.id, laneID: laneID, breakpoint: breakpoint)
+                        },
+                        onDeleteTrackBreakpoint: { laneID, breakpointID in
+                            projectViewModel.removeTrackAutomationBreakpoint(trackID: track.id, laneID: laneID, breakpointID: breakpointID)
+                            if selectedBreakpointID == breakpointID {
+                                selectedBreakpointID = nil
+                            }
                         }
                     )
                 }
@@ -191,6 +203,15 @@ public struct TimelineView: View {
 
     private func deleteSelectedBreakpoint(_ breakpointID: ID<AutomationBreakpoint>) {
         for track in song.tracks {
+            // Check track-level automation lanes
+            for lane in track.trackAutomationLanes {
+                if lane.breakpoints.contains(where: { $0.id == breakpointID }) {
+                    projectViewModel.removeTrackAutomationBreakpoint(trackID: track.id, laneID: lane.id, breakpointID: breakpointID)
+                    selectedBreakpointID = nil
+                    return
+                }
+            }
+            // Check container-level automation lanes
             for container in track.containers {
                 for lane in container.automationLanes {
                     if lane.breakpoints.contains(where: { $0.id == breakpointID }) {
@@ -203,10 +224,17 @@ public struct TimelineView: View {
         }
     }
 
-    /// Returns unique automation target paths across all containers in a track.
+    /// Returns unique automation target paths across track-level and container automation lanes.
     private func uniqueAutomationPaths(for track: Track) -> [EffectPath] {
         var seen = Set<EffectPath>()
         var result: [EffectPath] = []
+        // Track-level automation lanes first (volume, pan)
+        for lane in track.trackAutomationLanes {
+            if seen.insert(lane.targetPath).inserted {
+                result.append(lane.targetPath)
+            }
+        }
+        // Then container-level automation lanes
         for container in track.containers {
             for lane in container.automationLanes {
                 if seen.insert(lane.targetPath).inserted {

@@ -250,11 +250,15 @@ public final class OfflineRenderer {
             }
 
             for track in audibleTracks {
+                // Resolve track volume/pan (with automation if present)
+                let trackVolume = resolveTrackVolume(track: track, atFrame: mixOffset, samplesPerBar: spb)
+                let trackPan = resolveTrackPan(track: track, atFrame: mixOffset, samplesPerBar: spb)
+
                 if let trackBuf = processedTrackBuffers[track.id] {
                     mixProcessedTrackBuffer(
                         trackBuffer: trackBuf,
-                        volume: track.volume,
-                        pan: track.pan,
+                        volume: trackVolume,
+                        pan: trackPan,
                         into: chunk,
                         startFrame: mixOffset
                     )
@@ -264,7 +268,9 @@ public final class OfflineRenderer {
                         into: chunk,
                         startFrame: mixOffset,
                         samplesPerBar: spb,
-                        processedContainers: processedContainers
+                        processedContainers: processedContainers,
+                        trackVolume: trackVolume,
+                        trackPan: trackPan
                     )
                 }
             }
@@ -632,13 +638,15 @@ public final class OfflineRenderer {
         into output: AVAudioPCMBuffer,
         startFrame: AVAudioFrameCount,
         samplesPerBar: Double,
-        processedContainers: [ID<Container>: AVAudioPCMBuffer]
+        processedContainers: [ID<Container>: AVAudioPCMBuffer],
+        trackVolume: Float? = nil,
+        trackPan: Float? = nil
     ) {
         guard let outData = output.floatChannelData else { return }
         let outFrames = Int(output.frameLength)
 
-        let volume = track.volume
-        let pan = track.pan
+        let volume = trackVolume ?? track.volume
+        let pan = trackPan ?? track.pan
         let leftGain = volume * (pan <= 0 ? 1.0 : 1.0 - pan)
         let rightGain = volume * (pan >= 0 ? 1.0 : 1.0 + pan)
 
@@ -697,6 +705,30 @@ public final class OfflineRenderer {
             outData[0][i] += srcData[0][srcIdx] * leftGain
             outData[1][i] += srcData[1][srcIdx] * rightGain
         }
+    }
+
+    // MARK: - Track Automation Resolution
+
+    /// Resolves the track volume at the given frame offset, evaluating automation if present.
+    /// Automation value is normalized 0..1 and scaled to 0..2 (matching Track.volume range).
+    private func resolveTrackVolume(track: Track, atFrame frame: AVAudioFrameCount, samplesPerBar: Double) -> Float {
+        guard samplesPerBar > 0 else { return track.volume }
+        let volumeLane = track.trackAutomationLanes.first { $0.targetPath.isTrackVolume }
+        guard let lane = volumeLane else { return track.volume }
+        let barOffset = Double(frame) / samplesPerBar
+        guard let value = lane.interpolatedValue(atBar: barOffset) else { return track.volume }
+        return value * 2.0
+    }
+
+    /// Resolves the track pan at the given frame offset, evaluating automation if present.
+    /// Automation value is normalized 0..1 and mapped to -1..+1 (matching Track.pan range).
+    private func resolveTrackPan(track: Track, atFrame frame: AVAudioFrameCount, samplesPerBar: Double) -> Float {
+        guard samplesPerBar > 0 else { return track.pan }
+        let panLane = track.trackAutomationLanes.first { $0.targetPath.isTrackPan }
+        guard let lane = panLane else { return track.pan }
+        let barOffset = Double(frame) / samplesPerBar
+        guard let value = lane.interpolatedValue(atBar: barOffset) else { return track.pan }
+        return value * 2.0 - 1.0
     }
 
     // MARK: - Master Gain

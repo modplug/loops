@@ -123,9 +123,12 @@ public final class TimelineViewModel {
         return baseHeight + CGFloat(laneCount) * Self.automationSubLaneHeight
     }
 
-    /// Returns the number of unique automation lanes across all containers in a track.
+    /// Returns the number of unique automation lanes across all containers and track-level automation.
     public func automationLaneCount(for track: Track) -> Int {
         var paths = Set<EffectPath>()
+        for lane in track.trackAutomationLanes {
+            paths.insert(lane.targetPath)
+        }
         for container in track.containers {
             for lane in container.automationLanes {
                 paths.insert(lane.targetPath)

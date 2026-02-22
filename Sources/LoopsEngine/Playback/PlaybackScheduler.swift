@@ -619,7 +619,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let containersWithAutomation = allContainers
             .map { $0.resolved { id in allContainers.first(where: { $0.id == id }) } }
             .filter { !$0.automationLanes.isEmpty }
-        guard !containersWithAutomation.isEmpty else { return }
+
+        // Collect tracks with track-level automation
+        let tracksWithAutomation = song.tracks.filter { !$0.trackAutomationLanes.isEmpty }
+
+        guard !containersWithAutomation.isEmpty || !tracksWithAutomation.isEmpty else { return }
 
         playbackStartBar = fromBar
         playbackStartTime = Date()
@@ -627,6 +631,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let secondsPerBeat = 60.0 / bpm
         let beatsPerBar = Double(timeSignature.beatsPerBar)
         let secondsPerBar = beatsPerBar * secondsPerBeat
+
+        // Capture track mixers for track-level automation
+        let capturedTrackMixers = self.trackMixers
+        let capturedMasterMixer = self.masterMixerNode
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInteractive))
         // Evaluate at ~60 Hz (every ~16ms) for smooth parameter updates
@@ -636,6 +644,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             let elapsed = Date().timeIntervalSince(startTime)
             let currentBar = self.playbackStartBar + elapsed / secondsPerBar
 
+            // Evaluate container-level automation
             for container in containersWithAutomation {
                 let containerStartBar = Double(container.startBar)
                 let containerEndBar = Double(container.endBar)
@@ -647,6 +656,28 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 for lane in container.automationLanes {
                     if let value = lane.interpolatedValue(atBar: barOffset) {
                         self.setParameter(at: lane.targetPath, value: value)
+                    }
+                }
+            }
+
+            // Evaluate track-level automation (positions are 0-based from bar 1)
+            let absoluteBarOffset = currentBar - 1.0
+            for track in tracksWithAutomation {
+                for lane in track.trackAutomationLanes {
+                    guard let value = lane.interpolatedValue(atBar: absoluteBarOffset) else { continue }
+                    if lane.targetPath.isTrackVolume {
+                        if track.kind == .master {
+                            capturedMasterMixer?.volume = value * 2.0
+                        } else {
+                            capturedTrackMixers[track.id]?.volume = track.isMuted ? 0.0 : value * 2.0
+                        }
+                    } else if lane.targetPath.isTrackPan {
+                        let panValue = value * 2.0 - 1.0 // 0..1 → -1..+1
+                        if track.kind == .master {
+                            capturedMasterMixer?.pan = panValue
+                        } else {
+                            capturedTrackMixers[track.id]?.pan = panValue
+                        }
                     }
                 }
             }

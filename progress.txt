@@ -419,3 +419,33 @@
 - `LoopsRootView`: wired metronome config callbacks, bidirectional sync between Song and TransportViewModel
 - 30 new tests: MetronomeGenerator volume/clamping/enabled/subdivision/clicksPerBar, MetronomeConfig Codable round-trip/defaults/volume clamping/no-output-port, Song with/without metronomeConfig, subdivision timing (clicks per bar for all modes in 4/4, 3/4, 6/8), ProjectViewModel setMetronomeConfig/undo-redo/no-op/duplicateSong
 - All 462 tests pass
+
+### Iteration 6 — #77 Mixer view: track faders, pan, meters & master strip
+- `MixerView`: new main mixer panel with horizontal scroll for regular track strips, fixed master strip on right with divider
+- `MixerStripView`: enhanced with record arm button (red circle), monitor button (headphone icon), master track support (no arm/monitor, visual border differentiation), bidirectional volume/pan sync via `.onChange`
+- `MainContentView`: `ContentMode` enum (`.timeline`/`.mixer`) with segmented picker, extracted `mainSplitView`, `sidebarContent`, `centerContent`, `inspectorPanel` to fix type-checker complexity
+- `MainContentView`: `timelineContent(song:)` and `mixerContent(song:)` switch between views, Cmd+Shift+M keyboard shortcut toggles mode
+- `MixerView` wired to ProjectViewModel: volume/pan/mute/solo/record-arm/monitor callbacks
+- `AudioEngineManager`: master level metering via `installMasterLevelTap()` on mainMixerNode bus 0, `removeMasterLevelTap()` on stop, `peakLevel(from:)` static helper
+- `AudioEngineManager`: `onMasterLevelUpdate` callback for real-time level reporting to `MixerViewModel`
+- `LoopsAppEntry`: creates `MixerViewModel`, passes to `MainContentView`, wires master level tap on appear
+- `ProjectViewModel`: added `selectedContainerTrack` computed property (returns Track containing selected container), simplified `selectedContainerTrackKind` to use it
+- 14 new tests: setTrackVolume (basic, undo/redo, clamping 0.0–2.0), setTrackPan (basic, undo/redo, clamping -1.0–1.0), MixerViewModel (gainToDBString, dbToGain, updateLevel, updateMasterLevel), master track volume/pan, invalid track ID no-op
+- All 488 tests pass
+
+### Iteration 7 — #78 Track volume & pan automation on timeline
+- `EffectPath`: added `trackParameterEffectIndex` (-1), `volumeAddress` (0), `panAddress` (1) sentinels for built-in track parameters
+- `EffectPath`: `isTrackVolume`, `isTrackPan`, `isTrackParameter` computed properties; `trackVolume(trackID:)` and `trackPan(trackID:)` factory methods
+- `Track`: added `trackAutomationLanes: [AutomationLane]` for track-level automation (volume/pan), backward-compatible decoding (defaults to [])
+- `PlaybackScheduler`: automation timer now evaluates track-level automation lanes at ~60 Hz, applies interpolated volume (0..1 → 0..2) and pan (0..1 → -1..+1) to track mixer nodes
+- `OfflineRenderer`: mixing phase resolves track volume/pan automation per-chunk via `resolveTrackVolume`/`resolveTrackPan` helpers
+- `TimelineViewModel`: `automationLaneCount` includes track automation lanes
+- `TimelineView`: `uniqueAutomationPaths` includes track-level lanes first; `deleteSelectedBreakpoint` checks track lanes
+- `AutomationSubLaneView`: supports `trackAutomationLane` prop for full-timeline rendering via new `TrackAutomationSubLaneView`
+- `TrackLaneView`: passes track automation lane to sub-lane view, new `onAddTrackBreakpoint`/`onUpdateTrackBreakpoint`/`onDeleteTrackBreakpoint` callbacks
+- `TrackHeaderView`: `hasAutomation` checks track automation lanes
+- `MainContentView`: "Track Automation" context menu on track headers (Add/Remove Volume Automation, Add/Remove Pan Automation), `automationPathLabel` returns "Volume"/"Pan" for track parameters
+- `ProjectViewModel`: `addTrackAutomationLane`, `removeTrackAutomationLane`, `addTrackAutomationBreakpoint`, `removeTrackAutomationBreakpoint`, `updateTrackAutomationBreakpoint` — all with full undo/redo
+- `duplicateSong` and `duplicateTrack` copy `trackAutomationLanes`
+- 22 new tests: EffectPath sentinels (volume/pan creation, properties, Codable round-trip), Track Codable with/without trackAutomationLanes (backward compat), volume/pan interpolation, no automation nil, ProjectViewModel CRUD (add lane, remove lane, add/update/remove breakpoint), undo/redo (lane + breakpoint), TimelineViewModel lane count/height, duplicateSong/duplicateTrack copy, invalid ID no-op
+- All 510 tests pass

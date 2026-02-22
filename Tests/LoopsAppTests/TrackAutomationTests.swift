@@ -1,0 +1,405 @@
+import Testing
+import Foundation
+@testable import LoopsApp
+@testable import LoopsCore
+
+@Suite("Track Volume & Pan Automation Tests")
+struct TrackAutomationTests {
+
+    private let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return e
+    }()
+    private let decoder = JSONDecoder()
+
+    private func roundTrip<T: Codable & Equatable>(_ value: T) throws -> T {
+        let data = try encoder.encode(value)
+        return try decoder.decode(T.self, from: data)
+    }
+
+    // MARK: - EffectPath Track Parameter Sentinels
+
+    @Test("EffectPath trackVolume creates correct sentinel values")
+    func effectPathTrackVolume() {
+        let trackID = ID<Track>()
+        let path = EffectPath.trackVolume(trackID: trackID)
+        #expect(path.trackID == trackID)
+        #expect(path.containerID == nil)
+        #expect(path.effectIndex == EffectPath.trackParameterEffectIndex)
+        #expect(path.parameterAddress == EffectPath.volumeAddress)
+        #expect(path.isTrackVolume)
+        #expect(!path.isTrackPan)
+        #expect(path.isTrackParameter)
+    }
+
+    @Test("EffectPath trackPan creates correct sentinel values")
+    func effectPathTrackPan() {
+        let trackID = ID<Track>()
+        let path = EffectPath.trackPan(trackID: trackID)
+        #expect(path.trackID == trackID)
+        #expect(path.containerID == nil)
+        #expect(path.effectIndex == EffectPath.trackParameterEffectIndex)
+        #expect(path.parameterAddress == EffectPath.panAddress)
+        #expect(!path.isTrackVolume)
+        #expect(path.isTrackPan)
+        #expect(path.isTrackParameter)
+    }
+
+    @Test("EffectPath with volume address Codable round-trip")
+    func effectPathVolumeRoundTrip() throws {
+        let path = EffectPath.trackVolume(trackID: ID<Track>())
+        let decoded = try roundTrip(path)
+        #expect(path == decoded)
+        #expect(decoded.isTrackVolume)
+    }
+
+    @Test("EffectPath with pan address Codable round-trip")
+    func effectPathPanRoundTrip() throws {
+        let path = EffectPath.trackPan(trackID: ID<Track>())
+        let decoded = try roundTrip(path)
+        #expect(path == decoded)
+        #expect(decoded.isTrackPan)
+    }
+
+    @Test("Regular EffectPath is not a track parameter")
+    func regularEffectPathNotTrackParameter() {
+        let path = EffectPath(trackID: ID<Track>(), effectIndex: 0, parameterAddress: 42)
+        #expect(!path.isTrackVolume)
+        #expect(!path.isTrackPan)
+        #expect(!path.isTrackParameter)
+    }
+
+    // MARK: - Track Model with Automation Lanes
+
+    @Test("Track with trackAutomationLanes Codable round-trip")
+    func trackAutomationLanesRoundTrip() throws {
+        let trackID = ID<Track>()
+        let volumeLane = AutomationLane(
+            targetPath: .trackVolume(trackID: trackID),
+            breakpoints: [
+                AutomationBreakpoint(position: 0.0, value: 0.5),
+                AutomationBreakpoint(position: 4.0, value: 1.0)
+            ]
+        )
+        let panLane = AutomationLane(
+            targetPath: .trackPan(trackID: trackID),
+            breakpoints: [
+                AutomationBreakpoint(position: 0.0, value: 0.5),
+                AutomationBreakpoint(position: 8.0, value: 0.0)
+            ]
+        )
+        let track = Track(
+            id: trackID,
+            name: "Test",
+            kind: .audio,
+            trackAutomationLanes: [volumeLane, panLane],
+            orderIndex: 0
+        )
+        let decoded = try roundTrip(track)
+        #expect(decoded.trackAutomationLanes.count == 2)
+        #expect(decoded.trackAutomationLanes[0].targetPath.isTrackVolume)
+        #expect(decoded.trackAutomationLanes[1].targetPath.isTrackPan)
+        #expect(decoded.trackAutomationLanes[0].breakpoints.count == 2)
+        #expect(decoded.trackAutomationLanes[1].breakpoints.count == 2)
+    }
+
+    @Test("Track without trackAutomationLanes decodes with empty array (backward compat)")
+    func trackBackwardCompatDecode() throws {
+        // Encode a track as JSON manually without trackAutomationLanes key
+        let track = Track(name: "Old Track", kind: .audio, orderIndex: 0)
+        let data = try encoder.encode(track)
+        var json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        json.removeValue(forKey: "trackAutomationLanes")
+        let modifiedData = try JSONSerialization.data(withJSONObject: json)
+        let decoded = try decoder.decode(Track.self, from: modifiedData)
+        #expect(decoded.trackAutomationLanes.isEmpty)
+    }
+
+    // MARK: - Track Volume Automation Interpolation
+
+    @Test("Track volume automation interpolation at specific bar positions")
+    func trackVolumeAutomationInterpolation() {
+        let trackID = ID<Track>()
+        let lane = AutomationLane(
+            targetPath: .trackVolume(trackID: trackID),
+            breakpoints: [
+                AutomationBreakpoint(position: 0.0, value: 0.0),
+                AutomationBreakpoint(position: 4.0, value: 1.0)
+            ]
+        )
+
+        // At bar 0 (start) → 0.0
+        let v0 = lane.interpolatedValue(atBar: 0.0)
+        #expect(v0 != nil)
+        #expect(abs(v0! - 0.0) < 0.001)
+
+        // At bar 2 (midpoint) → 0.5
+        let v2 = lane.interpolatedValue(atBar: 2.0)
+        #expect(v2 != nil)
+        #expect(abs(v2! - 0.5) < 0.001)
+
+        // At bar 4 (end) → 1.0
+        let v4 = lane.interpolatedValue(atBar: 4.0)
+        #expect(v4 != nil)
+        #expect(abs(v4! - 1.0) < 0.001)
+
+        // At bar 1 (quarter) → 0.25
+        let v1 = lane.interpolatedValue(atBar: 1.0)
+        #expect(v1 != nil)
+        #expect(abs(v1! - 0.25) < 0.001)
+    }
+
+    @Test("Track pan automation interpolation")
+    func trackPanAutomationInterpolation() {
+        let trackID = ID<Track>()
+        let lane = AutomationLane(
+            targetPath: .trackPan(trackID: trackID),
+            breakpoints: [
+                AutomationBreakpoint(position: 0.0, value: 0.0),   // Full left (-1.0 when mapped)
+                AutomationBreakpoint(position: 8.0, value: 1.0)    // Full right (+1.0 when mapped)
+            ]
+        )
+
+        // At bar 4 (midpoint) → 0.5 normalized, which maps to 0.0 pan (center)
+        let v4 = lane.interpolatedValue(atBar: 4.0)
+        #expect(v4 != nil)
+        #expect(abs(v4! - 0.5) < 0.001)
+
+        // At bar 0 → 0.0 normalized (full left)
+        let v0 = lane.interpolatedValue(atBar: 0.0)
+        #expect(v0 != nil)
+        #expect(abs(v0! - 0.0) < 0.001)
+    }
+
+    @Test("No automation → nil value")
+    func noAutomationReturnsNil() {
+        let trackID = ID<Track>()
+        let lane = AutomationLane(
+            targetPath: .trackVolume(trackID: trackID),
+            breakpoints: []
+        )
+        #expect(lane.interpolatedValue(atBar: 2.0) == nil)
+    }
+
+    // MARK: - ProjectViewModel Track Automation CRUD
+
+    @Test("Add track automation lane")
+    @MainActor
+    func addTrackAutomationLane() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let lane = AutomationLane(targetPath: .trackVolume(trackID: trackID))
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.count == 1)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].targetPath.isTrackVolume)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Remove track automation lane")
+    @MainActor
+    func removeTrackAutomationLane() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let lane = AutomationLane(targetPath: .trackVolume(trackID: trackID))
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.count == 1)
+        vm.removeTrackAutomationLane(trackID: trackID, laneID: lane.id)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.isEmpty)
+    }
+
+    @Test("Add breakpoint to track automation lane")
+    @MainActor
+    func addTrackBreakpoint() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let lane = AutomationLane(targetPath: .trackVolume(trackID: trackID))
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        let bp = AutomationBreakpoint(position: 2.0, value: 0.7)
+        vm.addTrackAutomationBreakpoint(trackID: trackID, laneID: lane.id, breakpoint: bp)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].breakpoints.count == 1)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].breakpoints[0].value == 0.7)
+    }
+
+    @Test("Update breakpoint in track automation lane")
+    @MainActor
+    func updateTrackBreakpoint() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let lane = AutomationLane(targetPath: .trackVolume(trackID: trackID))
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        let bp = AutomationBreakpoint(position: 2.0, value: 0.5)
+        vm.addTrackAutomationBreakpoint(trackID: trackID, laneID: lane.id, breakpoint: bp)
+        var updated = bp
+        updated.value = 0.8
+        updated.position = 3.0
+        vm.updateTrackAutomationBreakpoint(trackID: trackID, laneID: lane.id, breakpoint: updated)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].breakpoints[0].value == 0.8)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].breakpoints[0].position == 3.0)
+    }
+
+    @Test("Remove breakpoint from track automation lane")
+    @MainActor
+    func removeTrackBreakpoint() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let lane = AutomationLane(targetPath: .trackVolume(trackID: trackID))
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        let bp = AutomationBreakpoint(position: 2.0, value: 0.5)
+        vm.addTrackAutomationBreakpoint(trackID: trackID, laneID: lane.id, breakpoint: bp)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].breakpoints.count == 1)
+        vm.removeTrackAutomationBreakpoint(trackID: trackID, laneID: lane.id, breakpointID: bp.id)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].breakpoints.isEmpty)
+    }
+
+    @Test("Track automation undo/redo for add lane")
+    @MainActor
+    func trackAutomationUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let lane = AutomationLane(targetPath: .trackVolume(trackID: trackID))
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.count == 1)
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.isEmpty)
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.count == 1)
+    }
+
+    @Test("Track automation undo/redo for add breakpoint")
+    @MainActor
+    func trackBreakpointUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let lane = AutomationLane(targetPath: .trackVolume(trackID: trackID))
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        let bp = AutomationBreakpoint(position: 2.0, value: 0.5)
+        vm.addTrackAutomationBreakpoint(trackID: trackID, laneID: lane.id, breakpoint: bp)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].breakpoints.count == 1)
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].breakpoints.isEmpty)
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].breakpoints.count == 1)
+    }
+
+    // MARK: - TimelineViewModel Integration
+
+    @Test("TimelineViewModel lane count includes track automation lanes")
+    @MainActor
+    func timelineViewModelLaneCountIncludesTrackAutomation() {
+        let vm = TimelineViewModel()
+        let trackID = ID<Track>()
+        let containerEffectPath = EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 42)
+        let containerLane = AutomationLane(targetPath: containerEffectPath)
+        let container = Container(name: "C1", startBar: 1, lengthBars: 4, automationLanes: [containerLane])
+        let volumeLane = AutomationLane(targetPath: .trackVolume(trackID: trackID))
+        let track = Track(
+            id: trackID,
+            name: "T1",
+            kind: .audio,
+            containers: [container],
+            trackAutomationLanes: [volumeLane]
+        )
+
+        let count = vm.automationLaneCount(for: track)
+        #expect(count == 2) // 1 container lane + 1 track volume lane
+    }
+
+    @Test("TimelineViewModel track height includes track automation sub-lanes")
+    @MainActor
+    func timelineViewModelTrackHeightWithTrackAutomation() {
+        let vm = TimelineViewModel()
+        let trackID = ID<Track>()
+        let volumeLane = AutomationLane(targetPath: .trackVolume(trackID: trackID))
+        let panLane = AutomationLane(targetPath: .trackPan(trackID: trackID))
+        let track = Track(
+            id: trackID,
+            name: "T1",
+            kind: .audio,
+            trackAutomationLanes: [volumeLane, panLane]
+        )
+
+        let baseHeight: CGFloat = 80
+
+        // Not expanded → base height
+        let h1 = vm.trackHeight(for: track, baseHeight: baseHeight)
+        #expect(h1 == baseHeight)
+
+        // Expanded → base + 2 sub-lane heights (volume + pan)
+        vm.automationExpanded.insert(track.id)
+        let h2 = vm.trackHeight(for: track, baseHeight: baseHeight)
+        #expect(h2 == baseHeight + 2 * TimelineViewModel.automationSubLaneHeight)
+    }
+
+    // MARK: - DuplicateSong copies track automation
+
+    @Test("DuplicateSong copies trackAutomationLanes")
+    @MainActor
+    func duplicateSongCopiesTrackAutomation() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let lane = AutomationLane(
+            targetPath: .trackVolume(trackID: trackID),
+            breakpoints: [AutomationBreakpoint(position: 0.0, value: 0.5)]
+        )
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        let songID = vm.project.songs[0].id
+        vm.duplicateSong(id: songID)
+        #expect(vm.project.songs.count == 2)
+        let copiedTrack = vm.project.songs[1].tracks[0]
+        #expect(copiedTrack.trackAutomationLanes.count == 1)
+        #expect(copiedTrack.trackAutomationLanes[0].breakpoints.count == 1)
+    }
+
+    @Test("DuplicateTrack copies trackAutomationLanes")
+    @MainActor
+    func duplicateTrackCopiesTrackAutomation() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let lane = AutomationLane(
+            targetPath: .trackVolume(trackID: trackID),
+            breakpoints: [AutomationBreakpoint(position: 0.0, value: 0.7)]
+        )
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        let newID = vm.duplicateTrack(trackID: trackID)
+        #expect(newID != nil)
+        let copiedTrack = vm.project.songs[0].tracks.first(where: { $0.id == newID })
+        #expect(copiedTrack != nil)
+        #expect(copiedTrack!.trackAutomationLanes.count == 1)
+        #expect(copiedTrack!.trackAutomationLanes[0].breakpoints[0].value == 0.7)
+    }
+
+    @Test("Invalid track ID does not crash for track automation operations")
+    @MainActor
+    func invalidTrackIDNoOp() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let fakeTrackID = ID<Track>()
+        let lane = AutomationLane(targetPath: .trackVolume(trackID: fakeTrackID))
+        vm.addTrackAutomationLane(trackID: fakeTrackID, lane: lane)
+        // Should not crash, just no-op
+        vm.removeTrackAutomationLane(trackID: fakeTrackID, laneID: lane.id)
+        let bp = AutomationBreakpoint(position: 0, value: 0.5)
+        vm.addTrackAutomationBreakpoint(trackID: fakeTrackID, laneID: lane.id, breakpoint: bp)
+        vm.removeTrackAutomationBreakpoint(trackID: fakeTrackID, laneID: lane.id, breakpointID: bp.id)
+        vm.updateTrackAutomationBreakpoint(trackID: fakeTrackID, laneID: lane.id, breakpoint: bp)
+    }
+}

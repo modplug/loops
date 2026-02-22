@@ -46,6 +46,9 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var isMonitoring: Bool
     /// Whether the track-level effect chain is bypassed (audio routes directly to output).
     public var isEffectChainBypassed: Bool
+    /// Track-level automation lanes (volume, pan, or track-level effect parameters).
+    /// Breakpoint positions are in absolute bars (0-based from bar 1).
+    public var trackAutomationLanes: [AutomationLane]
     public var orderIndex: Int
 
     public init(
@@ -67,6 +70,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         isRecordArmed: Bool = false,
         isMonitoring: Bool = false,
         isEffectChainBypassed: Bool = false,
+        trackAutomationLanes: [AutomationLane] = [],
         orderIndex: Int = 0
     ) {
         self.id = id
@@ -87,6 +91,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.isRecordArmed = isRecordArmed
         self.isMonitoring = isMonitoring
         self.isEffectChainBypassed = isEffectChainBypassed
+        self.trackAutomationLanes = trackAutomationLanes
         self.orderIndex = orderIndex
     }
 
@@ -101,6 +106,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         case isRecordArmed
         case isMonitoring
         case isEffectChainBypassed
+        case trackAutomationLanes
         case orderIndex
         // Legacy key
         case inputDeviceUID
@@ -125,6 +131,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         isRecordArmed = try c.decodeIfPresent(Bool.self, forKey: .isRecordArmed) ?? false
         isMonitoring = try c.decodeIfPresent(Bool.self, forKey: .isMonitoring) ?? false
         isEffectChainBypassed = try c.decodeIfPresent(Bool.self, forKey: .isEffectChainBypassed) ?? false
+        trackAutomationLanes = try c.decodeIfPresent([AutomationLane].self, forKey: .trackAutomationLanes) ?? []
         orderIndex = try c.decode(Int.self, forKey: .orderIndex)
 
         // Migrate legacy inputDeviceUID → inputPortID
@@ -157,6 +164,9 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         try c.encode(isRecordArmed, forKey: .isRecordArmed)
         try c.encode(isMonitoring, forKey: .isMonitoring)
         try c.encode(isEffectChainBypassed, forKey: .isEffectChainBypassed)
+        if !trackAutomationLanes.isEmpty {
+            try c.encode(trackAutomationLanes, forKey: .trackAutomationLanes)
+        }
         try c.encode(orderIndex, forKey: .orderIndex)
     }
 }
