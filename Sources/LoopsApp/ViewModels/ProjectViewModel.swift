@@ -678,6 +678,22 @@ public final class ProjectViewModel {
         }
     }
 
+    /// Updates the preset data for an insert effect within a container.
+    public func updateContainerEffectPreset(containerID: ID<Container>, effectID: ID<InsertEffect>, presetData: Data?) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                if let effectIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.firstIndex(where: { $0.id == effectID }) {
+                    registerUndo(actionName: "Update Effect Preset")
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[effectIndex].presetData = presetData
+                    markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
+                    hasUnsavedChanges = true
+                    return
+                }
+            }
+        }
+    }
+
     // MARK: - Container Instrument Override
 
     /// Sets or clears the instrument override on a container.
@@ -862,15 +878,16 @@ public final class ProjectViewModel {
         }
     }
 
+    /// Returns the track containing the selected container (single search for both).
+    public var selectedContainerTrack: Track? {
+        guard let id = selectedContainerID, let song = currentSong else { return nil }
+        return song.tracks.first { $0.containers.contains(where: { $0.id == id }) }
+    }
+
     /// Returns the selected container if one is selected.
     public var selectedContainer: Container? {
-        guard let id = selectedContainerID, let song = currentSong else { return nil }
-        for track in song.tracks {
-            if let container = track.containers.first(where: { $0.id == id }) {
-                return container
-            }
-        }
-        return nil
+        guard let id = selectedContainerID else { return nil }
+        return selectedContainerTrack?.containers.first(where: { $0.id == id })
     }
 
     /// Returns all containers in the current song (across all tracks).
@@ -887,13 +904,7 @@ public final class ProjectViewModel {
 
     /// Returns the track kind of the track containing the selected container.
     public var selectedContainerTrackKind: TrackKind? {
-        guard let id = selectedContainerID, let song = currentSong else { return nil }
-        for track in song.tracks {
-            if track.containers.contains(where: { $0.id == id }) {
-                return track.kind
-            }
-        }
-        return nil
+        selectedContainerTrack?.kind
     }
 
     // MARK: - Container Clone Management

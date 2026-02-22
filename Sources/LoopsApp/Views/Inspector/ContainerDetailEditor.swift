@@ -14,6 +14,7 @@ enum ContainerDetailTab: String, CaseIterable {
 struct ContainerDetailEditor: View {
     let container: Container
     let trackKind: TrackKind
+    let containerTrack: Track
     let allContainers: [Container]
     let allTracks: [Track]
 
@@ -42,11 +43,18 @@ struct ContainerDetailEditor: View {
     var onSetEnterFade: ((FadeSettings?) -> Void)?
     var onSetExitFade: ((FadeSettings?) -> Void)?
 
+    // Preset callback
+    var onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)?
+
     var onDismiss: (() -> Void)?
 
     @State private var selectedTab: ContainerDetailTab = .effects
     @State private var availableEffects: [AudioUnitInfo] = []
     @State private var availableInstruments: [AudioUnitInfo] = []
+    @State private var showingPluginUI: InsertEffect?
+    @State private var showingInstrumentUI = false
+    @State private var pendingAutomationLane: PendingEffectSelection?
+    @State private var pendingParameterAction: PendingEffectSelection?
     @State private var enterFadeEnabled: Bool = false
     @State private var enterFadeDuration: Double = 1.0
     @State private var enterFadeCurve: CurveType = .linear
@@ -93,12 +101,62 @@ struct ContainerDetailEditor: View {
         .frame(minWidth: 500, idealWidth: 600, minHeight: 400, idealHeight: 500)
         .onAppear {
             loadFadeState()
-            availableEffects = AudioUnitDiscovery().effects()
-            if trackKind == .midi {
-                availableInstruments = AudioUnitDiscovery().instruments()
+        }
+        .task {
+            let discovery = AudioUnitDiscovery()
+            let effects = await Task.detached { discovery.effects() }.value
+            let instruments = trackKind == .midi
+                ? await Task.detached { discovery.instruments() }.value
+                : []
+            availableEffects = effects
+            availableInstruments = instruments
+        }
+        .sheet(item: $showingPluginUI) { effect in
+            AudioUnitPluginView(
+                component: effect.component,
+                displayName: effect.displayName,
+                presetData: effect.presetData,
+                onPresetChanged: { data in
+                    onUpdateEffectPreset?(effect.id, data)
+                },
+                onDismiss: { showingPluginUI = nil }
+            )
+        }
+        .sheet(isPresented: $showingInstrumentUI) {
+            if let override = container.instrumentOverride {
+                let name = availableInstruments.first(where: { $0.componentInfo == override })?.name ?? "Instrument"
+                AudioUnitPluginView(
+                    component: override,
+                    displayName: name,
+                    presetData: nil,
+                    onDismiss: { showingInstrumentUI = false }
+                )
             }
         }
+        .sheet(item: $pendingAutomationLane) { pending in
+            ParameterPickerView(
+                pending: pending,
+                onPick: { path in
+                    onAddAutomationLane?(AutomationLane(targetPath: path))
+                    pendingAutomationLane = nil
+                },
+                onCancel: { pendingAutomationLane = nil }
+            )
+        }
+        .sheet(item: $pendingParameterAction) { pending in
+            ParameterPickerView(
+                pending: pending,
+                onPick: { path in
+                    pendingParameterActionCallback?(path)
+                    pendingParameterAction = nil
+                },
+                onCancel: { pendingParameterAction = nil }
+            )
+        }
     }
+
+    /// Stores the callback for the pending parameter action pick.
+    @State private var pendingParameterActionCallback: ((EffectPath) -> Void)?
 
     // MARK: - Effects Tab
 
@@ -111,34 +169,36 @@ struct ContainerDetailEditor: View {
                         .foregroundStyle(.secondary)
                         .font(.callout)
                 } else {
-                    List {
-                        ForEach(sortedEffects) { effect in
-                            HStack {
-                                Circle()
-                                    .fill(effect.isBypassed ? Color.gray : Color.green)
-                                    .frame(width: 8, height: 8)
-                                Text(effect.displayName)
-                                Spacer()
-                                Button(effect.isBypassed ? "Bypassed" : "Active") {
-                                    onToggleEffectBypass?(effect.id)
-                                }
-                                .font(.caption)
-                                .foregroundStyle(effect.isBypassed ? .secondary : .primary)
-                                .buttonStyle(.plain)
-                                Button(role: .destructive) {
-                                    onRemoveEffect?(effect.id)
-                                } label: {
-                                    Image(systemName: "trash")
-                                        .foregroundStyle(.red)
-                                }
-                                .buttonStyle(.plain)
+                    ForEach(sortedEffects) { effect in
+                        HStack {
+                            Circle()
+                                .fill(effect.isBypassed ? Color.gray : Color.green)
+                                .frame(width: 8, height: 8)
+                            Text(effect.displayName)
+                            Spacer()
+                            Button {
+                                showingPluginUI = effect
+                            } label: {
+                                Image(systemName: "slider.horizontal.3")
+                                    .foregroundStyle(Color.accentColor)
                             }
-                        }
-                        .onMove { source, destination in
-                            onReorderEffects?(source, destination)
+                            .buttonStyle(.plain)
+                            .help("Open plugin UI")
+                            Button(effect.isBypassed ? "Bypassed" : "Active") {
+                                onToggleEffectBypass?(effect.id)
+                            }
+                            .font(.caption)
+                            .foregroundStyle(effect.isBypassed ? .secondary : .primary)
+                            .buttonStyle(.plain)
+                            Button(role: .destructive) {
+                                onRemoveEffect?(effect.id)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .frame(minHeight: CGFloat(sortedEffects.count) * 30 + 8)
 
                     Toggle("Bypass All Effects", isOn: Binding(
                         get: { container.isEffectChainBypassed },
@@ -198,6 +258,14 @@ struct ContainerDetailEditor: View {
                         .foregroundStyle(.blue)
                     Text(name)
                     Spacer()
+                    Button {
+                        showingInstrumentUI = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open instrument UI")
                     Button(role: .destructive) {
                         onSetInstrumentOverride?(nil)
                     } label: {
@@ -332,6 +400,7 @@ struct ContainerDetailEditor: View {
         let containers: [Container]
     }
 
+    /// All tracks with effects — used for cross-track parameter actions (enter/exit).
     private var parameterTargets: [ParameterTarget] {
         allTracks.compactMap { track in
             let containersWithEffects = track.containers.filter { !$0.insertEffects.isEmpty }
@@ -339,6 +408,14 @@ struct ContainerDetailEditor: View {
             guard hasEffects else { return nil }
             return ParameterTarget(track: track, containers: containersWithEffects)
         }
+    }
+
+    /// Only the container's own track — used for automation lanes (self-targeting only).
+    private var automationTargets: [ParameterTarget] {
+        let containersWithEffects = containerTrack.containers.filter { !$0.insertEffects.isEmpty }
+        let hasEffects = !containerTrack.insertEffects.isEmpty || !containersWithEffects.isEmpty
+        guard hasEffects else { return [] }
+        return [ParameterTarget(track: containerTrack, containers: containersWithEffects)]
     }
 
     private func containerName(for targetID: ID<Container>) -> String {
@@ -469,14 +546,17 @@ struct ContainerDetailEditor: View {
                     if !target.track.insertEffects.isEmpty {
                         Menu("Track Effects") {
                             ForEach(Array(target.track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
-                                Button("\(effect.displayName) → 0.5") {
-                                    let path = EffectPath(
+                                Button(effect.displayName) {
+                                    pendingParameterActionCallback = { path in
+                                        onAdd?(.makeSetParameter(target: path, value: 0.5))
+                                    }
+                                    pendingParameterAction = PendingEffectSelection(
                                         trackID: target.track.id,
                                         containerID: nil,
                                         effectIndex: index,
-                                        parameterAddress: 0
+                                        component: effect.component,
+                                        effectName: effect.displayName
                                     )
-                                    onAdd?(.makeSetParameter(target: path, value: 0.5))
                                 }
                             }
                         }
@@ -485,14 +565,17 @@ struct ContainerDetailEditor: View {
                         if !cont.insertEffects.isEmpty {
                             Menu(cont.name) {
                                 ForEach(Array(cont.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
-                                    Button("\(effect.displayName) → 0.5") {
-                                        let path = EffectPath(
+                                    Button(effect.displayName) {
+                                        pendingParameterActionCallback = { path in
+                                            onAdd?(.makeSetParameter(target: path, value: 0.5))
+                                        }
+                                        pendingParameterAction = PendingEffectSelection(
                                             trackID: target.track.id,
                                             containerID: cont.id,
                                             effectIndex: index,
-                                            parameterAddress: 0
+                                            component: effect.component,
+                                            effectName: effect.displayName
                                         )
-                                        onAdd?(.makeSetParameter(target: path, value: 0.5))
                                     }
                                 }
                             }
@@ -616,38 +699,36 @@ struct ContainerDetailEditor: View {
                 }
             }
         }
-        if !parameterTargets.isEmpty {
+        if !automationTargets.isEmpty {
             Menu("Add Automation Lane") {
-                ForEach(parameterTargets, id: \.track.id) { target in
-                    Menu(target.track.name) {
-                        if !target.track.insertEffects.isEmpty {
-                            Menu("Track Effects") {
-                                ForEach(Array(target.track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
-                                    Button(effect.displayName) {
-                                        let path = EffectPath(
-                                            trackID: target.track.id,
-                                            containerID: nil,
-                                            effectIndex: index,
-                                            parameterAddress: 0
-                                        )
-                                        onAddAutomationLane?(AutomationLane(targetPath: path))
-                                    }
+                ForEach(automationTargets, id: \.track.id) { target in
+                    if !target.track.insertEffects.isEmpty {
+                        Menu("Track Effects") {
+                            ForEach(Array(target.track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                Button(effect.displayName) {
+                                    pendingAutomationLane = PendingEffectSelection(
+                                        trackID: target.track.id,
+                                        containerID: nil,
+                                        effectIndex: index,
+                                        component: effect.component,
+                                        effectName: effect.displayName
+                                    )
                                 }
                             }
                         }
-                        ForEach(target.containers, id: \.id) { cont in
-                            if !cont.insertEffects.isEmpty {
-                                Menu(cont.name) {
-                                    ForEach(Array(cont.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
-                                        Button(effect.displayName) {
-                                            let path = EffectPath(
-                                                trackID: target.track.id,
-                                                containerID: cont.id,
-                                                effectIndex: index,
-                                                parameterAddress: 0
-                                            )
-                                            onAddAutomationLane?(AutomationLane(targetPath: path))
-                                        }
+                    }
+                    ForEach(target.containers, id: \.id) { cont in
+                        if !cont.insertEffects.isEmpty {
+                            Menu(cont.name) {
+                                ForEach(Array(cont.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }).enumerated()), id: \.element.id) { index, effect in
+                                    Button(effect.displayName) {
+                                        pendingAutomationLane = PendingEffectSelection(
+                                            trackID: target.track.id,
+                                            containerID: cont.id,
+                                            effectIndex: index,
+                                            component: effect.component,
+                                            effectName: effect.displayName
+                                        )
                                     }
                                 }
                             }

@@ -2171,4 +2171,130 @@ struct ProjectViewModelTests {
         #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 5)
         #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 4)
     }
+
+    // MARK: - Selected Container Track
+
+    @Test("selectedContainerTrack returns correct track")
+    @MainActor
+    func selectedContainerTrackReturnsTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.addTrack(kind: .midi)
+        let track1ID = vm.project.songs[0].tracks[0].id
+        let track2ID = vm.project.songs[0].tracks[1].id
+        let _ = vm.addContainer(trackID: track1ID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: track2ID, startBar: 1, lengthBars: 4)
+        let container2ID = vm.project.songs[0].tracks[1].containers[0].id
+
+        vm.selectedContainerID = container2ID
+        let track = vm.selectedContainerTrack
+        #expect(track != nil)
+        #expect(track?.id == track2ID)
+        #expect(track?.kind == .midi)
+    }
+
+    @Test("selectedContainerTrack returns nil when no selection")
+    @MainActor
+    func selectedContainerTrackNilWhenNoSelection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.selectedContainerID = nil
+        #expect(vm.selectedContainerTrack == nil)
+    }
+
+    @Test("selectedContainerTrack returns nil for invalid container ID")
+    @MainActor
+    func selectedContainerTrackNilForInvalidID() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.selectedContainerID = ID<Container>()
+        #expect(vm.selectedContainerTrack == nil)
+    }
+
+    // MARK: - Update Effect Preset
+
+    @Test("Update container effect preset stores data")
+    @MainActor
+    func updateEffectPreset() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effect = InsertEffect(component: comp, displayName: "Reverb")
+        vm.addContainerEffect(containerID: containerID, effect: effect)
+        let effectID = vm.project.songs[0].tracks[0].containers[0].insertEffects[0].id
+
+        let presetData = Data([0x01, 0x02, 0x03])
+        vm.updateContainerEffectPreset(containerID: containerID, effectID: effectID, presetData: presetData)
+
+        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == presetData)
+        #expect(vm.hasUnsavedChanges)
+    }
+
+    @Test("Update container effect preset undo/redo")
+    @MainActor
+    func updateEffectPresetUndoRedo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effect = InsertEffect(component: comp, displayName: "Delay")
+        vm.addContainerEffect(containerID: containerID, effect: effect)
+        let effectID = vm.project.songs[0].tracks[0].containers[0].insertEffects[0].id
+
+        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == nil)
+
+        let presetData = Data([0xAA, 0xBB])
+        vm.updateContainerEffectPreset(containerID: containerID, effectID: effectID, presetData: presetData)
+        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == presetData)
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == nil)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == presetData)
+    }
+
+    @Test("Update container effect preset with nil clears data")
+    @MainActor
+    func updateEffectPresetClear() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effect = InsertEffect(component: comp, displayName: "Chorus", presetData: Data([0x01]))
+        vm.addContainerEffect(containerID: containerID, effect: effect)
+        let effectID = vm.project.songs[0].tracks[0].containers[0].insertEffects[0].id
+
+        vm.updateContainerEffectPreset(containerID: containerID, effectID: effectID, presetData: nil)
+        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == nil)
+    }
+
+    @Test("Update container effect preset with invalid IDs is no-op")
+    @MainActor
+    func updateEffectPresetInvalidIDs() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.hasUnsavedChanges = false
+
+        // Should not crash with bogus IDs
+        vm.updateContainerEffectPreset(containerID: ID<Container>(), effectID: ID<InsertEffect>(), presetData: Data([0x01]))
+        #expect(!vm.hasUnsavedChanges)
+    }
 }

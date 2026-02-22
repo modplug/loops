@@ -249,10 +249,12 @@ public struct MainContentView: View {
             .frame(minWidth: 180, idealWidth: 250, maxWidth: 300)
         }
         .sheet(isPresented: $showContainerDetailEditor) {
-            if let container = projectViewModel.selectedContainer {
+            if let container = projectViewModel.selectedContainer,
+               let track = projectViewModel.selectedContainerTrack {
                 ContainerDetailEditor(
                     container: container,
-                    trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
+                    trackKind: track.kind,
+                    containerTrack: track,
                     allContainers: projectViewModel.allContainersInCurrentSong,
                     allTracks: projectViewModel.allTracksInCurrentSong,
                     onAddEffect: { effect in
@@ -305,6 +307,9 @@ public struct MainContentView: View {
                     },
                     onSetExitFade: { fade in
                         projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
+                    },
+                    onUpdateEffectPreset: { effectID, data in
+                        projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effectID, presetData: data)
                     },
                     onDismiss: {
                         showContainerDetailEditor = false
