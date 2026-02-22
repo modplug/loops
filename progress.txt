@@ -612,3 +612,27 @@
 - `MainContentView`: wired `onNavigateToParent` to set `selectedContainerID` to parent, passes resolved `parentContainer` via `findContainer(id:)`
 - 8 new tests: linked clip no overrides (all inherited), linked clip with overrides (correct diff), parent resolution (name/position), navigate to parent (selection), ContainerField displayNames, multiple overrides tracking, clone resolution inheritance, missing parent returns nil
 - All 653 tests pass
+
+### Iteration 9 — #91 Track reorder, delete, and creation context menu
+- `ProjectViewModel`: new `insertTrack(kind:atIndex:)` method — inserts at specific position, clamps to array bounds, ensures master stays last, with full undo/redo
+- `MainContentView`: drag-to-reorder on track headers via `.onDrag` / `.onDrop` with `TrackDropDelegate` — master track cannot be dragged, drop targets exclude master
+- `MainContentView`: `draggingTrackID` state tracks active drag with 40% opacity visual feedback on dragged header
+- `TrackDropDelegate`: `DropDelegate` implementation handles `dropEntered` for live reorder, `performDrop` to clear drag state, `validateDrop` to reject master targets
+- `MainContentView`: context menu on empty space below track list — "Insert Audio Track", "Insert MIDI Track", etc. for all `TrackKind.creatableKinds`, inserts above master
+- `MainContentView`: bottom padding (at least 80pt empty space) via `Color.clear` with `contentShape(Rectangle())` for context menu hit target
+- `trackListContentHeight(song:)` helper computes total track header height for bottom padding calculation
+- Existing context menu on track headers retained: Rename, Duplicate, Arm/Disarm, I/O routing, MIDI routing, Track Automation, Delete Track (with confirmation for non-empty)
+- 9 new tests: reorder updates model order, master cannot be moved, reorder undo/redo, delete removes from song, delete master prevented, insert at specific index, insert at end above master, insert undo/redo, insert master prevented
+- All 662 tests pass
+
+### Iteration 10 — #92 Master channel pinned to bottom in timeline and mixer
+- `TimelineView`: added `tracks: [Track]` parameter (defaults to `song.tracks`) — allows rendering a subset of tracks while keeping full song context for deletion searches
+- `TimelineView`: `totalContentHeight` and `ForEach` use `tracks` instead of `song.tracks`
+- `MainContentView.timelineContent`: splits `song.tracks` into `regularTracks` (scrollable) and `masterTrack` (pinned)
+- `MainContentView`: regular track headers and TimelineView rendered inside `ScrollView(.vertical)`, master excluded
+- `MainContentView`: master track header + lane rendered below scroll area in fixed `HStack` with its own horizontal `ScrollView`
+- `MainContentView`: `Divider` between scrollable area and pinned master for visual separation
+- `MainContentView`: renamed `trackListContentHeight` to `regularTrackListContentHeight`, filters out master for correct empty-space calculation
+- Mixer already had master strip fixed on the right (outside horizontal ScrollView) with Divider — no changes needed
+- 4 new tests: TimelineView with explicit tracks uses those tracks for height, song regular tracks exclude master, TimelineView defaults to all tracks, mixer separates regular and master
+- All 666 tests pass

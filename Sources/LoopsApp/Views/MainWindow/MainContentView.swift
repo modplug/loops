@@ -479,18 +479,19 @@ public struct MainContentView: View {
         Divider()
 
         // Track area — grid fills available space, scrollbar at bottom.
+        // Split regular tracks (scrollable) from master track (pinned at bottom).
+        let regularTracks = song.tracks.filter { $0.kind != .master }
+        let masterTrack = song.tracks.first { $0.kind == .master }
+
         GeometryReader { geo in
             ScrollView(.vertical, showsIndicators: true) {
                 HStack(alignment: .top, spacing: 0) {
                     // Track headers — fixed width, scroll vertically with tracks
                     VStack(spacing: 0) {
-                        ForEach(song.tracks) { track in
+                        ForEach(regularTracks) { track in
                             trackHeaderWithActions(track: track)
                                 .opacity(draggingTrackID == track.id ? 0.4 : 1.0)
                                 .onDrag {
-                                    guard track.kind != .master else {
-                                        return NSItemProvider()
-                                    }
                                     draggingTrackID = track.id
                                     return NSItemProvider(object: track.id.rawValue.uuidString as NSString)
                                 }
@@ -505,7 +506,7 @@ public struct MainContentView: View {
                         }
                         // Empty space at bottom for context menu target (at least one track height)
                         Color.clear
-                            .frame(height: max(80, geo.size.height - trackListContentHeight(song: song)))
+                            .frame(height: max(80, geo.size.height - regularTrackListContentHeight(song: song)))
                             .contentShape(Rectangle())
                             .contextMenu {
                                 ForEach(TrackKind.creatableKinds, id: \.self) { kind in
@@ -528,6 +529,7 @@ public struct MainContentView: View {
                             viewModel: timelineViewModel,
                             projectViewModel: projectViewModel,
                             song: song,
+                            tracks: regularTracks,
                             minHeight: geo.size.height,
                             onContainerDoubleClick: {
                                 showContainerDetailEditor = true
@@ -550,6 +552,36 @@ public struct MainContentView: View {
                 }
             }
         )
+
+        // Master track — pinned at bottom, does not scroll vertically
+        if let master = masterTrack {
+            let masterHeight = timelineViewModel.trackHeight(for: master, baseHeight: 80)
+            Divider()
+            HStack(alignment: .top, spacing: 0) {
+                trackHeaderWithActions(track: master)
+                    .frame(width: 160, height: masterHeight)
+                    .background(Color(nsColor: .controlBackgroundColor))
+
+                Divider()
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    TimelineView(
+                        viewModel: timelineViewModel,
+                        projectViewModel: projectViewModel,
+                        song: song,
+                        tracks: [master],
+                        minHeight: 0,
+                        onContainerDoubleClick: {
+                            showContainerDetailEditor = true
+                        },
+                        onPlayheadPosition: { bar in
+                            transportViewModel?.seek(toBar: bar)
+                        }
+                    )
+                }
+            }
+            .frame(height: masterHeight)
+        }
 
         Divider()
 
@@ -1131,8 +1163,8 @@ public struct MainContentView: View {
         return "\(trackName) FX\(path.effectIndex)"
     }
 
-    private func trackListContentHeight(song: Song) -> CGFloat {
-        song.tracks.reduce(CGFloat(0)) { total, track in
+    private func regularTrackListContentHeight(song: Song) -> CGFloat {
+        song.tracks.filter { $0.kind != .master }.reduce(CGFloat(0)) { total, track in
             total + timelineViewModel.trackHeight(for: track, baseHeight: 80)
         }
     }

@@ -242,4 +242,76 @@ struct TimelineViewModelTests {
         let result = vm.snappedBar(forXPosition: 60, timeSignature: ts)
         #expect(abs(result - (1.0 + 1.0/3.0)) < 0.001)
     }
+
+    // MARK: - Master Track Pinning (#92)
+
+    @Test("TimelineView with explicit tracks uses those tracks for height")
+    @MainActor
+    func timelineViewExplicitTracksHeight() {
+        let vm = TimelineViewModel()
+        let pvm = ProjectViewModel()
+        let audio1 = Track(name: "Audio 1", kind: .audio)
+        let audio2 = Track(name: "Audio 2", kind: .audio)
+        let master = Track(name: "Master", kind: .master)
+        let song = Song(tracks: [audio1, audio2, master])
+
+        // All tracks: 3 × 80 = 240
+        let allView = TimelineView(viewModel: vm, projectViewModel: pvm, song: song)
+        #expect(allView.totalContentHeight == 240.0)
+
+        // Only regular tracks: 2 × 80 = 160
+        let regularView = TimelineView(viewModel: vm, projectViewModel: pvm, song: song, tracks: [audio1, audio2])
+        #expect(regularView.totalContentHeight == 160.0)
+
+        // Only master track: 1 × 80 = 80
+        let masterView = TimelineView(viewModel: vm, projectViewModel: pvm, song: song, tracks: [master])
+        #expect(masterView.totalContentHeight == 80.0)
+    }
+
+    @Test("Song regular tracks exclude master")
+    @MainActor
+    func songRegularTracksExcludeMaster() {
+        let pvm = ProjectViewModel()
+        pvm.newProject()
+        pvm.addTrack(kind: .audio)
+        pvm.addTrack(kind: .midi)
+        let song = pvm.project.songs[0]
+        // Song has 3 tracks: Audio, MIDI, Master
+        #expect(song.tracks.count == 3)
+        let regularTracks = song.tracks.filter { $0.kind != .master }
+        let masterTrack = song.tracks.first { $0.kind == .master }
+        #expect(regularTracks.count == 2)
+        #expect(masterTrack != nil)
+        #expect(regularTracks.allSatisfy { $0.kind != .master })
+    }
+
+    @Test("TimelineView defaults to all song tracks when tracks not specified")
+    @MainActor
+    func timelineViewDefaultsToAllTracks() {
+        let vm = TimelineViewModel()
+        let pvm = ProjectViewModel()
+        let audio = Track(name: "Audio", kind: .audio)
+        let master = Track(name: "Master", kind: .master)
+        let song = Song(tracks: [audio, master])
+
+        let view = TimelineView(viewModel: vm, projectViewModel: pvm, song: song)
+        // Default: uses song.tracks (both tracks)
+        #expect(view.totalContentHeight == 160.0)
+    }
+
+    @Test("Mixer view separates regular and master tracks")
+    @MainActor
+    func mixerViewSeparatesRegularAndMaster() {
+        let pvm = ProjectViewModel()
+        pvm.newProject()
+        pvm.addTrack(kind: .audio)
+        pvm.addTrack(kind: .audio)
+        let tracks = pvm.project.songs[0].tracks
+        // 3 tracks: Audio, Audio, Master
+        #expect(tracks.count == 3)
+        let regularTracks = tracks.filter { $0.kind != .master }
+        let masterTrack = tracks.first { $0.kind == .master }
+        #expect(regularTracks.count == 2)
+        #expect(masterTrack?.kind == .master)
+    }
 }

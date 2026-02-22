@@ -7,6 +7,7 @@ public struct TimelineView: View {
     @Bindable var viewModel: TimelineViewModel
     @Bindable var projectViewModel: ProjectViewModel
     let song: Song
+    let tracks: [Track]
     let trackHeight: CGFloat
     let minHeight: CGFloat
     var onContainerDoubleClick: (() -> Void)?
@@ -14,10 +15,11 @@ public struct TimelineView: View {
 
     @State private var selectedBreakpointID: ID<AutomationBreakpoint>?
 
-    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, onContainerDoubleClick: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil) {
+    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, song: Song, tracks: [Track]? = nil, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, onContainerDoubleClick: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil) {
         self.viewModel = viewModel
         self.projectViewModel = projectViewModel
         self.song = song
+        self.tracks = tracks ?? song.tracks
         self.trackHeight = trackHeight
         self.minHeight = minHeight
         self.onContainerDoubleClick = onContainerDoubleClick
@@ -25,7 +27,7 @@ public struct TimelineView: View {
     }
 
     public var totalContentHeight: CGFloat {
-        song.tracks.reduce(CGFloat(0)) { total, track in
+        tracks.reduce(CGFloat(0)) { total, track in
             total + viewModel.trackHeight(for: track, baseHeight: trackHeight)
         }
     }
@@ -52,7 +54,7 @@ public struct TimelineView: View {
 
             // Track lanes stacked vertically
             VStack(spacing: 0) {
-                ForEach(song.tracks) { track in
+                ForEach(tracks) { track in
                     let perTrackHeight = viewModel.trackHeight(for: track, baseHeight: trackHeight)
                     let isExpanded = viewModel.automationExpanded.contains(track.id)
                     let subLanePaths = uniqueAutomationPaths(for: track)
