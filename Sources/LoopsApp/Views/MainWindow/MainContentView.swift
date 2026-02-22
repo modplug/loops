@@ -338,6 +338,8 @@ public struct MainContentView: View {
             track: track,
             inputPortName: inputPortName(for: track.inputPortID),
             outputPortName: outputPortName(for: track.outputPortID),
+            midiDeviceName: midiDeviceName(for: track.midiInputDeviceID),
+            midiChannelLabel: midiChannelLabel(for: track.midiInputChannel),
             onMuteToggle: { projectViewModel.toggleMute(trackID: track.id) },
             onSoloToggle: { projectViewModel.toggleSolo(trackID: track.id) },
             onRecordArmToggle: { projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed) }
@@ -369,6 +371,33 @@ public struct MainContentView: View {
                     ForEach(svm.outputPorts) { port in
                         Button(port.displayName) {
                             projectViewModel.setTrackOutputPort(trackID: track.id, portID: port.id)
+                        }
+                    }
+                }
+            }
+
+            if track.kind == .midi {
+                Divider()
+                Menu("MIDI Device") {
+                    Button("All Devices") {
+                        projectViewModel.setTrackMIDIInput(trackID: track.id, deviceID: nil, channel: track.midiInputChannel)
+                    }
+                    let devices = engineManager?.midiManager.availableInputDevices() ?? []
+                    if !devices.isEmpty { Divider() }
+                    ForEach(devices) { device in
+                        Button(device.displayName) {
+                            projectViewModel.setTrackMIDIInput(trackID: track.id, deviceID: device.id, channel: track.midiInputChannel)
+                        }
+                    }
+                }
+                Menu("MIDI Channel") {
+                    Button("Omni") {
+                        projectViewModel.setTrackMIDIInput(trackID: track.id, deviceID: track.midiInputDeviceID, channel: nil)
+                    }
+                    Divider()
+                    ForEach(1...16, id: \.self) { ch in
+                        Button("Ch \(ch)") {
+                            projectViewModel.setTrackMIDIInput(trackID: track.id, deviceID: track.midiInputDeviceID, channel: UInt8(ch))
                         }
                     }
                 }
@@ -437,6 +466,17 @@ public struct MainContentView: View {
     func outputPortName(for portID: String?) -> String {
         guard let portID, let svm = settingsViewModel else { return "Default" }
         return svm.outputPorts.first { $0.id == portID }?.displayName ?? "Default"
+    }
+
+    func midiDeviceName(for deviceID: String?) -> String? {
+        guard let deviceID else { return nil }
+        let devices = engineManager?.midiManager.availableInputDevices() ?? []
+        return devices.first { $0.id == deviceID }?.displayName
+    }
+
+    func midiChannelLabel(for channel: UInt8?) -> String? {
+        guard let ch = channel else { return nil }
+        return "Ch \(ch)"
     }
 }
 

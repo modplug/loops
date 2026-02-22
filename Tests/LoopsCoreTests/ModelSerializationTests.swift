@@ -556,6 +556,59 @@ struct ModelSerializationTests {
         }
     }
 
+    @Test("Track with MIDI input device and channel round-trips")
+    func trackMIDIInputRoundTrip() throws {
+        let track = Track(
+            name: "Keys",
+            kind: .midi,
+            midiInputDeviceID: "12345",
+            midiInputChannel: 3,
+            orderIndex: 0
+        )
+        let decoded = try roundTrip(track)
+        #expect(track == decoded)
+        #expect(decoded.midiInputDeviceID == "12345")
+        #expect(decoded.midiInputChannel == 3)
+    }
+
+    @Test("Track decodes from legacy JSON without MIDI input fields")
+    func trackLegacyWithoutMIDIInput() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Synth",
+            "kind": "midi",
+            "volume": 1.0,
+            "pan": 0.0,
+            "isMuted": false,
+            "isSoloed": false,
+            "containers": [],
+            "insertEffects": [],
+            "sendLevels": [],
+            "orderIndex": 0
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Track.self, from: data)
+        #expect(decoded.midiInputDeviceID == nil)
+        #expect(decoded.midiInputChannel == nil)
+        #expect(decoded.name == "Synth")
+    }
+
+    @Test("Track with omni MIDI channel round-trips")
+    func trackMIDIInputOmniRoundTrip() throws {
+        let track = Track(
+            name: "Pad",
+            kind: .midi,
+            midiInputDeviceID: "99999",
+            midiInputChannel: nil,
+            orderIndex: 0
+        )
+        let decoded = try roundTrip(track)
+        #expect(decoded.midiInputDeviceID == "99999")
+        #expect(decoded.midiInputChannel == nil)
+    }
+
     // MARK: - Song
 
     @Test("Song round-trips")

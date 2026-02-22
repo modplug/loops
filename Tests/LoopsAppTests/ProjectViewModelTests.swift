@@ -126,6 +126,38 @@ struct ProjectViewModelTests {
         #expect(!vm.project.songs[0].tracks[0].isRecordArmed)
     }
 
+    @Test("Set track MIDI input device and channel")
+    @MainActor
+    func setTrackMIDIInput() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == nil)
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == nil)
+        vm.setTrackMIDIInput(trackID: trackID, deviceID: "device-42", channel: 5)
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == "device-42")
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == 5)
+    }
+
+    @Test("Undo/redo set track MIDI input")
+    @MainActor
+    func undoRedoSetTrackMIDIInput() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.setTrackMIDIInput(trackID: trackID, deviceID: "dev-1", channel: 3)
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == "dev-1")
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == 3)
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == nil)
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == nil)
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == "dev-1")
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == 3)
+    }
+
     @Test("Current song returns first song")
     @MainActor
     func currentSong() {

@@ -8,6 +8,7 @@ import LoopsCore
 public final class AudioEngineManager: @unchecked Sendable {
     public let engine: AVAudioEngine
     public let deviceManager: DeviceManager
+    public let midiManager: MIDIManager
     public private(set) var metronome: MetronomeGenerator?
 
     public private(set) var isRunning: Bool = false
@@ -18,6 +19,7 @@ public final class AudioEngineManager: @unchecked Sendable {
     public init() {
         self.engine = AVAudioEngine()
         self.deviceManager = DeviceManager()
+        self.midiManager = MIDIManager()
     }
 
     deinit {

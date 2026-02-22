@@ -10,6 +10,10 @@ public struct TrackHeaderView: View {
     var inputPortName: String?
     /// Display name for the track's current output port.
     var outputPortName: String?
+    /// Display name for the track's current MIDI input device.
+    var midiDeviceName: String?
+    /// Display string for the track's MIDI channel (e.g., "Omni", "Ch 1").
+    var midiChannelLabel: String?
     var onMuteToggle: (() -> Void)?
     var onSoloToggle: (() -> Void)?
     var onRecordArmToggle: (() -> Void)?
@@ -19,6 +23,8 @@ public struct TrackHeaderView: View {
         height: CGFloat = 80,
         inputPortName: String? = nil,
         outputPortName: String? = nil,
+        midiDeviceName: String? = nil,
+        midiChannelLabel: String? = nil,
         onMuteToggle: (() -> Void)? = nil,
         onSoloToggle: (() -> Void)? = nil,
         onRecordArmToggle: (() -> Void)? = nil
@@ -27,6 +33,8 @@ public struct TrackHeaderView: View {
         self.height = height
         self.inputPortName = inputPortName
         self.outputPortName = outputPortName
+        self.midiDeviceName = midiDeviceName
+        self.midiChannelLabel = midiChannelLabel
         self.onMuteToggle = onMuteToggle
         self.onSoloToggle = onSoloToggle
         self.onRecordArmToggle = onRecordArmToggle
@@ -97,6 +105,30 @@ public struct TrackHeaderView: View {
                         .font(.system(size: 7))
                         .foregroundStyle(.secondary)
                     Text(outputPortName ?? "Default")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+
+            // MIDI routing labels (MIDI tracks only)
+            if track.kind == .midi {
+                HStack(spacing: 2) {
+                    Image(systemName: "pianokeys")
+                        .font(.system(size: 7))
+                        .foregroundStyle(.secondary)
+                    Text(midiDeviceName ?? "All Devices")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                HStack(spacing: 2) {
+                    Image(systemName: "number")
+                        .font(.system(size: 7))
+                        .foregroundStyle(.secondary)
+                    Text(midiChannelLabel ?? "Omni")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

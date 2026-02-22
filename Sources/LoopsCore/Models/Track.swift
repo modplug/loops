@@ -32,6 +32,10 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var inputPortID: String?
     /// Stable ID of the output port assigned to this track (nil = default).
     public var outputPortID: String?
+    /// Unique ID of the MIDI input device for this track (nil = no filter / system default).
+    public var midiInputDeviceID: String?
+    /// MIDI channel filter: nil = omni (all channels), 1-16 = specific channel.
+    public var midiInputChannel: UInt8?
     public var isRecordArmed: Bool
     public var orderIndex: Int
 
@@ -49,6 +53,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         instrumentComponent: AudioComponentInfo? = nil,
         inputPortID: String? = nil,
         outputPortID: String? = nil,
+        midiInputDeviceID: String? = nil,
+        midiInputChannel: UInt8? = nil,
         isRecordArmed: Bool = false,
         orderIndex: Int = 0
     ) {
@@ -65,6 +71,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.instrumentComponent = instrumentComponent
         self.inputPortID = inputPortID
         self.outputPortID = outputPortID
+        self.midiInputDeviceID = midiInputDeviceID
+        self.midiInputChannel = midiInputChannel
         self.isRecordArmed = isRecordArmed
         self.orderIndex = orderIndex
     }
@@ -76,6 +84,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         case containers, insertEffects, sendLevels
         case instrumentComponent
         case inputPortID, outputPortID
+        case midiInputDeviceID, midiInputChannel
         case isRecordArmed
         case orderIndex
         // Legacy key
@@ -96,6 +105,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         sendLevels = try c.decode([SendLevel].self, forKey: .sendLevels)
         instrumentComponent = try c.decodeIfPresent(AudioComponentInfo.self, forKey: .instrumentComponent)
         outputPortID = try c.decodeIfPresent(String.self, forKey: .outputPortID)
+        midiInputDeviceID = try c.decodeIfPresent(String.self, forKey: .midiInputDeviceID)
+        midiInputChannel = try c.decodeIfPresent(UInt8.self, forKey: .midiInputChannel)
         isRecordArmed = try c.decodeIfPresent(Bool.self, forKey: .isRecordArmed) ?? false
         orderIndex = try c.decode(Int.self, forKey: .orderIndex)
 
@@ -124,6 +135,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(instrumentComponent, forKey: .instrumentComponent)
         try c.encodeIfPresent(inputPortID, forKey: .inputPortID)
         try c.encodeIfPresent(outputPortID, forKey: .outputPortID)
+        try c.encodeIfPresent(midiInputDeviceID, forKey: .midiInputDeviceID)
+        try c.encodeIfPresent(midiInputChannel, forKey: .midiInputChannel)
         try c.encode(isRecordArmed, forKey: .isRecordArmed)
         try c.encode(orderIndex, forKey: .orderIndex)
     }

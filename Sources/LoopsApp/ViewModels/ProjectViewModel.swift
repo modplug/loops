@@ -197,6 +197,8 @@ public final class ProjectViewModel {
                     insertEffects: track.insertEffects,
                     sendLevels: track.sendLevels,
                     instrumentComponent: track.instrumentComponent,
+                    midiInputDeviceID: track.midiInputDeviceID,
+                    midiInputChannel: track.midiInputChannel,
                     isRecordArmed: track.isRecordArmed,
                     orderIndex: track.orderIndex
                 )
@@ -302,6 +304,16 @@ public final class ProjectViewModel {
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         registerUndo(actionName: "Set Output Port")
         project.songs[currentSongIndex].tracks[index].outputPortID = portID
+        hasUnsavedChanges = true
+    }
+
+    /// Sets the MIDI input device and channel for a track.
+    public func setTrackMIDIInput(trackID: ID<Track>, deviceID: String?, channel: UInt8?) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        registerUndo(actionName: "Set MIDI Input")
+        project.songs[currentSongIndex].tracks[index].midiInputDeviceID = deviceID
+        project.songs[currentSongIndex].tracks[index].midiInputChannel = channel
         hasUnsavedChanges = true
     }
 
