@@ -36,6 +36,9 @@ public struct EffectPath: Codable, Equatable, Sendable, Hashable {
     /// Sentinel effectIndex indicating a built-in track parameter (not an AU effect).
     public static let trackParameterEffectIndex: Int = -1
 
+    /// Sentinel effectIndex indicating a track instrument parameter (AU instrument on a MIDI track).
+    public static let instrumentParameterEffectIndex: Int = -2
+
     /// Parameter address for track volume automation.
     public static let volumeAddress: UInt64 = 0
 
@@ -57,9 +60,14 @@ public struct EffectPath: Codable, Equatable, Sendable, Hashable {
         isTrackVolume || isTrackPan
     }
 
-    /// Whether this path targets a track-level effect parameter (not volume/pan, not container-level).
+    /// Whether this path targets a track-level effect parameter (not volume/pan, not instrument, not container-level).
     public var isTrackEffectParameter: Bool {
         containerID == nil && effectIndex >= 0
+    }
+
+    /// Whether this path targets a track instrument parameter (MIDI track AU instrument).
+    public var isTrackInstrumentParameter: Bool {
+        containerID == nil && effectIndex == Self.instrumentParameterEffectIndex
     }
 
     /// Creates an EffectPath targeting track volume automation.
@@ -70,5 +78,10 @@ public struct EffectPath: Codable, Equatable, Sendable, Hashable {
     /// Creates an EffectPath targeting track pan automation.
     public static func trackPan(trackID: ID<Track>) -> EffectPath {
         EffectPath(trackID: trackID, effectIndex: trackParameterEffectIndex, parameterAddress: panAddress)
+    }
+
+    /// Creates an EffectPath targeting a track instrument parameter.
+    public static func trackInstrument(trackID: ID<Track>, parameterAddress: UInt64) -> EffectPath {
+        EffectPath(trackID: trackID, effectIndex: instrumentParameterEffectIndex, parameterAddress: parameterAddress)
     }
 }

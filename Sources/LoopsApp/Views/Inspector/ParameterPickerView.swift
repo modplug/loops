@@ -27,7 +27,10 @@ struct ParameterPickerView: View {
 
     private var filteredParameters: [AudioUnitParameterInfo] {
         if searchText.isEmpty { return parameters }
-        return parameters.filter { $0.displayName.localizedCaseInsensitiveContains(searchText) }
+        return parameters.filter {
+            $0.displayName.localizedCaseInsensitiveContains(searchText)
+            || $0.groupName.localizedCaseInsensitiveContains(searchText)
+        }
     }
 
     var body: some View {
@@ -75,7 +78,14 @@ struct ParameterPickerView: View {
                         onPick?(path)
                     } label: {
                         HStack {
-                            Text(param.displayName)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(param.displayName)
+                                if !param.groupName.isEmpty {
+                                    Text(param.groupName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                             Spacer()
                             Text("\(param.minValue, specifier: "%.1f") – \(param.maxValue, specifier: "%.1f")")
                                 .font(.caption)

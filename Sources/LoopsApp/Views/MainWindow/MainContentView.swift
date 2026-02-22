@@ -1041,6 +1041,41 @@ public struct MainContentView: View {
                         }
                     }
                 }
+                // Instrument parameter automation (MIDI tracks with an instrument)
+                if track.kind == .midi, let instrumentComponent = track.instrumentComponent {
+                    Divider()
+                    let hasInstrumentLane = track.trackAutomationLanes.contains { $0.targetPath.isTrackInstrumentParameter }
+                    if hasInstrumentLane {
+                        Menu("Instrument") {
+                            Button("Add Parameter...") {
+                                pendingTrackAutomationLane = PendingEffectSelection(
+                                    trackID: track.id,
+                                    containerID: nil,
+                                    effectIndex: EffectPath.instrumentParameterEffectIndex,
+                                    component: instrumentComponent,
+                                    effectName: "Instrument"
+                                )
+                            }
+                            Divider()
+                            let instrumentLanes = track.trackAutomationLanes.filter { $0.targetPath.isTrackInstrumentParameter }
+                            ForEach(instrumentLanes) { lane in
+                                Button("Remove \(automationPathLabel(lane.targetPath))") {
+                                    projectViewModel.removeTrackAutomationLane(trackID: track.id, laneID: lane.id)
+                                }
+                            }
+                        }
+                    } else {
+                        Button("Instrument...") {
+                            pendingTrackAutomationLane = PendingEffectSelection(
+                                trackID: track.id,
+                                containerID: nil,
+                                effectIndex: EffectPath.instrumentParameterEffectIndex,
+                                component: instrumentComponent,
+                                effectName: "Instrument"
+                            )
+                        }
+                    }
+                }
             }
 
             if track.kind != .master {
@@ -1205,6 +1240,9 @@ public struct MainContentView: View {
     private func automationPathLabel(_ path: EffectPath) -> String {
         if path.isTrackVolume { return "Volume" }
         if path.isTrackPan { return "Pan" }
+        if path.isTrackInstrumentParameter {
+            return "Instrument P\(path.parameterAddress)"
+        }
         if path.isTrackEffectParameter, let track = currentSong?.tracks.first(where: { $0.id == path.trackID }) {
             let sorted = track.insertEffects.sorted { $0.orderIndex < $1.orderIndex }
             if path.effectIndex >= 0 && path.effectIndex < sorted.count {

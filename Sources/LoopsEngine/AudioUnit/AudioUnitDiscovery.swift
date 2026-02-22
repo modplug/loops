@@ -25,15 +25,17 @@ public struct AudioUnitParameterInfo: Identifiable, Sendable {
     public let id: String
     public let address: UInt64
     public let displayName: String
+    public let groupName: String
     public let minValue: Float
     public let maxValue: Float
     public let defaultValue: Float
     public let unit: String
 
-    public init(address: UInt64, displayName: String, minValue: Float, maxValue: Float, defaultValue: Float, unit: String) {
+    public init(address: UInt64, displayName: String, groupName: String = "", minValue: Float, maxValue: Float, defaultValue: Float, unit: String) {
         self.id = "\(address)"
         self.address = address
         self.displayName = displayName
+        self.groupName = groupName
         self.minValue = minValue
         self.maxValue = maxValue
         self.defaultValue = defaultValue
@@ -70,10 +72,31 @@ public final class AudioUnitDiscovery: Sendable {
             let audioUnit = try await AUAudioUnit.instantiate(with: description, options: [])
             let tree = audioUnit.parameterTree
             guard let allParams = tree?.allParameters else { return [] }
+
+            // Build address→group mapping from the tree's group structure
+            var addressToGroup: [AUParameterAddress: String] = [:]
+            func walkGroups(_ group: AUParameterGroup) {
+                for child in group.children {
+                    if let param = child as? AUParameter {
+                        addressToGroup[param.address] = group.displayName
+                    } else if let subGroup = child as? AUParameterGroup {
+                        walkGroups(subGroup)
+                    }
+                }
+            }
+            if let tree {
+                for child in tree.children {
+                    if let group = child as? AUParameterGroup {
+                        walkGroups(group)
+                    }
+                }
+            }
+
             return allParams.map { param in
                 AudioUnitParameterInfo(
                     address: param.address,
                     displayName: param.displayName,
+                    groupName: addressToGroup[param.address] ?? "",
                     minValue: param.minValue,
                     maxValue: param.maxValue,
                     defaultValue: param.value,

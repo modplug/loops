@@ -173,6 +173,7 @@ public final class OfflineRenderer {
         // Phase 1: Pre-render each container (looping + fades + effects + automation)
         var processedContainers: [ID<Container>: AVAudioPCMBuffer] = [:]
         for track in audibleTracks {
+            let instrumentLanes = track.trackAutomationLanes.filter { $0.targetPath.isTrackInstrumentParameter }
             for container in track.containers {
                 guard let recID = container.sourceRecordingID,
                       let sourceBuffer = bufferCache[recID] else { continue }
@@ -188,12 +189,14 @@ public final class OfflineRenderer {
                 let hasActiveEffects = !container.isEffectChainBypassed
                     && container.insertEffects.contains(where: { !$0.isBypassed })
                 let hasInstrument = container.instrumentOverride != nil
+                let hasInstrumentAutomation = !instrumentLanes.isEmpty && hasInstrument
 
-                if hasActiveEffects || hasInstrument {
+                if hasActiveEffects || hasInstrument || hasInstrumentAutomation {
                     if let processed = await processContainerThroughEffects(
                         container: container,
                         inputBuffer: containerBuffer,
-                        samplesPerBar: spb
+                        samplesPerBar: spb,
+                        trackInstrumentLanes: instrumentLanes
                     ) {
                         processedContainers[container.id] = processed
                     } else {
@@ -418,11 +421,13 @@ public final class OfflineRenderer {
     }
 
     /// Processes a container buffer through its AU effect chain using an offline AVAudioEngine.
-    /// Evaluates automation lanes targeting the container's own effects.
+    /// Evaluates automation lanes targeting the container's own effects and optionally
+    /// track-level instrument automation lanes (absolute bar positions, 0-based from bar 1).
     private func processContainerThroughEffects(
         container: Container,
         inputBuffer: AVAudioPCMBuffer,
-        samplesPerBar: Double
+        samplesPerBar: Double,
+        trackInstrumentLanes: [AutomationLane] = []
     ) async -> AVAudioPCMBuffer? {
         let containerFrames = inputBuffer.frameLength
         let format = inputBuffer.format
@@ -485,17 +490,33 @@ public final class OfflineRenderer {
         while framesRendered < containerFrames {
             let framesToRender = min(chunkSize, containerFrames - framesRendered)
 
-            // Evaluate automation targeting this container's own effects
+            // Evaluate automation targeting this container's own effects and instrument
+            let barOffsetInContainer = Double(framesRendered) / samplesPerBar
             for lane in container.automationLanes {
                 guard lane.targetPath.containerID == container.id else { continue }
-                let barOffset = Double(framesRendered) / samplesPerBar
-                if let value = lane.interpolatedValue(atBar: barOffset) {
+                if let value = lane.interpolatedValue(atBar: barOffsetInContainer) {
                     let idx = lane.targetPath.effectIndex
                     if idx >= 0, idx < effectUnits.count {
                         let param = effectUnits[idx].auAudioUnit.parameterTree?.parameter(
                             withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
                         )
                         param?.value = value
+                    } else if idx == EffectPath.instrumentParameterEffectIndex, let instUnit = instrumentUnit {
+                        instUnit.auAudioUnit.parameterTree?.parameter(
+                            withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
+                        )?.value = value
+                    }
+                }
+            }
+
+            // Evaluate track-level instrument automation (absolute bar positions)
+            if let instUnit = instrumentUnit, !trackInstrumentLanes.isEmpty {
+                let absoluteBar = Double(container.startBar - 1) + barOffsetInContainer
+                for lane in trackInstrumentLanes {
+                    if let value = lane.interpolatedValue(atBar: absoluteBar) {
+                        instUnit.auAudioUnit.parameterTree?.parameter(
+                            withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
+                        )?.value = value
                     }
                 }
             }

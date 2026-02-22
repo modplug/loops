@@ -913,6 +913,20 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let capturedMasterMixer = self.masterMixerNode
         let capturedContainerSubgraphs = self.containerSubgraphs
         let capturedTrackEffectUnits = self.trackEffectUnits
+        // Build per-track instrument unit list from container subgraphs
+        var trackInstrumentUnits: [ID<Track>: [AVAudioUnit]] = [:]
+        for track in song.tracks where track.kind == .midi {
+            var units: [AVAudioUnit] = []
+            for container in track.containers {
+                if let subgraph = self.containerSubgraphs[container.id],
+                   let instUnit = subgraph.instrumentUnit {
+                    units.append(instUnit)
+                }
+            }
+            if !units.isEmpty {
+                trackInstrumentUnits[track.id] = units
+            }
+        }
         lock.unlock()
         let startBar = fromBar
 
@@ -989,6 +1003,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
                                 )?.value = value
                             }
                         }
+                    } else if lane.targetPath.isTrackInstrumentParameter {
+                        // Track instrument parameter automation — apply to all container instrument units
+                        if let units = trackInstrumentUnits[track.id] {
+                            let addr = AUParameterAddress(lane.targetPath.parameterAddress)
+                            for unit in units {
+                                unit.auAudioUnit.parameterTree?.parameter(withAddress: addr)?.value = value
+                            }
+                        }
                     }
                 }
             }
@@ -1014,6 +1036,22 @@ public final class PlaybackScheduler: @unchecked Sendable {
 extension PlaybackScheduler: ParameterResolver {
     public func setParameter(at path: EffectPath, value: Float) -> Bool {
         lock.lock()
+        // Instrument parameter: apply to all container instrument units on the track
+        if path.isTrackInstrumentParameter {
+            var didSet = false
+            let addr = AUParameterAddress(path.parameterAddress)
+            for (_, subgraph) in containerSubgraphs {
+                if subgraph.trackMixer == trackMixers[path.trackID],
+                   let instUnit = subgraph.instrumentUnit,
+                   let param = instUnit.auAudioUnit.parameterTree?.parameter(withAddress: addr) {
+                    param.value = value
+                    didSet = true
+                }
+            }
+            lock.unlock()
+            return didSet
+        }
+
         let unit: AVAudioUnit?
         if let containerID = path.containerID {
             if let subgraph = containerSubgraphs[containerID] {
