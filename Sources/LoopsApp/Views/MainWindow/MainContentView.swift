@@ -39,6 +39,7 @@ public struct MainContentView: View {
     @State private var editingSectionID: ID<SectionRegion>?
     @State private var editingSectionName: String = ""
     @State private var inspectorMode: InspectorMode = .container
+    @FocusState private var isMainFocused: Bool
     // isMIDILearning and midiLearnTargetPath are on projectViewModel
 
     public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil) {
@@ -187,6 +188,10 @@ public struct MainContentView: View {
                 }
             }
         }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($isMainFocused)
+        .onAppear { isMainFocused = true }
         .onKeyPress(.space) {
             transportViewModel?.togglePlayPause()
             return .handled
@@ -461,10 +466,10 @@ public struct MainContentView: View {
                     onSectionCopy: { sectionID in
                         projectViewModel.copySectionWithMetadata(sectionID: sectionID)
                     },
-                    onSectionSplit: { sectionID, atBar in
-                        projectViewModel.splitSection(sectionID: sectionID, atBar: atBar)
-                    },
-                    playheadBar: Int(timelineViewModel.playheadBar)
+                    onSectionSplit: { sectionID in
+                        let bar = Int(timelineViewModel.playheadBar)
+                        projectViewModel.splitSection(sectionID: sectionID, atBar: bar)
+                    }
                 )
             }
         }

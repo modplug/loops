@@ -15,6 +15,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private var audioFiles: [ID<SourceRecording>: AVAudioFile] = [:]
     private let audioDirURL: URL
 
+    /// Protects all mutable state from concurrent access.
+    /// Methods called from arbitrary threads (MIDI callbacks, UI, cooperative pool)
+    /// must acquire this lock before reading or writing any mutable property.
+    private let lock = NSLock()
+
     /// Optional action dispatcher for container enter/exit MIDI actions.
     public var actionDispatcher: ActionDispatcher?
 
@@ -72,55 +77,170 @@ public final class PlaybackScheduler: @unchecked Sendable {
         self.audioDirURL = audioDirURL
     }
 
+    deinit {
+        lock.lock()
+        let timer = automationTimer
+        automationTimer = nil
+        lock.unlock()
+        timer?.cancel()
+    }
+
     /// Prepares playback for a song by creating track mixers and loading audio files.
     /// AU effects for containers are pre-instantiated here.
     /// Master track effects are loaded and all track mixers route through them.
+    ///
+    /// Must run on the main actor — AVAudioEngine topology operations (attach,
+    /// connect, disconnect, detach) can silently fail from background threads.
+    ///
+    /// Two-phase design: audio units are loaded asynchronously while the engine
+    /// keeps running (no audible gap), then the engine is briefly stopped for
+    /// the synchronous attach/connect pass.
+    @MainActor
     public func prepare(song: Song, sourceRecordings: [ID<SourceRecording>: SourceRecording]) async {
-        cleanup()
-
         let allContainers = song.tracks.flatMap(\.containers)
 
-        // Load audio files
+        // ── Phase 1: Load files and audio units (async, engine keeps running) ──
+
+        var loadedFiles: [ID<SourceRecording>: AVAudioFile] = [:]
         for (id, recording) in sourceRecordings {
             let fileURL = audioDirURL.appendingPathComponent(recording.filename)
             if let file = try? AVAudioFile(forReading: fileURL) {
-                audioFiles[id] = file
+                loadedFiles[id] = file
             }
         }
 
-        // Build master track effect chain: masterMixer → [effects] → mainMixerNode
+        guard !Task.isCancelled else { return }
+
+        // Pre-load master effects
         let masterTrack = song.masterTrack
+        var preloadedMasterEffects: [AVAudioUnit] = []
+        if let master = masterTrack, !master.isEffectChainBypassed {
+            for effect in master.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                guard !effect.isBypassed else { continue }
+                guard !Task.isCancelled else { return }
+                if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
+                    if let presetData = effect.presetData {
+                        try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
+                    }
+                    preloadedMasterEffects.append(unit)
+                }
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+
+        // Pre-load track and container audio units
+        struct PreloadedContainer {
+            let container: Container
+            let instrument: AVAudioUnit?
+            let effects: [AVAudioUnit]
+            let audioFormat: AVAudioFormat?
+        }
+        struct PreloadedTrack {
+            let track: Track
+            let effects: [AVAudioUnit]
+            let containers: [PreloadedContainer]
+        }
+
+        var preloadedTracks: [PreloadedTrack] = []
+        for track in song.tracks {
+            if track.kind == .master { continue }
+            guard !Task.isCancelled else { return }
+
+            var trackEffects: [AVAudioUnit] = []
+            if !track.isEffectChainBypassed {
+                for effect in track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                    guard !effect.isBypassed else { continue }
+                    if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
+                        if let presetData = effect.presetData {
+                            try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
+                        }
+                        trackEffects.append(unit)
+                    }
+                }
+            }
+
+            var preloadedContainers: [PreloadedContainer] = []
+            for container in track.containers {
+                guard !Task.isCancelled else { return }
+                let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
+                guard let recID = resolved.sourceRecordingID else { continue }
+                let fileFormat = loadedFiles[recID]?.processingFormat
+
+                var instrumentUnit: AVAudioUnit?
+                if let override = resolved.instrumentOverride {
+                    instrumentUnit = try? await audioUnitHost.loadAudioUnit(component: override)
+                }
+
+                var effectUnits: [AVAudioUnit] = []
+                if !resolved.isEffectChainBypassed {
+                    for effect in resolved.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                        guard !effect.isBypassed else { continue }
+                        if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
+                            if let presetData = effect.presetData {
+                                try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
+                            }
+                            effectUnits.append(unit)
+                        }
+                    }
+                }
+
+                preloadedContainers.append(PreloadedContainer(
+                    container: resolved,
+                    instrument: instrumentUnit,
+                    effects: effectUnits,
+                    audioFormat: fileFormat
+                ))
+            }
+
+            preloadedTracks.append(PreloadedTrack(
+                track: track,
+                effects: trackEffects,
+                containers: preloadedContainers
+            ))
+        }
+
+        guard !Task.isCancelled else { return }
+
+        // ── Phase 2: Stop engine, rebuild graph synchronously, restart ──
+        // engine.connect() silently fails on a running engine, so we must
+        // stop it for the attach/connect pass. This phase is fast (no awaits).
+
+        let wasRunning = engine.isRunning
+        if wasRunning { engine.stop() }
+        defer { if wasRunning { try? engine.start() } }
+
+        cleanup()
+
+        lock.lock()
+        audioFiles = loadedFiles
+        lock.unlock()
+
+        // Master mixer chain
         let outputTarget: AVAudioNode
         if let master = masterTrack {
             let masterMixer = AVAudioMixerNode()
             engine.attach(masterMixer)
             masterMixer.volume = master.volume
             masterMixer.pan = master.pan
-            masterMixerNode = masterMixer
 
-            // Load master effects
-            if !master.isEffectChainBypassed {
-                for effect in master.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
-                    guard !effect.isBypassed else { continue }
-                    if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
-                        engine.attach(unit)
-                        if let presetData = effect.presetData {
-                            try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
-                        }
-                        masterEffectUnits.append(unit)
-                    }
-                }
+            for unit in preloadedMasterEffects {
+                engine.attach(unit)
             }
 
-            // Connect: masterMixer → [effects] → mainMixerNode
-            if masterEffectUnits.isEmpty {
+            lock.lock()
+            masterMixerNode = masterMixer
+            masterEffectUnits = preloadedMasterEffects
+            lock.unlock()
+
+            if preloadedMasterEffects.isEmpty {
                 engine.connect(masterMixer, to: engine.mainMixerNode, format: nil)
             } else {
-                engine.connect(masterMixer, to: masterEffectUnits[0], format: nil)
-                for i in 0..<(masterEffectUnits.count - 1) {
-                    engine.connect(masterEffectUnits[i], to: masterEffectUnits[i + 1], format: nil)
+                engine.connect(masterMixer, to: preloadedMasterEffects[0], format: nil)
+                for i in 0..<(preloadedMasterEffects.count - 1) {
+                    engine.connect(preloadedMasterEffects[i], to: preloadedMasterEffects[i + 1], format: nil)
                 }
-                engine.connect(masterEffectUnits[masterEffectUnits.count - 1], to: engine.mainMixerNode, format: nil)
+                engine.connect(preloadedMasterEffects[preloadedMasterEffects.count - 1], to: engine.mainMixerNode, format: nil)
             }
 
             outputTarget = masterMixer
@@ -128,49 +248,66 @@ public final class PlaybackScheduler: @unchecked Sendable {
             outputTarget = engine.mainMixerNode
         }
 
-        // Create a mixer node per track, connected through track effects to master mixer (or mainMixer)
-        for track in song.tracks {
-            // Skip master track — it has its own mixer
-            if track.kind == .master { continue }
-
+        // Track mixers and container subgraphs
+        for preloaded in preloadedTracks {
             let trackMixer = AVAudioMixerNode()
             engine.attach(trackMixer)
-            trackMixer.volume = track.isMuted ? 0.0 : track.volume
-            trackMixer.pan = track.pan
-            trackMixers[track.id] = trackMixer
+            trackMixer.volume = preloaded.track.isMuted ? 0.0 : preloaded.track.volume
+            trackMixer.pan = preloaded.track.pan
 
-            // Load track-level insert effects
-            var tEffectUnits: [AVAudioUnit] = []
-            if !track.isEffectChainBypassed {
-                for effect in track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
-                    guard !effect.isBypassed else { continue }
-                    if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
-                        engine.attach(unit)
-                        if let presetData = effect.presetData {
-                            try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
-                        }
-                        tEffectUnits.append(unit)
-                    }
-                }
+            for unit in preloaded.effects {
+                engine.attach(unit)
             }
-            trackEffectUnits[track.id] = tEffectUnits
 
-            // Route: trackMixer → [track effects] → outputTarget
-            if tEffectUnits.isEmpty {
+            lock.lock()
+            trackMixers[preloaded.track.id] = trackMixer
+            trackEffectUnits[preloaded.track.id] = preloaded.effects
+            lock.unlock()
+
+            if preloaded.effects.isEmpty {
                 engine.connect(trackMixer, to: outputTarget, format: nil)
             } else {
-                engine.connect(trackMixer, to: tEffectUnits[0], format: nil)
-                for i in 0..<(tEffectUnits.count - 1) {
-                    engine.connect(tEffectUnits[i], to: tEffectUnits[i + 1], format: nil)
+                engine.connect(trackMixer, to: preloaded.effects[0], format: nil)
+                for i in 0..<(preloaded.effects.count - 1) {
+                    engine.connect(preloaded.effects[i], to: preloaded.effects[i + 1], format: nil)
                 }
-                engine.connect(tEffectUnits[tEffectUnits.count - 1], to: outputTarget, format: nil)
+                engine.connect(preloaded.effects[preloaded.effects.count - 1], to: outputTarget, format: nil)
             }
 
-            // Pre-instantiate per-container subgraphs (resolve clone fields)
-            for container in track.containers {
-                let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
-                guard resolved.sourceRecordingID != nil else { continue }
-                await buildContainerSubgraph(container: resolved, trackMixer: trackMixer)
+            for pc in preloaded.containers {
+                let player = AVAudioPlayerNode()
+                engine.attach(player)
+
+                if let inst = pc.instrument {
+                    engine.attach(inst)
+                }
+                for unit in pc.effects {
+                    engine.attach(unit)
+                }
+
+                var chain: [AVAudioNode] = []
+                if let inst = pc.instrument { chain.append(inst) }
+                chain.append(contentsOf: pc.effects)
+
+                let playerFormat = pc.audioFormat
+                if chain.isEmpty {
+                    engine.connect(player, to: trackMixer, format: playerFormat)
+                } else {
+                    engine.connect(player, to: chain[0], format: playerFormat)
+                    for i in 0..<(chain.count - 1) {
+                        engine.connect(chain[i], to: chain[i + 1], format: nil)
+                    }
+                    engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
+                }
+
+                lock.lock()
+                containerSubgraphs[pc.container.id] = ContainerSubgraph(
+                    playerNode: player,
+                    instrumentUnit: pc.instrument,
+                    effectUnits: pc.effects,
+                    trackMixer: trackMixer
+                )
+                lock.unlock()
             }
         }
     }
@@ -183,15 +320,15 @@ public final class PlaybackScheduler: @unchecked Sendable {
         timeSignature: TimeSignature,
         sampleRate: Double
     ) {
+        let samplesPerBar = self.samplesPerBar(bpm: bpm, timeSignature: timeSignature, sampleRate: sampleRate)
+        let allContainers = song.tracks.flatMap(\.containers)
+
+        lock.lock()
         // Store playback state for trigger-based scheduling
         currentSong = song
         currentBPM = bpm
         currentTimeSignature = timeSignature
         currentSampleRate = sampleRate
-
-        let samplesPerBar = self.samplesPerBar(bpm: bpm, timeSignature: timeSignature, sampleRate: sampleRate)
-
-        let allContainers = song.tracks.flatMap(\.containers)
 
         // Build container → track mapping for monitoring suppression
         for track in song.tracks {
@@ -199,6 +336,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 containerToTrack[container.id] = track.id
             }
         }
+        lock.unlock()
 
         for track in song.tracks {
             if track.isMuted { continue }
@@ -216,8 +354,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
             }
         }
 
+        lock.lock()
+        let activeTrackIDs = tracksWithActiveContainers
+        lock.unlock()
+
         // Suppress input monitoring on tracks that have active containers
-        for trackID in tracksWithActiveContainers {
+        for trackID in activeTrackIDs {
             inputMonitor?.suppressMonitoring(trackID: trackID)
         }
 
@@ -227,26 +369,60 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// Stops all playback.
     public func stop() {
         stopAutomationTimer()
-        for (_, subgraph) in containerSubgraphs {
-            subgraph.playerNode.stop()
-        }
-        for container in activeContainers {
-            actionDispatcher?.containerDidExit(container)
-        }
-        // Unsuppress monitoring on tracks that had active containers
-        for trackID in tracksWithActiveContainers {
-            inputMonitor?.unsuppressMonitoring(trackID: trackID)
-        }
+
+        // Copy state under lock, then operate on copies
+        lock.lock()
+        let subgraphs = containerSubgraphs
+        let containers = activeContainers
+        let tracks = tracksWithActiveContainers
         activeContainers.removeAll()
         tracksWithActiveContainers.removeAll()
         containerToTrack.removeAll()
         currentSong = nil
+        lock.unlock()
+
+        for (_, subgraph) in subgraphs {
+            subgraph.playerNode.stop()
+        }
+        for container in containers {
+            actionDispatcher?.containerDidExit(container)
+        }
+        // Unsuppress monitoring on tracks that had active containers
+        for trackID in tracks {
+            inputMonitor?.unsuppressMonitoring(trackID: trackID)
+        }
     }
 
     /// Cleans up all nodes and audio files.
+    ///
+    /// Must run on the main actor — AVAudioEngine topology operations (disconnect,
+    /// detach) can silently fail from background threads.
+    @MainActor
     public func cleanup() {
         stopAutomationTimer()
-        for (_, subgraph) in containerSubgraphs {
+
+        // Copy and clear shared state under lock — non-@MainActor methods
+        // (stop, updateTrackMix, scheduleContainer, etc.) also read these.
+        lock.lock()
+        let subgraphs = containerSubgraphs
+        containerSubgraphs.removeAll()
+        activeContainers.removeAll()
+        tracksWithActiveContainers.removeAll()
+        containerToTrack.removeAll()
+        let tEffectUnits = trackEffectUnits
+        trackEffectUnits.removeAll()
+        let tMixers = trackMixers
+        trackMixers.removeAll()
+        let mEffectUnits = masterEffectUnits
+        masterEffectUnits.removeAll()
+        let mMixer = masterMixerNode
+        masterMixerNode = nil
+        audioFiles.removeAll()
+        currentSong = nil
+        lock.unlock()
+
+        // Engine operations on local copies — no lock needed
+        for (_, subgraph) in subgraphs {
             subgraph.playerNode.stop()
             engine.disconnectNodeOutput(subgraph.playerNode)
             engine.detach(subgraph.playerNode)
@@ -259,49 +435,41 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 engine.detach(unit)
             }
         }
-        containerSubgraphs.removeAll()
-        activeContainers.removeAll()
-        tracksWithActiveContainers.removeAll()
-        containerToTrack.removeAll()
 
-        for (_, units) in trackEffectUnits {
+        for (_, units) in tEffectUnits {
             for unit in units {
                 engine.disconnectNodeOutput(unit)
                 engine.detach(unit)
             }
         }
-        trackEffectUnits.removeAll()
 
-        for (_, mixer) in trackMixers {
+        for (_, mixer) in tMixers {
             engine.disconnectNodeOutput(mixer)
             engine.detach(mixer)
         }
-        trackMixers.removeAll()
 
         // Cleanup master mixer and effects
-        for unit in masterEffectUnits {
+        for unit in mEffectUnits {
             engine.disconnectNodeOutput(unit)
             engine.detach(unit)
         }
-        masterEffectUnits.removeAll()
-        if let masterMixer = masterMixerNode {
+        if let masterMixer = mMixer {
             engine.disconnectNodeOutput(masterMixer)
             engine.detach(masterMixer)
-            masterMixerNode = nil
         }
-
-        audioFiles.removeAll()
-        currentSong = nil
     }
 
     /// Updates track mix parameters (volume, pan, mute).
     public func updateTrackMix(trackID: ID<Track>, volume: Float, pan: Float, isMuted: Bool) {
-        guard let mixer = trackMixers[trackID] else {
+        lock.lock()
+        let mixer = trackMixers[trackID]
+        let masterMixer = masterMixerNode
+        lock.unlock()
+
+        guard let mixer else {
             // Check if this is the master track
-            if let masterMixer = masterMixerNode {
-                masterMixer.volume = volume
-                masterMixer.pan = pan
-            }
+            masterMixer?.volume = volume
+            masterMixer?.pan = pan
             return
         }
         mixer.volume = isMuted ? 0.0 : volume
@@ -316,9 +484,19 @@ public final class PlaybackScheduler: @unchecked Sendable {
         fromBar: Double,
         samplesPerBar: Double
     ) {
-        guard let recordingID = container.sourceRecordingID,
-              let audioFile = audioFiles[recordingID],
-              let subgraph = containerSubgraphs[container.id] else { return }
+        lock.lock()
+        let audioFile: AVAudioFile?
+        let subgraph: ContainerSubgraph?
+        if let recordingID = container.sourceRecordingID {
+            audioFile = audioFiles[recordingID]
+            subgraph = containerSubgraphs[container.id]
+        } else {
+            audioFile = nil
+            subgraph = nil
+        }
+        lock.unlock()
+
+        guard let audioFile, let subgraph else { return }
 
         let containerStartSample = Int64(Double(container.startBar - 1) * samplesPerBar)
         let containerEndSample = Int64(Double(container.endBar - 1) * samplesPerBar)
@@ -396,67 +574,15 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         subgraph.playerNode.play()
+
+        lock.lock()
         activeContainers.append(container)
         if let trackID = containerToTrack[container.id] {
             tracksWithActiveContainers.insert(trackID)
         }
+        lock.unlock()
+
         actionDispatcher?.containerDidEnter(container)
-    }
-
-    /// Builds the per-container audio subgraph:
-    /// `AVAudioPlayerNode → [Instrument Override] → [AU Effects (if not bypassed)] → trackMixer`
-    private func buildContainerSubgraph(container: Container, trackMixer: AVAudioMixerNode) async {
-        let player = AVAudioPlayerNode()
-        engine.attach(player)
-
-        // Load instrument override if present
-        var instrumentUnit: AVAudioUnit?
-        if let override = container.instrumentOverride {
-            if let unit = try? await audioUnitHost.loadAudioUnit(component: override) {
-                engine.attach(unit)
-                instrumentUnit = unit
-            }
-        }
-
-        var effectUnits: [AVAudioUnit] = []
-
-        // Load AU effects if the chain is not bypassed
-        if !container.isEffectChainBypassed {
-            for effect in container.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
-                guard !effect.isBypassed else { continue }
-                if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
-                    engine.attach(unit)
-                    // Restore preset if available
-                    if let presetData = effect.presetData {
-                        try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
-                    }
-                    effectUnits.append(unit)
-                }
-            }
-        }
-
-        // Build the chain: player → [instrument] → [effects...] → trackMixer
-        // Collect all processing nodes in order
-        var chain: [AVAudioNode] = []
-        if let inst = instrumentUnit { chain.append(inst) }
-        chain.append(contentsOf: effectUnits)
-
-        if chain.isEmpty {
-            engine.connect(player, to: trackMixer, format: nil)
-        } else {
-            engine.connect(player, to: chain[0], format: nil)
-            for i in 0..<(chain.count - 1) {
-                engine.connect(chain[i], to: chain[i + 1], format: nil)
-            }
-            engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
-        }
-
-        containerSubgraphs[container.id] = ContainerSubgraph(
-            playerNode: player,
-            instrumentUnit: instrumentUnit,
-            effectUnits: effectUnits,
-            trackMixer: trackMixer
-        )
     }
 
     private func samplesPerBar(bpm: Double, timeSignature: TimeSignature, sampleRate: Double) -> Double {
@@ -662,24 +788,32 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         guard !containersWithAutomation.isEmpty || !tracksWithAutomation.isEmpty else { return }
 
+        let startTime = Date()
+
+        lock.lock()
         playbackStartBar = fromBar
-        playbackStartTime = Date()
+        playbackStartTime = startTime
+        lock.unlock()
 
         let secondsPerBeat = 60.0 / bpm
         let beatsPerBar = Double(timeSignature.beatsPerBar)
         let secondsPerBar = beatsPerBar * secondsPerBeat
 
-        // Capture track mixers for track-level automation
+        // Capture all state upfront — timer handler must not access self
+        lock.lock()
         let capturedTrackMixers = self.trackMixers
         let capturedMasterMixer = self.masterMixerNode
+        let capturedContainerSubgraphs = self.containerSubgraphs
+        let capturedTrackEffectUnits = self.trackEffectUnits
+        lock.unlock()
+        let startBar = fromBar
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInteractive))
         // Evaluate at ~60 Hz (every ~16ms) for smooth parameter updates
         timer.schedule(deadline: .now(), repeating: .milliseconds(16))
-        timer.setEventHandler { [weak self] in
-            guard let self, let startTime = self.playbackStartTime else { return }
+        timer.setEventHandler {
             let elapsed = Date().timeIntervalSince(startTime)
-            let currentBar = self.playbackStartBar + elapsed / secondsPerBar
+            let currentBar = startBar + elapsed / secondsPerBar
 
             // Evaluate container-level automation
             for container in containersWithAutomation {
@@ -692,7 +826,29 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 let barOffset = currentBar - containerStartBar
                 for lane in container.automationLanes {
                     if let value = lane.interpolatedValue(atBar: barOffset) {
-                        self.setParameter(at: lane.targetPath, value: value)
+                        // Inline parameter setting using captured state
+                        if let containerID = lane.targetPath.containerID {
+                            if let subgraph = capturedContainerSubgraphs[containerID] {
+                                let units = subgraph.effectUnits
+                                if lane.targetPath.effectIndex >= 0,
+                                   lane.targetPath.effectIndex < units.count {
+                                    let unit = units[lane.targetPath.effectIndex]
+                                    unit.auAudioUnit.parameterTree?.parameter(
+                                        withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
+                                    )?.value = value
+                                }
+                            }
+                        } else {
+                            if let units = capturedTrackEffectUnits[lane.targetPath.trackID] {
+                                if lane.targetPath.effectIndex >= 0,
+                                   lane.targetPath.effectIndex < units.count {
+                                    let unit = units[lane.targetPath.effectIndex]
+                                    unit.auAudioUnit.parameterTree?.parameter(
+                                        withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
+                                    )?.value = value
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -720,13 +876,18 @@ public final class PlaybackScheduler: @unchecked Sendable {
             }
         }
         timer.resume()
+        lock.lock()
         automationTimer = timer
+        lock.unlock()
     }
 
     private func stopAutomationTimer() {
-        automationTimer?.cancel()
+        lock.lock()
+        let timer = automationTimer
         automationTimer = nil
         playbackStartTime = nil
+        lock.unlock()
+        timer?.cancel()
     }
 }
 
@@ -734,28 +895,32 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
 extension PlaybackScheduler: ParameterResolver {
     public func setParameter(at path: EffectPath, value: Float) -> Bool {
+        lock.lock()
+        let unit: AVAudioUnit?
         if let containerID = path.containerID {
-            // Target is a container-level effect
-            guard let subgraph = containerSubgraphs[containerID] else { return false }
-            let units = subgraph.effectUnits
-            guard path.effectIndex >= 0, path.effectIndex < units.count else { return false }
-            let unit = units[path.effectIndex]
-            guard let param = unit.auAudioUnit.parameterTree?.parameter(
-                withAddress: AUParameterAddress(path.parameterAddress)
-            ) else { return false }
-            param.value = value
-            return true
+            if let subgraph = containerSubgraphs[containerID] {
+                let units = subgraph.effectUnits
+                unit = (path.effectIndex >= 0 && path.effectIndex < units.count)
+                    ? units[path.effectIndex] : nil
+            } else {
+                unit = nil
+            }
         } else {
-            // Track-level effect
-            guard let units = trackEffectUnits[path.trackID] else { return false }
-            guard path.effectIndex >= 0, path.effectIndex < units.count else { return false }
-            let unit = units[path.effectIndex]
-            guard let param = unit.auAudioUnit.parameterTree?.parameter(
-                withAddress: AUParameterAddress(path.parameterAddress)
-            ) else { return false }
-            param.value = value
-            return true
+            if let units = trackEffectUnits[path.trackID] {
+                unit = (path.effectIndex >= 0 && path.effectIndex < units.count)
+                    ? units[path.effectIndex] : nil
+            } else {
+                unit = nil
+            }
         }
+        lock.unlock()
+
+        guard let unit else { return false }
+        guard let param = unit.auAudioUnit.parameterTree?.parameter(
+            withAddress: AUParameterAddress(path.parameterAddress)
+        ) else { return false }
+        param.value = value
+        return true
     }
 }
 
@@ -763,14 +928,20 @@ extension PlaybackScheduler: ParameterResolver {
 
 extension PlaybackScheduler: ContainerTriggerDelegate {
     public func triggerStart(containerID: ID<Container>) {
-        guard let song = currentSong else { return }
+        lock.lock()
+        let song = currentSong
+        let alreadyActive = activeContainers.contains(where: { $0.id == containerID })
+        let bpm = currentBPM
+        let ts = currentTimeSignature
+        let sr = currentSampleRate
+        lock.unlock()
+
+        guard let song, !alreadyActive else { return }
         let allContainers = song.tracks.flatMap(\.containers)
         for track in song.tracks {
             guard let container = track.containers.first(where: { $0.id == containerID }) else { continue }
-            // Skip if already active
-            guard !activeContainers.contains(where: { $0.id == containerID }) else { return }
             let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
-            let spb = samplesPerBar(bpm: currentBPM, timeSignature: currentTimeSignature, sampleRate: currentSampleRate)
+            let spb = samplesPerBar(bpm: bpm, timeSignature: ts, sampleRate: sr)
             scheduleContainer(
                 container: resolved,
                 fromBar: Double(resolved.startBar),
@@ -781,21 +952,31 @@ extension PlaybackScheduler: ContainerTriggerDelegate {
     }
 
     public func triggerStop(containerID: ID<Container>) {
-        guard let subgraph = containerSubgraphs[containerID] else { return }
-        subgraph.playerNode.stop()
-        if let index = activeContainers.firstIndex(where: { $0.id == containerID }) {
-            let container = activeContainers[index]
-            actionDispatcher?.containerDidExit(container)
+        lock.lock()
+        let subgraph = containerSubgraphs[containerID]
+        let index = activeContainers.firstIndex(where: { $0.id == containerID })
+        var container: Container?
+        var trackIDToUnsuppress: ID<Track>?
+        if let index {
+            container = activeContainers[index]
             activeContainers.remove(at: index)
 
-            // If no more active containers on this track, unsuppress monitoring
             if let trackID = containerToTrack[containerID] {
                 let hasOtherActive = activeContainers.contains { containerToTrack[$0.id] == trackID }
                 if !hasOtherActive {
                     tracksWithActiveContainers.remove(trackID)
-                    inputMonitor?.unsuppressMonitoring(trackID: trackID)
+                    trackIDToUnsuppress = trackID
                 }
             }
+        }
+        lock.unlock()
+
+        subgraph?.playerNode.stop()
+        if let container {
+            actionDispatcher?.containerDidExit(container)
+        }
+        if let trackID = trackIDToUnsuppress {
+            inputMonitor?.unsuppressMonitoring(trackID: trackID)
         }
     }
 

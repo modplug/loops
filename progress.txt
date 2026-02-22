@@ -478,3 +478,15 @@
 - `LoopsAppEntry`: `setupMIDIParameterDispatch()` wires MIDIManager CC events → MIDIDispatcher, intercepts events during learn mode, syncs dispatcher mappings on change
 - 20 new tests: MIDIParameterMapping Codable round-trip, CC scaling (0→min, 127→max, 64→midpoint), Project backward-compat decode, Project with mappings round-trip, ProjectViewModel CRUD (add/remove by ID/target/all), undo/redo (add/remove), multiple mappings, MIDIDispatcher parameter dispatch (mapped/unmapped/learn-mode), MIDILearnController parameter learning/cancel, learn flow integration, learn replaces existing mapping
 - All 550 tests pass
+
+### Iteration 10 — #81 Expression pedal quick-assign: per-track CC → volume/effect
+- `Track` gains `expressionPedalCC: UInt8?` (default nil) and `expressionPedalTarget: EffectPath?` (nil = track volume)
+- Backward-compatible decoding (both default to nil for old project files)
+- `ProjectViewModel`: `assignExpressionPedal(trackID:cc:target:)` — stores pedal config on track, creates `MIDIParameterMapping` (volume gets 0–2.0 range, effects get 0–1.0), removes old mapping on reassign, with full undo/redo
+- `ProjectViewModel`: `removeExpressionPedal(trackID:)` — clears track fields and removes corresponding mapping, with full undo/redo
+- `TrackInspectorView`: "Expression Pedal" section showing status ("CC #11 → Volume" or "Not assigned"), remove button, "Assign Expression Pedal" menu with target picker (Track Volume or effect parameters) and CC picker (CC #1, #2, #4, #7, #11)
+- `TrackHeaderView`: teal dial icon + "Exp" label indicator when expression pedal is assigned
+- `MainContentView`: wired `onAssignExpressionPedal` and `onRemoveExpressionPedal` callbacks to ProjectViewModel
+- `duplicateTrack` and `duplicateSong` copy `expressionPedalCC` and `expressionPedalTarget`
+- 14 new tests: Codable round-trip (with target, without target, backward compat), assign to volume (creates mapping with correct trigger/target/range), custom CC number, assign to effect parameter, CC→volume scaling (0→0.0, 127→2.0), remove clears mapping, remove no-op, assign undo/redo, remove undo/redo, reassign replaces previous, duplicateTrack copies, duplicateSong copies
+- All 564 tests pass

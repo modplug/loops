@@ -17,8 +17,7 @@ struct SectionLaneView: View {
     var onSectionDelete: ((ID<SectionRegion>) -> Void)?
     var onSectionRecolor: ((ID<SectionRegion>, String) -> Void)?
     var onSectionCopy: ((ID<SectionRegion>) -> Void)?
-    var onSectionSplit: ((ID<SectionRegion>, Int) -> Void)?
-    var playheadBar: Int
+    var onSectionSplit: ((ID<SectionRegion>) -> Void)?
 
     private let laneHeight: CGFloat = 24
 
@@ -47,7 +46,7 @@ struct SectionLaneView: View {
                     onRecolor: { color in onSectionRecolor?(section.id, color) },
                     onCopy: { onSectionCopy?(section.id) },
                     onSplit: {
-                        onSectionSplit?(section.id, playheadBar)
+                        onSectionSplit?(section.id)
                     }
                 )
             }

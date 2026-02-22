@@ -60,9 +60,8 @@ public struct LoopsRootView: View {
                 setlistViewModel = SetlistViewModel(project: viewModel)
             }
         }
-        .onChange(of: transportViewModel.playheadBar) { _, newValue in
-            timelineViewModel.playheadBar = newValue
-        }
+        // Note: playheadBar sync uses a direct callback (onPlayheadChanged)
+        // rather than .onChange to avoid re-evaluating this view's body at 60fps.
         .onChange(of: viewModel.currentSong?.countInBars) { _, newValue in
             transportViewModel.countInBars = newValue ?? 0
         }
@@ -82,6 +81,10 @@ public struct LoopsRootView: View {
             transportViewModel.songProvider = { [weak viewModel] in
                 guard let vm = viewModel, let song = vm.currentSong else { return nil }
                 return (song: song, recordings: vm.project.sourceRecordings, audioDir: vm.audioDirectory)
+            }
+            // Bridge playhead updates directly, bypassing SwiftUI observation
+            transportViewModel.onPlayheadChanged = { [weak timelineViewModel] bar in
+                timelineViewModel?.playheadBar = bar
             }
             // Sync count-in bars from the current song
             transportViewModel.countInBars = viewModel.currentSong?.countInBars ?? 0

@@ -4,7 +4,7 @@ import AVFoundation
 @testable import LoopsEngine
 @testable import LoopsCore
 
-@Suite("InputMonitor Tests")
+@Suite("InputMonitor Tests", .serialized)
 struct InputMonitorTests {
 
     @Test("Monitoring auto-disables during container playback")
@@ -97,5 +97,102 @@ struct InputMonitorTests {
 
         monitor.cleanup()
         #expect(monitor.monitoredTrackIDs.isEmpty)
+    }
+
+    // MARK: - Concurrent Stress Tests
+
+    @Test("Concurrent suppress/unsuppress vs enable/disable")
+    func concurrentSuppressVsEnableDisable() async {
+        let engine = AVAudioEngine()
+        let monitor = InputMonitor(engine: engine)
+        let trackID = ID<Track>()
+
+        // Seed with valid state
+        await monitor.enableMonitoring(trackID: trackID, insertEffects: [], volume: 1.0, pan: 0.0)
+
+        // Background: hammer suppress/unsuppress (reads + writes trackSubgraphs)
+        let suppressor = Task.detached(priority: .high) {
+            for i in 0..<5000 {
+                if i % 2 == 0 {
+                    monitor.suppressMonitoring(trackID: trackID)
+                } else {
+                    monitor.unsuppressMonitoring(trackID: trackID)
+                }
+            }
+        }
+
+        // Foreground: repeatedly enable (clears + rebuilds trackSubgraphs)
+        for _ in 0..<100 {
+            await monitor.enableMonitoring(trackID: trackID, insertEffects: [], volume: 1.0, pan: 0.0)
+        }
+
+        await suppressor.value
+        monitor.cleanup()
+    }
+
+    @Test("Concurrent cleanup vs suppress")
+    func concurrentCleanupVsSuppress() async {
+        let engine = AVAudioEngine()
+        let monitor = InputMonitor(engine: engine)
+        let trackIDs = (0..<5).map { _ in ID<Track>() }
+
+        // Seed with valid state
+        for id in trackIDs {
+            await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
+        }
+
+        // Background: hammer suppress/unsuppress on all tracks
+        let suppressor = Task.detached(priority: .high) {
+            for i in 0..<5000 {
+                let id = trackIDs[i % trackIDs.count]
+                if i % 2 == 0 {
+                    monitor.suppressMonitoring(trackID: id)
+                } else {
+                    monitor.unsuppressMonitoring(trackID: id)
+                }
+            }
+        }
+
+        // Foreground: repeatedly cleanup and re-enable
+        for _ in 0..<30 {
+            monitor.cleanup()
+            for id in trackIDs {
+                await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
+            }
+        }
+
+        await suppressor.value
+        monitor.cleanup()
+    }
+
+    @Test("Concurrent disable vs isMonitoring queries")
+    func concurrentDisableVsQueries() async {
+        let engine = AVAudioEngine()
+        let monitor = InputMonitor(engine: engine)
+        let trackIDs = (0..<10).map { _ in ID<Track>() }
+
+        for id in trackIDs {
+            await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
+        }
+
+        // Background: hammer query methods (reads trackSubgraphs)
+        let reader = Task.detached(priority: .high) {
+            for i in 0..<10000 {
+                let id = trackIDs[i % trackIDs.count]
+                _ = monitor.isMonitoring(trackID: id)
+                _ = monitor.isSuppressed(trackID: id)
+                _ = monitor.monitoredTrackIDs
+            }
+        }
+
+        // Foreground: disable and re-enable (writes trackSubgraphs)
+        for i in 0..<100 {
+            let id = trackIDs[i % trackIDs.count]
+            monitor.disableMonitoring(trackID: id)
+            await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
+        }
+
+        await reader.value
+        monitor.cleanup()
     }
 }

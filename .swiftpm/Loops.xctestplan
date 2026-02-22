@@ -9,10 +9,36 @@
     }
   ],
   "defaultOptions" : {
-
+    "environmentVariableEntries" : [
+      {
+        "key" : "LOOPS_AUDIO_TESTS",
+        "value" : "1"
+      }
+    ],
+    "threadSanitizerEnabled" : true
   },
   "testTargets" : [
-
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "LoopsCoreTests",
+        "name" : "LoopsCoreTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "LoopsAppTests",
+        "name" : "LoopsAppTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "LoopsEngineTests",
+        "name" : "LoopsEngineTests"
+      }
+    }
   ],
   "version" : 1
 }

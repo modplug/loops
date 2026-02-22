@@ -22,10 +22,19 @@ public final class TransportViewModel {
     private let transport: TransportManager
     private let engineManager: AudioEngineManager?
     private var playbackScheduler: PlaybackScheduler?
+    private var playbackGeneration = 0
+    private var playbackTask: Task<Void, Never>?
+    /// Tracks the last prepared song so we can skip re-preparing when unchanged.
+    private var lastPreparedSong: Song?
+    private var lastPreparedRecordingIDs: Set<ID<SourceRecording>> = []
 
     /// Closure to fetch the current song context for playback.
     /// Set by the view layer so play() always uses the latest data.
     public var songProvider: (() -> (song: Song, recordings: [ID<SourceRecording>: SourceRecording], audioDir: URL)?)?
+
+    /// Direct callback for playhead changes. Avoids SwiftUI observation overhead
+    /// by routing updates outside the view re-evaluation cycle.
+    public var onPlayheadChanged: ((Double) -> Void)?
 
     public init(transport: TransportManager, engineManager: AudioEngineManager? = nil) {
         self.transport = transport
@@ -34,6 +43,7 @@ public final class TransportViewModel {
         transport.onPositionUpdate = { [weak self] bar in
             Task { @MainActor [weak self] in
                 self?.playheadBar = bar
+                self?.onPlayheadChanged?(bar)
             }
         }
         transport.onCountInComplete = { [weak self] in
@@ -44,23 +54,15 @@ public final class TransportViewModel {
 
                 // Now start actual audio playback and recording
                 if let engine = self.engineManager, let context = self.songProvider?() {
-                    let scheduler = self.playbackScheduler
-                    let bar = self.playheadBar
-                    let currentBPM = self.bpm
-                    let ts = self.timeSignature
-                    let sr = engine.currentSampleRate
-                    let song = context.song
-                    let recordings = context.recordings
-                    Task {
-                        await scheduler?.prepare(song: song, sourceRecordings: recordings)
-                        scheduler?.play(
-                            song: song,
-                            fromBar: bar,
-                            bpm: currentBPM,
-                            timeSignature: ts,
-                            sampleRate: sr
-                        )
-                    }
+                    self.schedulePlayback(
+                        scheduler: self.playbackScheduler,
+                        song: context.song,
+                        recordings: context.recordings,
+                        fromBar: self.playheadBar,
+                        bpm: self.bpm,
+                        timeSignature: self.timeSignature,
+                        sampleRate: engine.currentSampleRate
+                    )
                 }
                 self.syncFromTransport()
             }
@@ -73,6 +75,7 @@ public final class TransportViewModel {
     }
 
     public func play() {
+        playbackGeneration += 1
         transport.bpm = bpm
         transport.timeSignature = timeSignature
         transport.countInBars = countInBars
@@ -111,23 +114,15 @@ public final class TransportViewModel {
                         scheduler.inputMonitor = engine.inputMonitor
                         playbackScheduler = scheduler
                     }
-                    let scheduler = playbackScheduler
-                    let bar = playheadBar
-                    let currentBPM = bpm
-                    let ts = timeSignature
-                    let sr = engine.currentSampleRate
-                    let song = context.song
-                    let recordings = context.recordings
-                    Task {
-                        await scheduler?.prepare(song: song, sourceRecordings: recordings)
-                        scheduler?.play(
-                            song: song,
-                            fromBar: bar,
-                            bpm: currentBPM,
-                            timeSignature: ts,
-                            sampleRate: sr
-                        )
-                    }
+                    schedulePlayback(
+                        scheduler: playbackScheduler,
+                        song: context.song,
+                        recordings: context.recordings,
+                        fromBar: playheadBar,
+                        bpm: bpm,
+                        timeSignature: timeSignature,
+                        sampleRate: engine.currentSampleRate
+                    )
                 }
             } else {
                 // Ensure scheduler exists for when count-in completes
@@ -150,14 +145,28 @@ public final class TransportViewModel {
     }
 
     public func pause() {
-        playbackScheduler?.stop()
+        playbackGeneration += 1
+        let previousTask = playbackTask
+        previousTask?.cancel()
+        let scheduler = playbackScheduler
+        playbackTask = Task {
+            _ = await previousTask?.value
+            scheduler?.stop()
+        }
         engineManager?.metronome?.setEnabled(false)
         transport.pause()
         syncFromTransport()
     }
 
     public func stop() {
-        playbackScheduler?.stop()
+        playbackGeneration += 1
+        let previousTask = playbackTask
+        previousTask?.cancel()
+        let scheduler = playbackScheduler
+        playbackTask = Task {
+            _ = await previousTask?.value
+            scheduler?.stop()
+        }
         engineManager?.metronome?.setEnabled(false)
         engineManager?.metronome?.reset()
         transport.stop()
@@ -220,9 +229,16 @@ public final class TransportViewModel {
     /// Seeks to a new bar position. If currently playing, stops and restarts
     /// playback from the new position so audio is rescheduled.
     public func seek(toBar bar: Double) {
+        playbackGeneration += 1
         let wasPlaying = isPlaying
         if wasPlaying {
-            playbackScheduler?.stop()
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            let scheduler = playbackScheduler
+            playbackTask = Task {
+                _ = await previousTask?.value
+                scheduler?.stop()
+            }
             engineManager?.metronome?.reset()
             transport.pause()
         }
@@ -241,23 +257,15 @@ public final class TransportViewModel {
             engine.metronome?.reset()
             engine.metronome?.setEnabled(isMetronomeEnabled)
 
-            let scheduler = playbackScheduler
-            let seekBar = playheadBar
-            let currentBPM = bpm
-            let ts = timeSignature
-            let sr = engine.currentSampleRate
-            let song = context.song
-            let recordings = context.recordings
-            Task {
-                await scheduler?.prepare(song: song, sourceRecordings: recordings)
-                scheduler?.play(
-                    song: song,
-                    fromBar: seekBar,
-                    bpm: currentBPM,
-                    timeSignature: ts,
-                    sampleRate: sr
-                )
-            }
+            schedulePlayback(
+                scheduler: playbackScheduler,
+                song: context.song,
+                recordings: context.recordings,
+                fromBar: playheadBar,
+                bpm: bpm,
+                timeSignature: timeSignature,
+                sampleRate: engine.currentSampleRate
+            )
             transport.play()
             syncFromTransport()
         }
@@ -278,6 +286,9 @@ public final class TransportViewModel {
 
     /// Enables or disables input monitoring for a track through the audio engine.
     public func setInputMonitoring(track: Track, enabled: Bool) {
+        // Only audio tracks use hardware input monitoring. MIDI tracks hear
+        // their instrument directly — routing the mic input would double the signal.
+        guard track.kind == .audio else { return }
         guard let engine = engineManager else { return }
         if !engine.isRunning {
             try? engine.start()
@@ -323,12 +334,55 @@ public final class TransportViewModel {
         return playbackScheduler?.setParameter(at: path, value: value) ?? false
     }
 
+    /// Serializes playback Tasks so only one prepare() runs at a time.
+    /// Each new Task awaits the previous one before starting, preventing
+    /// concurrent cleanup/prepare races on the audio graph.
+    ///
+    /// Skips the expensive `prepare()` call (which stops/starts the engine)
+    /// when the song and recordings haven't changed since the last prepare.
+    private func schedulePlayback(
+        scheduler: PlaybackScheduler?,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording],
+        fromBar: Double,
+        bpm: Double,
+        timeSignature: TimeSignature,
+        sampleRate: Double
+    ) {
+        let gen = playbackGeneration
+        let previousTask = playbackTask
+        previousTask?.cancel()
+        let needsPrepare = song != lastPreparedSong
+            || Set(recordings.keys) != lastPreparedRecordingIDs
+        playbackTask = Task {
+            _ = await previousTask?.value
+            guard self.playbackGeneration == gen else { return }
+            if needsPrepare {
+                await scheduler?.prepare(song: song, sourceRecordings: recordings)
+                guard self.playbackGeneration == gen else { return }
+                self.lastPreparedSong = song
+                self.lastPreparedRecordingIDs = Set(recordings.keys)
+            } else {
+                scheduler?.stop()
+            }
+            scheduler?.play(
+                song: song,
+                fromBar: fromBar,
+                bpm: bpm,
+                timeSignature: timeSignature,
+                sampleRate: sampleRate
+            )
+        }
+    }
+
     private func syncFromTransport() {
         isPlaying = transport.state == .playing || transport.state == .recording
         isCountingIn = transport.state == .countingIn
         isRecordArmed = transport.isRecordArmed
         isMetronomeEnabled = transport.isMetronomeEnabled
-        playheadBar = transport.playheadBar
+        let bar = transport.playheadBar
+        playheadBar = bar
+        onPlayheadChanged?(bar)
         countInBarsRemaining = transport.countInBarsRemaining
     }
 }
