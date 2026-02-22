@@ -8,6 +8,42 @@ public struct ClipboardContainerEntry: Equatable, Sendable {
     public let trackID: ID<Track>
 }
 
+/// An entry in the undo history panel, tracking action names and timestamps.
+public struct UndoHistoryEntry: Identifiable, Equatable {
+    public let id: UUID
+    public let actionName: String
+    public let timestamp: Date
+    /// Whether this entry represents the current state (top of undo stack).
+    public var isCurrent: Bool
+
+    public init(actionName: String, timestamp: Date = Date(), isCurrent: Bool = true) {
+        self.id = UUID()
+        self.actionName = actionName
+        self.timestamp = timestamp
+        self.isCurrent = isCurrent
+    }
+
+    /// Relative time string (e.g. "just now", "2m ago").
+    public var relativeTimeString: String {
+        let interval = Date().timeIntervalSince(timestamp)
+        if interval < 5 { return "just now" }
+        if interval < 60 { return "\(Int(interval))s ago" }
+        if interval < 3600 { return "\(Int(interval / 60))m ago" }
+        return "\(Int(interval / 3600))h ago"
+    }
+}
+
+/// Toast message shown briefly after undo/redo operations.
+public struct UndoToastMessage: Equatable, Identifiable {
+    public let id: UUID
+    public let text: String
+
+    public init(text: String) {
+        self.id = UUID()
+        self.text = text
+    }
+}
+
 /// Manages the current project state and file operations.
 @Observable
 @MainActor
@@ -34,13 +70,72 @@ public final class ProjectViewModel {
     /// that should be scheduled for playback.
     public var onRecordingPropagated: ((ID<SourceRecording>, String, [Container]) -> Void)?
 
+    /// History of undo/redo actions for the undo history panel.
+    public var undoHistory: [UndoHistoryEntry] = []
+    /// The index in undoHistory pointing to the current state.
+    /// Entries above this index are "undone" (available for redo).
+    public var undoHistoryCursor: Int = -1
+
+    /// Current toast message, set on undo/redo and auto-cleared.
+    public var undoToastMessage: UndoToastMessage?
+
     private let persistence = ProjectPersistence()
+    private var undoObservers: [NSObjectProtocol] = []
 
     public init(project: Project = Project()) {
         self.project = project
         let um = UndoManager()
         um.groupsByEvent = false
         self.undoManager = um
+        setupUndoNotifications()
+    }
+
+    /// Observe undo/redo notifications to trigger toast messages.
+    private func setupUndoNotifications() {
+        let undoObserver = NotificationCenter.default.addObserver(
+            forName: .NSUndoManagerDidUndoChange,
+            object: undoManager,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.handleUndoNotification()
+            }
+        }
+        let redoObserver = NotificationCenter.default.addObserver(
+            forName: .NSUndoManagerDidRedoChange,
+            object: undoManager,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.handleRedoNotification()
+            }
+        }
+        undoObservers = [undoObserver, redoObserver]
+    }
+
+    private func handleUndoNotification() {
+        if undoHistoryCursor >= 0 {
+            undoHistoryCursor -= 1
+            // Mark current entry
+            for i in undoHistory.indices {
+                undoHistory[i].isCurrent = (i == undoHistoryCursor)
+            }
+        }
+        let actionName = undoManager?.redoActionName ?? ""
+        undoToastMessage = UndoToastMessage(text: "Undo: \(actionName)")
+    }
+
+    private func handleRedoNotification() {
+        if undoHistoryCursor < undoHistory.count - 1 {
+            undoHistoryCursor += 1
+            for i in undoHistory.indices {
+                undoHistory[i].isCurrent = (i == undoHistoryCursor)
+            }
+        }
+        let actionName = undoManager?.undoActionName ?? ""
+        undoToastMessage = UndoToastMessage(text: "Redo: \(actionName)")
     }
 
     /// Registers an undo action that snapshots and restores the full project state.
@@ -67,6 +162,23 @@ public final class ProjectViewModel {
         }
         undoManager?.setActionName(actionName)
         undoManager?.endUndoGrouping()
+        // Track in undo history panel
+        appendToUndoHistory(actionName: actionName)
+    }
+
+    /// Adds an entry to the undo history, trimming any "future" entries above the cursor.
+    private func appendToUndoHistory(actionName: String) {
+        // Remove entries above the current cursor (they represent undone actions that are now invalidated)
+        if undoHistoryCursor < undoHistory.count - 1 {
+            undoHistory.removeSubrange((undoHistoryCursor + 1)...)
+        }
+        // Unmark previous current
+        for i in undoHistory.indices {
+            undoHistory[i].isCurrent = false
+        }
+        let entry = UndoHistoryEntry(actionName: actionName, isCurrent: true)
+        undoHistory.append(entry)
+        undoHistoryCursor = undoHistory.count - 1
     }
 
     /// Creates a new empty project with a default song (with master track).
@@ -78,6 +190,7 @@ public final class ProjectViewModel {
         projectURL = nil
         hasUnsavedChanges = false
         undoManager?.removeAllActions()
+        clearUndoHistory()
     }
 
     /// Saves the project to the current URL, or prompts for a location.
@@ -109,6 +222,13 @@ public final class ProjectViewModel {
         projectURL = url
         hasUnsavedChanges = false
         undoManager?.removeAllActions()
+        clearUndoHistory()
+    }
+
+    /// Clears the undo history panel.
+    public func clearUndoHistory() {
+        undoHistory.removeAll()
+        undoHistoryCursor = -1
     }
 
     // MARK: - Song Access
@@ -1822,13 +1942,15 @@ public final class ProjectViewModel {
     /// Returns the audio directory for this project.
     /// Uses the project bundle's Audio/ folder if saved, otherwise a temp directory.
     public var audioDirectory: URL {
+        let dir: URL
         if let projectURL = projectURL {
-            return projectURL.appendingPathComponent("Audio")
+            dir = projectURL.appendingPathComponent("Audio")
+        } else {
+            dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("loops-audio")
         }
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("loops-audio")
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        return tempDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
     }
 
     // MARK: - Audio Import

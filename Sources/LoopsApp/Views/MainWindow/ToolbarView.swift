@@ -20,8 +20,14 @@ public struct ToolbarView: View {
     var undoActionName: String
     var redoActionName: String
 
+    /// Undo history panel data.
+    var undoHistory: [UndoHistoryEntry]
+    var undoHistoryCursor: Int
+
     /// Available output ports for metronome routing.
     var availableOutputPorts: [OutputPort]
+
+    @State private var showUndoHistory: Bool = false
 
     private static let countInOptions = [0, 1, 2, 4]
 
@@ -39,6 +45,8 @@ public struct ToolbarView: View {
         canRedo: Bool = false,
         undoActionName: String = "",
         redoActionName: String = "",
+        undoHistory: [UndoHistoryEntry] = [],
+        undoHistoryCursor: Int = -1,
         availableOutputPorts: [OutputPort] = []
     ) {
         self.viewModel = viewModel
@@ -50,6 +58,8 @@ public struct ToolbarView: View {
         self.canRedo = canRedo
         self.undoActionName = undoActionName
         self.redoActionName = redoActionName
+        self.undoHistory = undoHistory
+        self.undoHistoryCursor = undoHistoryCursor
         self.availableOutputPorts = availableOutputPorts
         _bpmText = State(initialValue: String(format: "%.1f", viewModel.bpm))
     }
@@ -116,6 +126,18 @@ public struct ToolbarView: View {
                 .buttonStyle(.plain)
                 .disabled(!canRedo)
                 .help(redoActionName.isEmpty ? "Redo" : "Redo \(redoActionName)")
+
+                Button(action: { showUndoHistory.toggle() }) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(undoHistory.isEmpty ? Color.secondary.opacity(0.4) : Color.primary)
+                }
+                .buttonStyle(.plain)
+                .disabled(undoHistory.isEmpty)
+                .help("Undo History")
+                .popover(isPresented: $showUndoHistory) {
+                    UndoHistoryView(entries: undoHistory, cursor: undoHistoryCursor)
+                }
             }
 
             Divider().frame(height: 24)

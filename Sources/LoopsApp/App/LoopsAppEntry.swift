@@ -41,6 +41,8 @@ public struct LoopsRootView: View {
                     canRedo: viewModel.undoManager?.canRedo ?? false,
                     undoActionName: viewModel.undoManager?.undoActionName ?? "",
                     redoActionName: viewModel.undoManager?.redoActionName ?? "",
+                    undoHistory: viewModel.undoHistory,
+                    undoHistoryCursor: viewModel.undoHistoryCursor,
                     availableOutputPorts: engineManager?.deviceManager.outputDevices().flatMap { device in
                         engineManager?.deviceManager.outputPorts(for: device) ?? []
                     } ?? []
@@ -61,8 +63,32 @@ public struct LoopsRootView: View {
             if let setlistVM = setlistViewModel, setlistVM.isPerformMode {
                 PerformModeView(viewModel: setlistVM)
             }
+
+            // Undo/redo toast notification
+            VStack {
+                Spacer()
+                if let toast = viewModel.undoToastMessage {
+                    UndoToastView(message: toast)
+                        .padding(.bottom, 24)
+                        .id(toast.id)
+                }
+            }
+            .animation(.easeInOut(duration: 0.25), value: viewModel.undoToastMessage)
         }
         .frame(minWidth: 800, minHeight: 500)
+        .onChange(of: viewModel.undoToastMessage) { _, newValue in
+            guard newValue != nil else { return }
+            // Auto-dismiss toast after 2 seconds
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                // Only dismiss if the toast hasn't been replaced
+                if viewModel.undoToastMessage?.id == newValue?.id {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        viewModel.undoToastMessage = nil
+                    }
+                }
+            }
+        }
         .onAppear {
             if setlistViewModel == nil {
                 setlistViewModel = SetlistViewModel(project: viewModel)
