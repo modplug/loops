@@ -1847,4 +1847,79 @@ struct ModelSerializationTests {
         let resolved = clone2.resolved { id in allContainers.first(where: { $0.id == id }) }
         #expect(resolved.name == "Original")
     }
+
+    // MARK: - Clone resolution of sourceRecordingID
+
+    @Test("Clone inherits sourceRecordingID from parent when not overridden")
+    func cloneInheritsSourceRecordingID() {
+        let recID = ID<SourceRecording>()
+        let parent = Container(
+            name: "Parent",
+            startBar: 1,
+            lengthBars: 4,
+            sourceRecordingID: recID
+        )
+
+        let clone = Container(
+            name: "Clone",
+            startBar: 5,
+            lengthBars: 4,
+            parentContainerID: parent.id,
+            overriddenFields: []
+        )
+
+        let resolved = clone.resolved(parent: parent)
+        #expect(resolved.sourceRecordingID == recID)
+    }
+
+    @Test("Clone with .sourceRecording override keeps its own recording")
+    func cloneOverridesSourceRecordingID() {
+        let parentRecID = ID<SourceRecording>()
+        let cloneRecID = ID<SourceRecording>()
+
+        let parent = Container(
+            name: "Parent",
+            startBar: 1,
+            lengthBars: 4,
+            sourceRecordingID: parentRecID
+        )
+
+        let clone = Container(
+            name: "Clone",
+            startBar: 5,
+            lengthBars: 4,
+            sourceRecordingID: cloneRecID,
+            parentContainerID: parent.id,
+            overriddenFields: [.sourceRecording]
+        )
+
+        let resolved = clone.resolved(parent: parent)
+        #expect(resolved.sourceRecordingID == cloneRecID)
+    }
+
+    @Test("Clone without parent recording resolves to nil sourceRecordingID")
+    func cloneInheritsNilSourceRecording() {
+        let parent = Container(
+            name: "Parent",
+            startBar: 1,
+            lengthBars: 4,
+            sourceRecordingID: nil
+        )
+
+        let clone = Container(
+            name: "Clone",
+            startBar: 5,
+            lengthBars: 4,
+            parentContainerID: parent.id,
+            overriddenFields: []
+        )
+
+        let resolved = clone.resolved(parent: parent)
+        #expect(resolved.sourceRecordingID == nil)
+    }
+
+    @Test("ContainerField.sourceRecording has correct display name")
+    func sourceRecordingDisplayName() {
+        #expect(ContainerField.sourceRecording.displayName == "Recording")
+    }
 }

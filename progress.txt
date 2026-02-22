@@ -780,3 +780,34 @@
 - If playback was stopped when switching songs, only the playhead resets to bar 1 (no playback starts)
 - 8 new tests: selectSong fires onSongChanged, same song no callback, handleSongChanged resets playhead, handleSongChanged restarts playback, handleSongChanged while stopped no playback, setlist advance triggers callback, setlist previous triggers callback, sidebar switch triggers callback
 - All 785 tests pass
+
+### Iteration 21 — #103 Return-to-start-position on stop (configurable, default on)
+- `TransportManager`: added `returnToStartEnabled: Bool` (default true) and `userPlayStartBar: Double` (records where user pressed play)
+- `TransportManager`: `play()` now records `userPlayStartBar = playheadBar` before starting playback (both normal and count-in paths)
+- `TransportManager`: `stop()` modified — when `returnToStartEnabled` is true and playhead has moved past start position, returns to `userPlayStartBar`; when already at start position (double-stop), returns to bar 1; when disabled, always returns to bar 1
+- `TransportViewModel`: added `returnToStartEnabled: Bool` persisted via UserDefaults (key: "returnToStartEnabled", default true)
+- `TransportViewModel`: added `isPerformMode: Bool` — when true, return-to-start is bypassed in `stop()` (always goes to bar 1)
+- `TransportViewModel`: `stop()` syncs `transport.returnToStartEnabled = returnToStartEnabled && !isPerformMode` before calling `transport.stop()`
+- `ToolbarView`: return-to-start toggle button (arrow.uturn.backward icon) next to stop button, accent-colored when enabled, secondary when disabled
+- `LoopsRootView`: wired `.onChange(of: setlistViewModel?.isPerformMode)` to sync `transportViewModel.isPerformMode`
+- 14 new tests: stop returns to start position (enabled), double-stop returns to bar 1, stop returns to bar 1 (disabled), default is true, stop from bar 1, userPlayStartBar set on play, pause-then-play sets new start bar, bypassed via property, count-in records start bar, TransportViewModel stop returns to start, TransportViewModel stop disabled, TransportViewModel perform mode bypass, TransportViewModel perform mode off
+- All 798 tests pass
+
+# ============================================================
+# PRD #105: UX Refinements & Live Looping
+# ============================================================
+
+## Completed
+### Iteration 1 — #104 Linked container recording propagation: record once, play in all linked copies
+- `ContainerField`: `.sourceRecording` case already present for clone override tracking
+- `Container.resolved(parent:)`: already inherits `sourceRecordingID` when `.sourceRecording` not in `overriddenFields`; fixed misleading doc comment
+- `PlaybackScheduler.prepare()`: already pre-allocates subgraphs for linked clones without audio (line 173: `guard hasAudio || isLinkedClone`)
+- `PlaybackScheduler.registerRecording(id:file:)`: already exists for mid-session audio file registration
+- `PlaybackScheduler.scheduleLinkedContainer(container:)`: already exists for mid-session linked container scheduling
+- `ProjectViewModel.setContainerRecording()`: already propagates recording to clones (via `parentContainerID`) and link group members (via `linkGroupID`), marks `.sourceRecording` as overridden when recording into a clone, fires `onRecordingPropagated` callback
+- `TransportViewModel.registerAndScheduleLinkedContainers()`: NEW — loads audio file from disk, registers with running scheduler, schedules all linked containers for playback
+- `ProjectViewModel.updateRecordingPeaks()`: UPDATED — now propagates live waveform peaks to all linked containers (clones and link group members) that don't override `.sourceRecording`
+- `ProjectViewModel.setContainerRecording()`: clears live peaks for both the recorded container and all linked containers on completion
+- `LoopsAppEntry`: already wires `onRecordingPropagated` → `registerAndScheduleLinkedContainers`
+- 13 new tests: clone inherits sourceRecordingID, clone overrides sourceRecordingID, clone inherits nil sourceRecording, ContainerField.sourceRecording displayName, recording propagates via parentContainerID, recording propagates via linkGroup, recording override isolation, recording into clone marks overridden, onRecordingPropagated callback fires, live peaks propagate to linked containers, live peaks don't propagate to overridden clone, setContainerRecording clears live peaks, no propagation to unrelated containers
+- All 811 tests pass

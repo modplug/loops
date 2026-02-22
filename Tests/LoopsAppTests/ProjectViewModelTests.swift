@@ -3223,4 +3223,270 @@ struct ProjectViewModelTests {
         transportVM.stop()
         #expect(transportVM.playheadBar == 8.0)
     }
+
+    // MARK: - Linked Container Recording Propagation
+
+    @Test("Recording propagates to clone containers via parentContainerID")
+    @MainActor
+    func recordingPropagatesViaParentContainerID() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Create a clone at bars 5-9
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)
+        #expect(cloneID != nil)
+
+        // Record into parent
+        let recording = SourceRecording(
+            filename: "test.caf",
+            sampleRate: 44100,
+            sampleCount: 176400
+        )
+        vm.setContainerRecording(trackID: trackID, containerID: parentID, recording: recording)
+
+        // Parent should have the recording
+        let parent = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == parentID })
+        #expect(parent?.sourceRecordingID == recording.id)
+
+        // Clone should also have the recording (propagated)
+        let clone = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == cloneID })
+        #expect(clone?.sourceRecordingID == recording.id)
+    }
+
+    @Test("Recording propagates to containers in same link group")
+    @MainActor
+    func recordingPropagatesViaLinkGroup() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+
+        let containerAID = vm.project.songs[0].tracks[0].containers[0].id
+        let containerBID = vm.project.songs[0].tracks[0].containers[1].id
+
+        // Link the two containers
+        vm.linkContainers(containerIDs: [containerAID, containerBID])
+
+        // Verify they have the same linkGroupID
+        let containerA = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == containerAID })
+        let containerB = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == containerBID })
+        #expect(containerA?.linkGroupID != nil)
+        #expect(containerA?.linkGroupID == containerB?.linkGroupID)
+
+        // Record into container A
+        let recording = SourceRecording(
+            filename: "test.caf",
+            sampleRate: 44100,
+            sampleCount: 176400
+        )
+        vm.setContainerRecording(trackID: trackID, containerID: containerAID, recording: recording)
+
+        // Both should have the recording
+        let updatedA = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == containerAID })
+        let updatedB = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == containerBID })
+        #expect(updatedA?.sourceRecordingID == recording.id)
+        #expect(updatedB?.sourceRecordingID == recording.id)
+    }
+
+    @Test("Recording override isolation: overridden clone keeps its own recording")
+    @MainActor
+    func recordingOverrideIsolation() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Create a clone
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Record into clone first (this should mark .sourceRecording as overridden)
+        let cloneRecording = SourceRecording(
+            filename: "clone.caf",
+            sampleRate: 44100,
+            sampleCount: 88200
+        )
+        vm.setContainerRecording(trackID: trackID, containerID: cloneID, recording: cloneRecording)
+
+        // Now record into parent — clone should NOT be affected
+        let parentRecording = SourceRecording(
+            filename: "parent.caf",
+            sampleRate: 44100,
+            sampleCount: 176400
+        )
+        vm.setContainerRecording(trackID: trackID, containerID: parentID, recording: parentRecording)
+
+        let parent = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == parentID })
+        let clone = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == cloneID })
+        #expect(parent?.sourceRecordingID == parentRecording.id)
+        #expect(clone?.sourceRecordingID == cloneRecording.id)
+        #expect(clone?.overriddenFields.contains(.sourceRecording) == true)
+    }
+
+    @Test("Recording into clone marks .sourceRecording as overridden")
+    @MainActor
+    func recordingIntoCloneMarksOverridden() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        let recording = SourceRecording(
+            filename: "test.caf",
+            sampleRate: 44100,
+            sampleCount: 176400
+        )
+        vm.setContainerRecording(trackID: trackID, containerID: cloneID, recording: recording)
+
+        let clone = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == cloneID })
+        #expect(clone?.overriddenFields.contains(.sourceRecording) == true)
+    }
+
+    @Test("onRecordingPropagated fires with linked container list")
+    @MainActor
+    func onRecordingPropagatedCallback() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        var propagatedRecordingID: ID<SourceRecording>?
+        var propagatedContainers: [Container] = []
+        vm.onRecordingPropagated = { recID, _, containers in
+            propagatedRecordingID = recID
+            propagatedContainers = containers
+        }
+
+        let recording = SourceRecording(
+            filename: "test.caf",
+            sampleRate: 44100,
+            sampleCount: 176400
+        )
+        vm.setContainerRecording(trackID: trackID, containerID: parentID, recording: recording)
+
+        #expect(propagatedRecordingID == recording.id)
+        #expect(propagatedContainers.count == 1)
+        #expect(propagatedContainers[0].id == cloneID)
+    }
+
+    @Test("Live recording peaks propagate to linked containers")
+    @MainActor
+    func liveRecordingPeaksPropagate() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        let peaks: [Float] = [0.1, 0.5, 0.8, 0.3]
+        vm.updateRecordingPeaks(containerID: parentID, peaks: peaks)
+
+        // Parent gets peaks
+        #expect(vm.liveRecordingPeaks[parentID] == peaks)
+        // Clone also gets peaks
+        #expect(vm.liveRecordingPeaks[cloneID] == peaks)
+    }
+
+    @Test("Live recording peaks do not propagate to overridden clone")
+    @MainActor
+    func liveRecordingPeaksDoNotPropagateToOverridden() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Record into clone first to mark .sourceRecording as overridden
+        let cloneRecording = SourceRecording(
+            filename: "clone.caf",
+            sampleRate: 44100,
+            sampleCount: 88200
+        )
+        vm.setContainerRecording(trackID: trackID, containerID: cloneID, recording: cloneRecording)
+
+        // Now update peaks for parent recording
+        let peaks: [Float] = [0.1, 0.5, 0.8, 0.3]
+        vm.updateRecordingPeaks(containerID: parentID, peaks: peaks)
+
+        // Parent gets peaks
+        #expect(vm.liveRecordingPeaks[parentID] == peaks)
+        // Clone should NOT get peaks (it has its own recording)
+        #expect(vm.liveRecordingPeaks[cloneID] == nil)
+    }
+
+    @Test("setContainerRecording clears live peaks for all linked containers")
+    @MainActor
+    func setContainerRecordingClearsLivePeaks() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Simulate live peaks
+        vm.liveRecordingPeaks[parentID] = [0.1, 0.5]
+        vm.liveRecordingPeaks[cloneID] = [0.1, 0.5]
+
+        let recording = SourceRecording(
+            filename: "test.caf",
+            sampleRate: 44100,
+            sampleCount: 176400,
+            waveformPeaks: [0.2, 0.6, 0.9]
+        )
+        vm.setContainerRecording(trackID: trackID, containerID: parentID, recording: recording)
+
+        // Live peaks should be cleared after recording completes
+        #expect(vm.liveRecordingPeaks[parentID] == nil)
+        #expect(vm.liveRecordingPeaks[cloneID] == nil)
+    }
+
+    @Test("No recording propagation without clone or link group relationship")
+    @MainActor
+    func noRecordingPropagationToUnrelated() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+
+        let containerAID = vm.project.songs[0].tracks[0].containers[0].id
+        let containerBID = vm.project.songs[0].tracks[0].containers[1].id
+
+        let recording = SourceRecording(
+            filename: "test.caf",
+            sampleRate: 44100,
+            sampleCount: 176400
+        )
+        vm.setContainerRecording(trackID: trackID, containerID: containerAID, recording: recording)
+
+        let containerA = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == containerAID })
+        let containerB = vm.project.songs[0].tracks[0].containers.first(where: { $0.id == containerBID })
+        #expect(containerA?.sourceRecordingID == recording.id)
+        #expect(containerB?.sourceRecordingID == nil)
+    }
 }

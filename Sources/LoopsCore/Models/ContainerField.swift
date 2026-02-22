@@ -11,6 +11,7 @@ public enum ContainerField: String, Codable, Equatable, Sendable, CaseIterable, 
     case name
     case loopSettings
     case instrumentOverride
+    case sourceRecording
 
     public var displayName: String {
         switch self {
@@ -22,6 +23,7 @@ public enum ContainerField: String, Codable, Equatable, Sendable, CaseIterable, 
         case .name: return "Name"
         case .loopSettings: return "Loop Settings"
         case .instrumentOverride: return "Instrument"
+        case .sourceRecording: return "Recording"
         }
     }
 }

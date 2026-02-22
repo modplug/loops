@@ -29,6 +29,11 @@ public final class ProjectViewModel {
     /// Cleared when recording completes and peaks are stored in the SourceRecording.
     public var liveRecordingPeaks: [ID<Container>: [Float]] = [:]
 
+    /// Callback fired when a recording completes and needs to be registered with the
+    /// running PlaybackScheduler. Parameters: recordingID, filename, linked containers
+    /// that should be scheduled for playback.
+    public var onRecordingPropagated: ((ID<SourceRecording>, String, [Container]) -> Void)?
+
     private let persistence = ProjectPersistence()
 
     public init(project: Project = Project()) {
@@ -695,6 +700,7 @@ public final class ProjectViewModel {
     }
 
     /// Updates the source recording for a container after recording completes.
+    /// Propagates the recording to all linked containers (clones and link group members).
     public func setContainerRecording(trackID: ID<Track>, containerID: ID<Container>, recording: SourceRecording) {
         guard !project.songs.isEmpty else { return }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
@@ -706,9 +712,54 @@ public final class ProjectViewModel {
         // Update container reference
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].sourceRecordingID = recording.id
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].isRecordArmed = false
+
+        // If recording into a clone, mark .sourceRecording as overridden
+        if project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].parentContainerID != nil {
+            project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].overriddenFields.insert(.sourceRecording)
+        }
+
+        // Propagate recording to linked containers:
+        // 1. Clones of this container (parentContainerID == containerID) that don't override .sourceRecording
+        // 2. Containers in the same linkGroupID that don't override .sourceRecording
+        let recordedContainer = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+        let allContainers = project.songs[currentSongIndex].tracks.flatMap(\.containers)
+        var linkedContainersToSchedule: [Container] = []
+
+        for ti in project.songs[currentSongIndex].tracks.indices {
+            let track = project.songs[currentSongIndex].tracks[ti]
+            if track.kind == .master { continue }
+            for ci in track.containers.indices {
+                let c = track.containers[ci]
+                if c.id == containerID { continue }
+
+                let isCloneOfRecorded = c.parentContainerID == containerID
+                let sharesLinkGroup = recordedContainer.linkGroupID != nil
+                    && c.linkGroupID == recordedContainer.linkGroupID
+                let overridesRecording = c.overriddenFields.contains(.sourceRecording)
+
+                if (isCloneOfRecorded || sharesLinkGroup) && !overridesRecording {
+                    project.songs[currentSongIndex].tracks[ti].containers[ci].sourceRecordingID = recording.id
+                    // Collect the resolved container for scheduling
+                    let updated = project.songs[currentSongIndex].tracks[ti].containers[ci]
+                    let resolved = updated.resolved { id in allContainers.first(where: { $0.id == id }) }
+                    linkedContainersToSchedule.append(resolved)
+                }
+            }
+        }
+
         // Clear live recording peaks now that final peaks are in the SourceRecording
         liveRecordingPeaks.removeValue(forKey: containerID)
+        // Also clear live peaks from linked containers
+        for linked in linkedContainersToSchedule {
+            liveRecordingPeaks.removeValue(forKey: linked.id)
+        }
+
         hasUnsavedChanges = true
+
+        // Notify scheduler to register the audio file and schedule linked containers
+        if !linkedContainersToSchedule.isEmpty {
+            onRecordingPropagated?(recording.id, recording.filename, linkedContainersToSchedule)
+        }
     }
 
     /// Updates the loop settings for a container.
@@ -1920,8 +1971,26 @@ public final class ProjectViewModel {
     }
 
     /// Updates live waveform peaks during an in-progress recording.
+    /// Also propagates peaks to all linked containers (clones and link group members)
+    /// so the waveform draws in real-time across all copies.
     public func updateRecordingPeaks(containerID: ID<Container>, peaks: [Float]) {
         liveRecordingPeaks[containerID] = peaks
+
+        // Propagate to linked containers
+        guard let song = currentSong else { return }
+        let allContainers = song.tracks.flatMap(\.containers)
+        guard let recordingContainer = allContainers.first(where: { $0.id == containerID }) else { return }
+
+        for container in allContainers {
+            if container.id == containerID { continue }
+            let isCloneOfRecorded = container.parentContainerID == containerID
+            let sharesLinkGroup = recordingContainer.linkGroupID != nil
+                && container.linkGroupID == recordingContainer.linkGroupID
+            let overridesRecording = container.overriddenFields.contains(.sourceRecording)
+            if (isCloneOfRecorded || sharesLinkGroup) && !overridesRecording {
+                liveRecordingPeaks[container.id] = peaks
+            }
+        }
     }
 
     // MARK: - Private

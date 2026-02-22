@@ -164,8 +164,20 @@ public final class PlaybackScheduler: @unchecked Sendable {
             for container in track.containers {
                 guard !Task.isCancelled else { return }
                 let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
-                guard let recID = resolved.sourceRecordingID else { continue }
-                let fileFormat = loadedFiles[recID]?.processingFormat
+                let hasAudio = resolved.sourceRecordingID != nil
+                let isLinkedClone = container.parentContainerID != nil
+
+                // Skip containers without audio unless they are linked clones
+                // (linked clones get pre-allocated subgraphs so audio can be
+                // registered mid-session when the parent finishes recording).
+                guard hasAudio || isLinkedClone else { continue }
+
+                let fileFormat: AVAudioFormat?
+                if let recID = resolved.sourceRecordingID {
+                    fileFormat = loadedFiles[recID]?.processingFormat
+                } else {
+                    fileFormat = nil
+                }
 
                 var instrumentUnit: AVAudioUnit?
                 if let override = resolved.instrumentOverride {
@@ -489,6 +501,33 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
         mixer.volume = isMuted ? 0.0 : volume
         mixer.pan = pan
+    }
+
+    /// Registers an audio file for a recording that completed mid-session.
+    /// This makes the audio available for scheduling linked containers.
+    public func registerRecording(id: ID<SourceRecording>, file: AVAudioFile) {
+        lock.lock()
+        audioFiles[id] = file
+        lock.unlock()
+    }
+
+    /// Schedules a linked container for playback mid-session, using the current
+    /// playback state. Called after a recording is propagated to a linked clone.
+    public func scheduleLinkedContainer(container: Container) {
+        lock.lock()
+        let bpm = currentBPM
+        let ts = currentTimeSignature
+        let sr = currentSampleRate
+        let song = currentSong
+        lock.unlock()
+
+        guard song != nil else { return }
+        let spb = samplesPerBar(bpm: bpm, timeSignature: ts, sampleRate: sr)
+        scheduleContainer(
+            container: container,
+            fromBar: Double(container.startBar),
+            samplesPerBar: spb
+        )
     }
 
     // MARK: - Private

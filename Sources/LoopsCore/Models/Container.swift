@@ -134,8 +134,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
 
     /// Returns a new container with all fields resolved against the given parent.
     /// For each field: if the field is in `overriddenFields`, the local value is used;
-    /// otherwise, the parent's value is inherited. Position fields (startBar, lengthBars,
-    /// sourceRecordingID, etc.) are always local.
+    /// otherwise, the parent's value is inherited. Position fields (startBar, lengthBars)
+    /// are always local.
     public func resolved(parent: Container) -> Container {
         var result = self
         if !overriddenFields.contains(.name) {
@@ -163,6 +163,9 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         }
         if !overriddenFields.contains(.instrumentOverride) {
             result.instrumentOverride = parent.instrumentOverride
+        }
+        if !overriddenFields.contains(.sourceRecording) {
+            result.sourceRecordingID = parent.sourceRecordingID
         }
         return result
     }

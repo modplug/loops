@@ -441,6 +441,25 @@ public final class TransportViewModel {
         playbackScheduler?.liveMasterEffectUnit(effectIndex: effectIndex)
     }
 
+    /// Registers a newly completed recording with the running scheduler and
+    /// schedules all linked containers that now have audio available.
+    /// Called by ProjectViewModel.onRecordingPropagated after recording
+    /// propagation updates the model.
+    public func registerAndScheduleLinkedContainers(
+        recordingID: ID<SourceRecording>,
+        filename: String,
+        linkedContainers: [Container]
+    ) {
+        guard let scheduler = playbackScheduler,
+              let context = songProvider?() else { return }
+        let fileURL = context.audioDir.appendingPathComponent(filename)
+        guard let file = try? AVAudioFile(forReading: fileURL) else { return }
+        scheduler.registerRecording(id: recordingID, file: file)
+        for container in linkedContainers {
+            scheduler.scheduleLinkedContainer(container: container)
+        }
+    }
+
     /// Serializes playback Tasks so only one prepare() runs at a time.
     /// Each new Task awaits the previous one before starting, preventing
     /// concurrent cleanup/prepare races on the audio graph.

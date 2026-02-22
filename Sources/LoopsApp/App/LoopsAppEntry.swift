@@ -121,6 +121,15 @@ public struct LoopsRootView: View {
                 viewModel?.setContainerRecording(trackID: trackID, containerID: containerID, recording: recording)
             }
 
+            // Wire recording propagation: register audio file and schedule linked containers
+            viewModel.onRecordingPropagated = { [weak transportViewModel] recordingID, filename, linkedContainers in
+                transportViewModel?.registerAndScheduleLinkedContainers(
+                    recordingID: recordingID,
+                    filename: filename,
+                    linkedContainers: linkedContainers
+                )
+            }
+
             // Set up master level metering
             engineManager?.onMasterLevelUpdate = { [weak mixerViewModel] peak in
                 Task { @MainActor in
