@@ -715,7 +715,13 @@ struct ModelSerializationTests {
 
     @Test("MappableControl all cases round-trip")
     func mappableControlRoundTrip() throws {
-        for control in MappableControl.allCases {
+        let allControls: [MappableControl] = MappableControl.transportControls + [
+            .trackVolume(trackIndex: 0), .trackPan(trackIndex: 1),
+            .trackMute(trackIndex: 2), .trackSolo(trackIndex: 3),
+            .trackSend(trackIndex: 0, sendIndex: 1),
+            .trackSelect(trackIndex: 4), .songSelect(songIndex: 5),
+        ]
+        for control in allControls {
             let decoded = try roundTrip(control)
             #expect(control == decoded)
         }

@@ -7,8 +7,11 @@ public final class MIDIDispatcher: @unchecked Sendable {
     private var mappings: [MIDITrigger: MappableControl] = [:]
     private var parameterMappings: [MIDITrigger: [MIDIParameterMapping]] = [:]
 
-    /// Callback when a mapped control is triggered.
+    /// Callback when a mapped toggle/button control is triggered (no value).
     public var onControlTriggered: ((MappableControl) -> Void)?
+
+    /// Callback when a mapped continuous control receives a CC value. Parameters: (control, scaledValue).
+    public var onContinuousControlTriggered: ((MappableControl, Float) -> Void)?
 
     /// Callback for MIDI learn mode.
     public var onMIDILearnEvent: ((MIDITrigger) -> Void)?
@@ -70,7 +73,13 @@ public final class MIDIDispatcher: @unchecked Sendable {
         lock.unlock()
 
         if let control {
-            onControlTriggered?(control)
+            if control.isContinuous {
+                let range = control.valueRange
+                let scaled = range.min + (Float(ccValue) / 127.0) * (range.max - range.min)
+                onContinuousControlTriggered?(control, scaled)
+            } else {
+                onControlTriggered?(control)
+            }
         }
 
         if let paramMappings {

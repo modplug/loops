@@ -259,6 +259,320 @@ struct MIDILearnControllerTests {
         #expect(controller.learningControl == nil)
         #expect(!dispatcher.isLearning)
     }
+
+    @Test("Learning for trackVolume creates mapping")
+    func learningTrackVolume() {
+        let dispatcher = MIDIDispatcher()
+        let controller = MIDILearnController(dispatcher: dispatcher)
+
+        var learnedMapping: MIDIMapping?
+        controller.onMappingLearned = { mapping in
+            learnedMapping = mapping
+        }
+
+        controller.startLearning(for: .trackVolume(trackIndex: 2))
+        dispatcher.dispatch(.controlChange(channel: 0, controller: 3))
+
+        #expect(learnedMapping != nil)
+        #expect(learnedMapping?.control == .trackVolume(trackIndex: 2))
+        #expect(learnedMapping?.trigger == .controlChange(channel: 0, controller: 3))
+    }
+}
+
+@Suite("MappableControl Extended Tests")
+struct MappableControlExtendedTests {
+
+    private let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return e
+    }()
+    private let decoder = JSONDecoder()
+
+    private func roundTrip<T: Codable & Equatable>(_ value: T) throws -> T {
+        let data = try encoder.encode(value)
+        return try decoder.decode(T.self, from: data)
+    }
+
+    @Test("MappableControl trackVolume Codable round-trip")
+    func trackVolumeRoundTrip() throws {
+        let control = MappableControl.trackVolume(trackIndex: 3)
+        let decoded = try roundTrip(control)
+        #expect(decoded == control)
+    }
+
+    @Test("MappableControl trackPan Codable round-trip")
+    func trackPanRoundTrip() throws {
+        let control = MappableControl.trackPan(trackIndex: 1)
+        let decoded = try roundTrip(control)
+        #expect(decoded == control)
+    }
+
+    @Test("MappableControl trackMute Codable round-trip")
+    func trackMuteRoundTrip() throws {
+        let control = MappableControl.trackMute(trackIndex: 5)
+        let decoded = try roundTrip(control)
+        #expect(decoded == control)
+    }
+
+    @Test("MappableControl trackSolo Codable round-trip")
+    func trackSoloRoundTrip() throws {
+        let control = MappableControl.trackSolo(trackIndex: 2)
+        let decoded = try roundTrip(control)
+        #expect(decoded == control)
+    }
+
+    @Test("MappableControl trackSend Codable round-trip")
+    func trackSendRoundTrip() throws {
+        let control = MappableControl.trackSend(trackIndex: 1, sendIndex: 2)
+        let decoded = try roundTrip(control)
+        #expect(decoded == control)
+    }
+
+    @Test("MappableControl trackSelect Codable round-trip")
+    func trackSelectRoundTrip() throws {
+        let control = MappableControl.trackSelect(trackIndex: 4)
+        let decoded = try roundTrip(control)
+        #expect(decoded == control)
+    }
+
+    @Test("MappableControl songSelect Codable round-trip")
+    func songSelectRoundTrip() throws {
+        let control = MappableControl.songSelect(songIndex: 7)
+        let decoded = try roundTrip(control)
+        #expect(decoded == control)
+    }
+
+    @Test("MappableControl transport cases round-trip")
+    func transportCasesRoundTrip() throws {
+        for control in MappableControl.transportControls {
+            let decoded = try roundTrip(control)
+            #expect(decoded == control)
+        }
+    }
+
+    @Test("MappableControl backward-compatible decode from legacy string format")
+    func legacyStringDecode() throws {
+        // Simulate old format: plain string value
+        let legacyCases: [(String, MappableControl)] = [
+            ("\"playPause\"", .playPause),
+            ("\"stop\"", .stop),
+            ("\"recordArm\"", .recordArm),
+            ("\"nextSong\"", .nextSong),
+            ("\"previousSong\"", .previousSong),
+            ("\"metronomeToggle\"", .metronomeToggle),
+        ]
+        for (json, expected) in legacyCases {
+            let data = json.data(using: .utf8)!
+            let decoded = try decoder.decode(MappableControl.self, from: data)
+            #expect(decoded == expected, "Failed to decode legacy \(json)")
+        }
+    }
+
+    @Test("MIDIMapping with new control types round-trip")
+    func mappingWithNewControlsRoundTrip() throws {
+        let mapping = MIDIMapping(
+            control: .trackVolume(trackIndex: 0),
+            trigger: .controlChange(channel: 0, controller: 1)
+        )
+        let decoded = try roundTrip(mapping)
+        #expect(decoded.control == .trackVolume(trackIndex: 0))
+        #expect(decoded.trigger == .controlChange(channel: 0, controller: 1))
+    }
+
+    @Test("MappableControl isContinuous property")
+    func isContinuousProperty() {
+        #expect(MappableControl.trackVolume(trackIndex: 0).isContinuous)
+        #expect(MappableControl.trackPan(trackIndex: 0).isContinuous)
+        #expect(MappableControl.trackSend(trackIndex: 0, sendIndex: 0).isContinuous)
+        #expect(!MappableControl.playPause.isContinuous)
+        #expect(!MappableControl.trackMute(trackIndex: 0).isContinuous)
+        #expect(!MappableControl.trackSolo(trackIndex: 0).isContinuous)
+        #expect(!MappableControl.trackSelect(trackIndex: 0).isContinuous)
+        #expect(!MappableControl.songSelect(songIndex: 0).isContinuous)
+    }
+
+    @Test("MappableControl valueRange for volume")
+    func volumeValueRange() {
+        let range = MappableControl.trackVolume(trackIndex: 0).valueRange
+        #expect(range.min == 0.0)
+        #expect(range.max == 2.0)
+    }
+
+    @Test("MappableControl valueRange for pan")
+    func panValueRange() {
+        let range = MappableControl.trackPan(trackIndex: 0).valueRange
+        #expect(range.min == -1.0)
+        #expect(range.max == 1.0)
+    }
+
+    @Test("MappableControl displayName for new cases")
+    func displayNames() {
+        #expect(MappableControl.trackVolume(trackIndex: 0).displayName == "Track 1 Volume")
+        #expect(MappableControl.trackPan(trackIndex: 2).displayName == "Track 3 Pan")
+        #expect(MappableControl.trackMute(trackIndex: 0).displayName == "Track 1 Mute")
+        #expect(MappableControl.trackSolo(trackIndex: 1).displayName == "Track 2 Solo")
+        #expect(MappableControl.trackSend(trackIndex: 0, sendIndex: 1).displayName == "Track 1 Send 2")
+        #expect(MappableControl.trackSelect(trackIndex: 3).displayName == "Select Track 4")
+        #expect(MappableControl.songSelect(songIndex: 0).displayName == "Song 1")
+    }
+
+    @Test("MappableControl transportControls returns all 6 transport controls")
+    func transportControlsList() {
+        let controls = MappableControl.transportControls
+        #expect(controls.count == 6)
+        #expect(controls.contains(.playPause))
+        #expect(controls.contains(.stop))
+        #expect(controls.contains(.recordArm))
+        #expect(controls.contains(.nextSong))
+        #expect(controls.contains(.previousSong))
+        #expect(controls.contains(.metronomeToggle))
+    }
+
+    @Test("MappableControl mixerControls generates 4 controls per track")
+    func mixerControlsList() {
+        let controls = MappableControl.mixerControls(trackCount: 3)
+        #expect(controls.count == 12)
+        #expect(controls.contains(.trackVolume(trackIndex: 0)))
+        #expect(controls.contains(.trackPan(trackIndex: 2)))
+        #expect(controls.contains(.trackMute(trackIndex: 1)))
+        #expect(controls.contains(.trackSolo(trackIndex: 2)))
+    }
+
+    @Test("MappableControl navigationControls generates track and song controls")
+    func navigationControlsList() {
+        let controls = MappableControl.navigationControls(trackCount: 2, songCount: 3)
+        #expect(controls.count == 5)
+        #expect(controls.contains(.trackSelect(trackIndex: 0)))
+        #expect(controls.contains(.trackSelect(trackIndex: 1)))
+        #expect(controls.contains(.songSelect(songIndex: 0)))
+        #expect(controls.contains(.songSelect(songIndex: 2)))
+    }
+}
+
+@Suite("MIDIDispatcher Extended Routing Tests")
+struct MIDIDispatcherExtendedRoutingTests {
+
+    @Test("Dispatcher routes CC to track volume via continuous callback")
+    func dispatchTrackVolume() {
+        let dispatcher = MIDIDispatcher()
+        let mapping = MIDIMapping(
+            control: .trackVolume(trackIndex: 0),
+            trigger: .controlChange(channel: 0, controller: 7)
+        )
+        dispatcher.updateMappings([mapping])
+
+        var receivedControl: MappableControl?
+        var receivedValue: Float?
+        dispatcher.onContinuousControlTriggered = { control, value in
+            receivedControl = control
+            receivedValue = value
+        }
+        var toggleTriggered = false
+        dispatcher.onControlTriggered = { _ in
+            toggleTriggered = true
+        }
+
+        dispatcher.dispatch(.controlChange(channel: 0, controller: 7), ccValue: 127)
+        #expect(receivedControl == .trackVolume(trackIndex: 0))
+        // Volume range 0-2, CC 127 = 2.0
+        #expect(receivedValue != nil)
+        #expect(abs(receivedValue! - 2.0) < 0.001)
+        #expect(!toggleTriggered, "Continuous control should not trigger toggle callback")
+    }
+
+    @Test("Dispatcher routes CC to track pan via continuous callback")
+    func dispatchTrackPan() {
+        let dispatcher = MIDIDispatcher()
+        let mapping = MIDIMapping(
+            control: .trackPan(trackIndex: 1),
+            trigger: .controlChange(channel: 0, controller: 10)
+        )
+        dispatcher.updateMappings([mapping])
+
+        var receivedValue: Float?
+        dispatcher.onContinuousControlTriggered = { _, value in
+            receivedValue = value
+        }
+
+        // CC 0 = -1.0 (pan left)
+        dispatcher.dispatch(.controlChange(channel: 0, controller: 10), ccValue: 0)
+        #expect(receivedValue != nil)
+        #expect(abs(receivedValue! - (-1.0)) < 0.001)
+
+        // CC 64 = center (approximately 0.0)
+        dispatcher.dispatch(.controlChange(channel: 0, controller: 10), ccValue: 64)
+        let expectedMid: Float = -1.0 + (64.0 / 127.0) * 2.0
+        #expect(abs(receivedValue! - expectedMid) < 0.01)
+    }
+
+    @Test("Dispatcher routes toggle controls via onControlTriggered even with CC value")
+    func dispatchToggleMute() {
+        let dispatcher = MIDIDispatcher()
+        let mapping = MIDIMapping(
+            control: .trackMute(trackIndex: 0),
+            trigger: .controlChange(channel: 0, controller: 20)
+        )
+        dispatcher.updateMappings([mapping])
+
+        var toggledControl: MappableControl?
+        dispatcher.onControlTriggered = { control in
+            toggledControl = control
+        }
+        var continuousTriggered = false
+        dispatcher.onContinuousControlTriggered = { _, _ in
+            continuousTriggered = true
+        }
+
+        dispatcher.dispatch(.controlChange(channel: 0, controller: 20), ccValue: 127)
+        #expect(toggledControl == .trackMute(trackIndex: 0))
+        #expect(!continuousTriggered, "Toggle control should not trigger continuous callback")
+    }
+
+    @Test("Dispatcher routes songSelect via onControlTriggered")
+    func dispatchSongSelect() {
+        let dispatcher = MIDIDispatcher()
+        let mapping = MIDIMapping(
+            control: .songSelect(songIndex: 2),
+            trigger: .controlChange(channel: 0, controller: 50)
+        )
+        dispatcher.updateMappings([mapping])
+
+        var triggered: MappableControl?
+        dispatcher.onControlTriggered = { control in
+            triggered = control
+        }
+
+        dispatcher.dispatch(.controlChange(channel: 0, controller: 50), ccValue: 127)
+        #expect(triggered == .songSelect(songIndex: 2))
+    }
+
+    @Test("Bank-style mapping: sequential CCs to sequential tracks")
+    func bankStyleMapping() {
+        let dispatcher = MIDIDispatcher()
+        let mappings = (0..<4).map { idx in
+            MIDIMapping(
+                control: .trackVolume(trackIndex: idx),
+                trigger: .controlChange(channel: 0, controller: UInt8(1 + idx))
+            )
+        }
+        dispatcher.updateMappings(mappings)
+
+        var received: [(MappableControl, Float)] = []
+        dispatcher.onContinuousControlTriggered = { control, value in
+            received.append((control, value))
+        }
+
+        for i in 0..<4 {
+            dispatcher.dispatch(.controlChange(channel: 0, controller: UInt8(1 + i)), ccValue: 64)
+        }
+
+        #expect(received.count == 4)
+        #expect(received[0].0 == .trackVolume(trackIndex: 0))
+        #expect(received[1].0 == .trackVolume(trackIndex: 1))
+        #expect(received[2].0 == .trackVolume(trackIndex: 2))
+        #expect(received[3].0 == .trackVolume(trackIndex: 3))
+    }
 }
 
 @Suite("FootPedalPresets Tests")

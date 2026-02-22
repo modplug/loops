@@ -564,6 +564,16 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    /// Sets a send level on a track.
+    public func setTrackSendLevel(trackID: ID<Track>, sendIndex: Int, level: Float) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard sendIndex < project.songs[currentSongIndex].tracks[index].sendLevels.count else { return }
+        registerUndo(actionName: "Adjust Send Level")
+        project.songs[currentSongIndex].tracks[index].sendLevels[sendIndex].level = max(0.0, min(level, 1.0))
+        hasUnsavedChanges = true
+    }
+
     private func reindexTracks() {
         guard !project.songs.isEmpty else { return }
         for i in project.songs[currentSongIndex].tracks.indices {
@@ -1907,6 +1917,9 @@ public final class ProjectViewModel {
 
     /// Callback invoked when MIDI parameter mappings change (to sync dispatcher).
     public var onMIDIParameterMappingsChanged: (() -> Void)?
+
+    /// Callback invoked when MIDI control mappings change (to sync dispatcher).
+    public var onMIDIMappingsChanged: (() -> Void)?
 
     /// Starts MIDI parameter learn mode for the given target path.
     public func startMIDIParameterLearn(targetPath: EffectPath) {

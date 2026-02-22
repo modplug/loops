@@ -178,37 +178,128 @@ public struct LoopsRootView: View {
         }
     }
 
-    /// Wires MIDI CC events to parameter mapping dispatch and learn flow.
+    /// Wires MIDI CC events to control mapping dispatch, parameter mapping dispatch, and learn flow.
     private func setupMIDIParameterDispatch() {
         guard let midiManager = engineManager?.midiManager else { return }
 
+        // Parameter dispatcher for effect/AU parameter CC mappings
         let paramDispatcher = MIDIDispatcher()
         paramDispatcher.updateParameterMappings(viewModel.project.midiParameterMappings)
 
-        // When a CC arrives with a value, scale and apply to the target parameter
         paramDispatcher.onParameterValue = { [weak transportViewModel] path, value in
             Task { @MainActor [weak transportViewModel] in
                 transportViewModel?.setParameter(at: path, value: value)
             }
         }
 
-        midiManager.onMIDICCWithValue = { trigger, ccValue in
-            paramDispatcher.dispatch(trigger, ccValue: ccValue)
-        }
+        // Control dispatcher for transport + mixer + navigation MIDI mappings
+        let controlDispatcher = MIDIDispatcher()
+        controlDispatcher.updateMappings(viewModel.project.midiMappings)
+        let slVM = setlistViewModel
 
-        // Wire MIDI learn: when ProjectViewModel is in learn mode, intercept events
-        midiManager.onMIDIEvent = { [weak viewModel] trigger in
-            guard let vm = viewModel, vm.isMIDIParameterLearning else { return }
-            Task { @MainActor [weak vm] in
-                vm?.completeMIDIParameterLearn(trigger: trigger)
-                // Rebuild the parameter dispatcher mappings
-                paramDispatcher.updateParameterMappings(vm?.project.midiParameterMappings ?? [])
+        controlDispatcher.onControlTriggered = { [weak viewModel, weak transportViewModel, weak slVM] control in
+            Task { @MainActor [weak viewModel, weak transportViewModel, weak slVM] in
+                guard let vm = viewModel else { return }
+                let regularTracks = vm.currentSong?.tracks.filter { $0.kind != .master } ?? []
+                switch control {
+                case .playPause: transportViewModel?.togglePlayPause()
+                case .stop: transportViewModel?.stop()
+                case .recordArm:
+                    if let trackID = vm.selectedTrackID {
+                        let track = vm.currentSong?.tracks.first(where: { $0.id == trackID })
+                        vm.setTrackRecordArmed(trackID: trackID, armed: !(track?.isRecordArmed ?? false))
+                    }
+                case .nextSong:
+                    if let slVM = setlistViewModel, slVM.isPerformMode {
+                        slVM.advanceToNextSong()
+                    } else {
+                        let nextIdx = vm.currentSongIndex + 1
+                        if nextIdx < vm.project.songs.count {
+                            vm.selectSong(id: vm.project.songs[nextIdx].id)
+                        }
+                    }
+                case .previousSong:
+                    if let slVM = setlistViewModel, slVM.isPerformMode {
+                        slVM.goToPreviousSong()
+                    } else {
+                        let prevIdx = vm.currentSongIndex - 1
+                        if prevIdx >= 0 {
+                            vm.selectSong(id: vm.project.songs[prevIdx].id)
+                        }
+                    }
+                case .metronomeToggle: transportViewModel?.toggleMetronome()
+                case .trackMute(let idx):
+                    if idx < regularTracks.count {
+                        vm.toggleMute(trackID: regularTracks[idx].id)
+                    }
+                case .trackSolo(let idx):
+                    if idx < regularTracks.count {
+                        vm.toggleSolo(trackID: regularTracks[idx].id)
+                    }
+                case .trackSelect(let idx):
+                    if idx < regularTracks.count {
+                        vm.selectedTrackID = regularTracks[idx].id
+                    }
+                case .songSelect(let idx):
+                    if idx < vm.project.songs.count {
+                        vm.selectSong(id: vm.project.songs[idx].id)
+                    }
+                case .trackVolume, .trackPan, .trackSend:
+                    break // Handled by onContinuousControlTriggered
+                }
             }
         }
 
-        // When mappings change (add/remove), rebuild the dispatcher
+        controlDispatcher.onContinuousControlTriggered = { [weak viewModel] control, value in
+            Task { @MainActor [weak viewModel] in
+                guard let vm = viewModel else { return }
+                let regularTracks = vm.currentSong?.tracks.filter { $0.kind != .master } ?? []
+                switch control {
+                case .trackVolume(let idx):
+                    if idx < regularTracks.count {
+                        vm.setTrackVolume(trackID: regularTracks[idx].id, volume: value)
+                    }
+                case .trackPan(let idx):
+                    if idx < regularTracks.count {
+                        vm.setTrackPan(trackID: regularTracks[idx].id, pan: value)
+                    }
+                case .trackSend(let trackIdx, let sendIdx):
+                    if trackIdx < regularTracks.count, sendIdx < regularTracks[trackIdx].sendLevels.count {
+                        vm.setTrackSendLevel(trackID: regularTracks[trackIdx].id, sendIndex: sendIdx, level: value)
+                    }
+                default: break
+                }
+            }
+        }
+
+        midiManager.onMIDICCWithValue = { trigger, ccValue in
+            controlDispatcher.dispatch(trigger, ccValue: ccValue)
+            paramDispatcher.dispatch(trigger, ccValue: ccValue)
+        }
+
+        // Also dispatch note events to the control dispatcher (for toggle controls)
+        let previousOnMIDIEvent = midiManager.onMIDIEvent
+        midiManager.onMIDIEvent = { [weak viewModel] trigger in
+            // Learn mode takes priority
+            if let vm = viewModel, vm.isMIDIParameterLearning {
+                Task { @MainActor [weak vm] in
+                    vm?.completeMIDIParameterLearn(trigger: trigger)
+                    paramDispatcher.updateParameterMappings(vm?.project.midiParameterMappings ?? [])
+                }
+                return
+            }
+            controlDispatcher.dispatch(trigger)
+            previousOnMIDIEvent?(trigger)
+        }
+
+        // When parameter mappings change, rebuild the parameter dispatcher
         viewModel.onMIDIParameterMappingsChanged = { [weak viewModel] in
             paramDispatcher.updateParameterMappings(viewModel?.project.midiParameterMappings ?? [])
+        }
+
+        // When control mappings change, rebuild the control dispatcher
+        viewModel.onMIDIMappingsChanged = { [weak viewModel] in
+            controlDispatcher.updateMappings(viewModel?.project.midiMappings ?? [])
         }
 
         // Wire MIDI activity monitor: raw message callback

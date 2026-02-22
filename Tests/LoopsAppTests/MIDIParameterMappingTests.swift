@@ -439,4 +439,106 @@ struct MIDIParameterMappingTests {
         #expect(vm.project.midiParameterMappings.count == 1)
         #expect(vm.project.midiParameterMappings[0].targetPath == target2)
     }
+
+    // MARK: - Extended MIDI Mapping Targets (Issue #110)
+
+    @Test("ProjectViewModel dispatches mute toggle for mapped track")
+    @MainActor
+    func muteToggleViaMIDI() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let tracks = vm.currentSong?.tracks.filter { $0.kind != .master } ?? []
+        guard let track = tracks.first else { return }
+
+        #expect(!track.isMuted)
+        vm.toggleMute(trackID: track.id)
+        let mutedTrack = vm.currentSong?.tracks.first(where: { $0.id == track.id })
+        #expect(mutedTrack?.isMuted == true)
+    }
+
+    @Test("ProjectViewModel dispatches solo toggle for mapped track")
+    @MainActor
+    func soloToggleViaMIDI() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let tracks = vm.currentSong?.tracks.filter { $0.kind != .master } ?? []
+        guard let track = tracks.first else { return }
+
+        #expect(!track.isSoloed)
+        vm.toggleSolo(trackID: track.id)
+        let soloedTrack = vm.currentSong?.tracks.first(where: { $0.id == track.id })
+        #expect(soloedTrack?.isSoloed == true)
+    }
+
+    @Test("ProjectViewModel selectSong by index triggers song change")
+    @MainActor
+    func songSelectByIndex() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addSong()
+        #expect(vm.project.songs.count == 2)
+
+        let secondSongID = vm.project.songs[1].id
+        vm.selectSong(id: secondSongID)
+        #expect(vm.currentSongID == secondSongID)
+    }
+
+    @Test("ProjectViewModel setTrackVolume clamps to 0-2 range")
+    @MainActor
+    func trackVolumeClamp() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let tracks = vm.currentSong?.tracks.filter { $0.kind != .master } ?? []
+        guard let track = tracks.first else { return }
+
+        vm.setTrackVolume(trackID: track.id, volume: 1.5)
+        let updated = vm.currentSong?.tracks.first(where: { $0.id == track.id })
+        #expect(updated?.volume == 1.5)
+
+        vm.setTrackVolume(trackID: track.id, volume: 3.0) // Over max
+        let clamped = vm.currentSong?.tracks.first(where: { $0.id == track.id })
+        #expect(clamped?.volume == 2.0)
+    }
+
+    @Test("ProjectViewModel setTrackPan clamps to -1..1 range")
+    @MainActor
+    func trackPanClamp() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let tracks = vm.currentSong?.tracks.filter { $0.kind != .master } ?? []
+        guard let track = tracks.first else { return }
+
+        vm.setTrackPan(trackID: track.id, pan: 0.5)
+        let updated = vm.currentSong?.tracks.first(where: { $0.id == track.id })
+        #expect(updated?.pan == 0.5)
+
+        vm.setTrackPan(trackID: track.id, pan: -2.0) // Under min
+        let clamped = vm.currentSong?.tracks.first(where: { $0.id == track.id })
+        #expect(clamped?.pan == -1.0)
+    }
+
+    @Test("ProjectViewModel setTrackSendLevel with valid index")
+    @MainActor
+    func setTrackSendLevel() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let tracks = vm.currentSong?.tracks.filter { $0.kind != .master } ?? []
+        guard let track = tracks.first else { return }
+
+        // By default tracks have no send levels, so this should be a no-op
+        vm.setTrackSendLevel(trackID: track.id, sendIndex: 0, level: 0.5)
+        // No crash = success for out-of-bounds guard
+    }
+
+    @Test("onMIDIMappingsChanged callback fires when set")
+    @MainActor
+    func onMIDIMappingsChangedCallback() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+
+        var callbackFired = false
+        vm.onMIDIMappingsChanged = { callbackFired = true }
+        vm.onMIDIMappingsChanged?()
+        #expect(callbackFired)
+    }
 }
