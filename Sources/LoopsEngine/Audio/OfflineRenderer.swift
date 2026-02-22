@@ -65,7 +65,7 @@ public final class OfflineRenderer {
     /// Calculates total song length in bars from the furthest container end.
     public static func songLengthBars(song: Song) -> Int {
         var maxEnd = 0
-        for track in song.tracks {
+        for track in song.tracks where track.kind != .master {
             for container in track.containers {
                 maxEnd = max(maxEnd, container.endBar)
             }
@@ -113,9 +113,11 @@ public final class OfflineRenderer {
             }
         }
 
-        // Determine which tracks are audible
+        // Determine which tracks are audible (master is handled separately)
+        let masterTrack = resolvedSong.tracks.first(where: { $0.kind == .master })
         let hasSolo = resolvedSong.tracks.contains { $0.isSoloed }
         var audibleTracks = resolvedSong.tracks.filter { track in
+            if track.kind == .master { return false }
             if track.isMuted { return false }
             if hasSolo && !track.isSoloed { return false }
             return true
@@ -226,18 +228,18 @@ public final class OfflineRenderer {
             }
         }
 
-        // Phase 3: Mix into output file
-        let outputSettings = createOutputSettings(config: config)
-        let outputFile = try AVAudioFile(
-            forWriting: config.destinationURL,
-            settings: outputSettings,
-            commonFormat: .pcmFormatFloat32,
-            interleaved: false
-        )
+        // Phase 3: Mix all tracks into pre-master buffer
+        let preMasterBuffer = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: totalFrames)!
+        preMasterBuffer.frameLength = totalFrames
+        if let pmData = preMasterBuffer.floatChannelData {
+            for ch in 0..<2 {
+                memset(pmData[ch], 0, Int(totalFrames) * MemoryLayout<Float>.size)
+            }
+        }
 
-        var framesWritten: AVAudioFrameCount = 0
-        while framesWritten < totalFrames {
-            let framesToProcess = min(chunkSize, totalFrames - framesWritten)
+        var mixOffset: AVAudioFrameCount = 0
+        while mixOffset < totalFrames {
+            let framesToProcess = min(chunkSize, totalFrames - mixOffset)
             let chunk = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: framesToProcess)!
             chunk.frameLength = framesToProcess
 
@@ -254,22 +256,70 @@ public final class OfflineRenderer {
                         volume: track.volume,
                         pan: track.pan,
                         into: chunk,
-                        startFrame: framesWritten
+                        startFrame: mixOffset
                     )
                 } else {
                     mixTrack(
                         track: track,
                         into: chunk,
-                        startFrame: framesWritten,
+                        startFrame: mixOffset,
                         samplesPerBar: spb,
                         processedContainers: processedContainers
                     )
                 }
             }
 
+            // Copy chunk into pre-master buffer
+            if let pmData = preMasterBuffer.floatChannelData, let chunkData = chunk.floatChannelData {
+                for ch in 0..<2 {
+                    memcpy(&pmData[ch][Int(mixOffset)], chunkData[ch], Int(framesToProcess) * MemoryLayout<Float>.size)
+                }
+            }
+
+            mixOffset += framesToProcess
+            progress?(min(Double(mixOffset) / Double(totalFrames) * 0.8, 0.8))
+        }
+
+        // Phase 4: Process through master effects chain
+        var finalBuffer = preMasterBuffer
+        if let master = masterTrack {
+            let hasActiveMasterEffects = !master.isEffectChainBypassed
+                && master.insertEffects.contains(where: { !$0.isBypassed })
+            if hasActiveMasterEffects {
+                if let processed = await processTrackThroughEffects(
+                    track: master,
+                    inputBuffer: preMasterBuffer
+                ) {
+                    finalBuffer = processed
+                }
+            }
+            applyMasterGain(to: finalBuffer, volume: master.volume, pan: master.pan)
+        }
+
+        // Phase 5: Write final buffer to output file
+        let outputSettings = createOutputSettings(config: config)
+        let outputFile = try AVAudioFile(
+            forWriting: config.destinationURL,
+            settings: outputSettings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+
+        var framesWritten: AVAudioFrameCount = 0
+        while framesWritten < totalFrames {
+            let framesToWrite = min(chunkSize, totalFrames - framesWritten)
+            let chunk = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: framesToWrite)!
+            chunk.frameLength = framesToWrite
+
+            if let chunkData = chunk.floatChannelData, let srcData = finalBuffer.floatChannelData {
+                for ch in 0..<2 {
+                    memcpy(chunkData[ch], &srcData[ch][Int(framesWritten)], Int(framesToWrite) * MemoryLayout<Float>.size)
+                }
+            }
+
             try outputFile.write(from: chunk)
-            framesWritten += framesToProcess
-            progress?(min(Double(framesWritten) / Double(totalFrames), 1.0))
+            framesWritten += framesToWrite
+            progress?(0.8 + min(Double(framesWritten) / Double(totalFrames) * 0.2, 0.2))
         }
 
         return config.destinationURL
@@ -646,6 +696,20 @@ public final class OfflineRenderer {
             guard srcIdx < srcFrames else { break }
             outData[0][i] += srcData[0][srcIdx] * leftGain
             outData[1][i] += srcData[1][srcIdx] * rightGain
+        }
+    }
+
+    // MARK: - Master Gain
+
+    /// Applies master volume and pan to a stereo buffer in-place.
+    private func applyMasterGain(to buffer: AVAudioPCMBuffer, volume: Float, pan: Float) {
+        guard let data = buffer.floatChannelData else { return }
+        let leftGain = volume * (pan <= 0 ? 1.0 : 1.0 - pan)
+        let rightGain = volume * (pan >= 0 ? 1.0 : 1.0 + pan)
+        let frames = Int(buffer.frameLength)
+        for i in 0..<frames {
+            data[0][i] *= leftGain
+            data[1][i] *= rightGain
         }
     }
 

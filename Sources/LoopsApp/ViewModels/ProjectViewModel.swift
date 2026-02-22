@@ -60,9 +60,10 @@ public final class ProjectViewModel {
         undoManager?.endUndoGrouping()
     }
 
-    /// Creates a new empty project with a default song.
+    /// Creates a new empty project with a default song (with master track).
     public func newProject() {
-        let defaultSong = Song(name: "Song 1")
+        var defaultSong = Song(name: "Song 1")
+        defaultSong.ensureMasterTrack()
         project = Project(songs: [defaultSong])
         currentSongID = defaultSong.id
         projectURL = nil
@@ -91,6 +92,10 @@ public final class ProjectViewModel {
     /// Loads a project from a bundle URL.
     public func open(from url: URL) throws {
         project = try persistence.load(from: url)
+        // Auto-create master tracks for old projects that don't have them
+        for i in project.songs.indices {
+            project.songs[i].ensureMasterTrack()
+        }
         currentSongID = project.songs.first?.id
         projectURL = url
         hasUnsavedChanges = false
@@ -135,11 +140,12 @@ public final class ProjectViewModel {
         selectedContainerID = nil
     }
 
-    /// Adds a new song with default settings.
+    /// Adds a new song with default settings (including master track).
     public func addSong() {
         registerUndo(actionName: "Add Song")
         let existingCount = project.songs.count
-        let song = Song(name: "Song \(existingCount + 1)")
+        var song = Song(name: "Song \(existingCount + 1)")
+        song.ensureMasterTrack()
         project.songs.append(song)
         currentSongID = song.id
         hasUnsavedChanges = true
@@ -219,7 +225,8 @@ public final class ProjectViewModel {
                             linkGroupID: container.linkGroupID,
                             loopSettings: container.loopSettings,
                             parentContainerID: container.parentContainerID,
-                            overriddenFields: container.overriddenFields
+                            overriddenFields: container.overriddenFields,
+                            metronomeSettings: container.metronomeSettings
                         )
                     },
                     insertEffects: track.insertEffects,
@@ -251,8 +258,10 @@ public final class ProjectViewModel {
     // MARK: - Track Management
 
     /// Adds a new track to the current song with auto-generated name.
+    /// Master tracks cannot be added manually (they are auto-created).
     public func addTrack(kind: TrackKind) {
         guard !project.songs.isEmpty else { return }
+        guard kind != .master else { return }
         registerUndo(actionName: "Add Track")
         let existingCount = project.songs[currentSongIndex].tracks
             .filter { $0.kind == kind }.count
@@ -260,12 +269,18 @@ public final class ProjectViewModel {
         let orderIndex = project.songs[currentSongIndex].tracks.count
         let track = Track(name: name, kind: kind, orderIndex: orderIndex)
         project.songs[currentSongIndex].tracks.append(track)
+        project.songs[currentSongIndex].ensureMasterTrackLast()
+        reindexTracks()
         hasUnsavedChanges = true
     }
 
     /// Removes a track from the current song by ID.
+    /// Master tracks cannot be deleted.
     public func removeTrack(id: ID<Track>) {
         guard !project.songs.isEmpty else { return }
+        // Prevent deleting the master track
+        if let track = project.songs[currentSongIndex].tracks.first(where: { $0.id == id }),
+           track.kind == .master { return }
         registerUndo(actionName: "Remove Track")
         project.songs[currentSongIndex].tracks.removeAll { $0.id == id }
         reindexTracks()
@@ -282,10 +297,17 @@ public final class ProjectViewModel {
     }
 
     /// Moves a track from one index to another (reordering).
+    /// Master track is pinned to the bottom and cannot be moved.
     public func moveTrack(from source: IndexSet, to destination: Int) {
         guard !project.songs.isEmpty else { return }
+        // Prevent moving the master track
+        let tracks = project.songs[currentSongIndex].tracks
+        for idx in source {
+            if tracks.indices.contains(idx) && tracks[idx].kind == .master { return }
+        }
         registerUndo(actionName: "Reorder Tracks")
         project.songs[currentSongIndex].tracks.move(fromOffsets: source, toOffset: destination)
+        project.songs[currentSongIndex].ensureMasterTrackLast()
         reindexTracks()
         hasUnsavedChanges = true
     }
@@ -379,6 +401,49 @@ public final class ProjectViewModel {
         for i in project.songs[currentSongIndex].tracks.indices {
             project.songs[currentSongIndex].tracks[i].orderIndex = i
         }
+    }
+
+    // MARK: - Master Track Management
+
+    /// Adds an insert effect to the master track.
+    public func addMasterEffect(effect: InsertEffect) {
+        guard !project.songs.isEmpty else { return }
+        guard let masterIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.kind == .master }) else { return }
+        registerUndo(actionName: "Add Master Effect")
+        var newEffect = effect
+        newEffect.orderIndex = project.songs[currentSongIndex].tracks[masterIndex].insertEffects.count
+        project.songs[currentSongIndex].tracks[masterIndex].insertEffects.append(newEffect)
+        hasUnsavedChanges = true
+    }
+
+    /// Removes an insert effect from the master track.
+    public func removeMasterEffect(effectID: ID<InsertEffect>) {
+        guard !project.songs.isEmpty else { return }
+        guard let masterIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.kind == .master }) else { return }
+        registerUndo(actionName: "Remove Master Effect")
+        project.songs[currentSongIndex].tracks[masterIndex].insertEffects.removeAll { $0.id == effectID }
+        for i in project.songs[currentSongIndex].tracks[masterIndex].insertEffects.indices {
+            project.songs[currentSongIndex].tracks[masterIndex].insertEffects[i].orderIndex = i
+        }
+        hasUnsavedChanges = true
+    }
+
+    /// Toggles bypass on the master track's entire effect chain.
+    public func toggleMasterEffectChainBypass() {
+        guard !project.songs.isEmpty else { return }
+        guard let masterIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.kind == .master }) else { return }
+        registerUndo(actionName: "Toggle Master Effect Bypass")
+        project.songs[currentSongIndex].tracks[masterIndex].isEffectChainBypassed.toggle()
+        hasUnsavedChanges = true
+    }
+
+    /// Sets the output port on the master track.
+    public func setMasterOutputPort(portID: String?) {
+        guard !project.songs.isEmpty else { return }
+        guard let masterIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.kind == .master }) else { return }
+        registerUndo(actionName: "Set Master Output")
+        project.songs[currentSongIndex].tracks[masterIndex].outputPortID = portID
+        hasUnsavedChanges = true
     }
 
     // MARK: - Selection State
@@ -678,22 +743,6 @@ public final class ProjectViewModel {
         }
     }
 
-    /// Updates the preset data for an insert effect within a container.
-    public func updateContainerEffectPreset(containerID: ID<Container>, effectID: ID<InsertEffect>, presetData: Data?) {
-        guard !project.songs.isEmpty else { return }
-        for trackIndex in project.songs[currentSongIndex].tracks.indices {
-            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
-                if let effectIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.firstIndex(where: { $0.id == effectID }) {
-                    registerUndo(actionName: "Update Effect Preset")
-                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[effectIndex].presetData = presetData
-                    markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
-                    hasUnsavedChanges = true
-                    return
-                }
-            }
-        }
-    }
-
     // MARK: - Container Instrument Override
 
     /// Sets or clears the instrument override on a container.
@@ -878,16 +927,15 @@ public final class ProjectViewModel {
         }
     }
 
-    /// Returns the track containing the selected container (single search for both).
-    public var selectedContainerTrack: Track? {
-        guard let id = selectedContainerID, let song = currentSong else { return nil }
-        return song.tracks.first { $0.containers.contains(where: { $0.id == id }) }
-    }
-
     /// Returns the selected container if one is selected.
     public var selectedContainer: Container? {
-        guard let id = selectedContainerID else { return nil }
-        return selectedContainerTrack?.containers.first(where: { $0.id == id })
+        guard let id = selectedContainerID, let song = currentSong else { return nil }
+        for track in song.tracks {
+            if let container = track.containers.first(where: { $0.id == id }) {
+                return container
+            }
+        }
+        return nil
     }
 
     /// Returns all containers in the current song (across all tracks).
@@ -904,7 +952,13 @@ public final class ProjectViewModel {
 
     /// Returns the track kind of the track containing the selected container.
     public var selectedContainerTrackKind: TrackKind? {
-        selectedContainerTrack?.kind
+        guard let id = selectedContainerID, let song = currentSong else { return nil }
+        for track in song.tracks {
+            if track.containers.contains(where: { $0.id == id }) {
+                return track.kind
+            }
+        }
+        return nil
     }
 
     // MARK: - Container Clone Management
@@ -1128,12 +1182,14 @@ public final class ProjectViewModel {
     }
 
     /// Duplicates a track with all its containers.
+    /// Master tracks cannot be duplicated.
     @discardableResult
     public func duplicateTrack(trackID: ID<Track>) -> ID<Track>? {
         guard !project.songs.isEmpty else { return nil }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
 
         let source = project.songs[currentSongIndex].tracks[trackIndex]
+        guard source.kind != .master else { return nil }
 
         registerUndo(actionName: "Duplicate Track")
         let copy = Track(
@@ -1175,6 +1231,7 @@ public final class ProjectViewModel {
             orderIndex: project.songs[currentSongIndex].tracks.count
         )
         project.songs[currentSongIndex].tracks.insert(copy, at: trackIndex + 1)
+        project.songs[currentSongIndex].ensureMasterTrackLast()
         reindexTracks()
         hasUnsavedChanges = true
         return copy.id

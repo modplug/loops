@@ -249,12 +249,10 @@ public struct MainContentView: View {
             .frame(minWidth: 180, idealWidth: 250, maxWidth: 300)
         }
         .sheet(isPresented: $showContainerDetailEditor) {
-            if let container = projectViewModel.selectedContainer,
-               let track = projectViewModel.selectedContainerTrack {
+            if let container = projectViewModel.selectedContainer {
                 ContainerDetailEditor(
                     container: container,
-                    trackKind: track.kind,
-                    containerTrack: track,
+                    trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
                     allContainers: projectViewModel.allContainersInCurrentSong,
                     allTracks: projectViewModel.allTracksInCurrentSong,
                     onAddEffect: { effect in
@@ -307,9 +305,6 @@ public struct MainContentView: View {
                     },
                     onSetExitFade: { fade in
                         projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
-                    },
-                    onUpdateEffectPreset: { effectID, data in
-                        projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effectID, presetData: data)
                     },
                     onDismiss: {
                         showContainerDetailEditor = false
@@ -599,12 +594,14 @@ public struct MainContentView: View {
                 editingTrackID = track.id
                 editingTrackName = track.name
             }
-            Button("Duplicate Track") {
-                projectViewModel.duplicateTrack(trackID: track.id)
-            }
-            Divider()
-            Button(track.isRecordArmed ? "Disarm Recording" : "Arm for Recording") {
-                projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed)
+            if track.kind != .master {
+                Button("Duplicate Track") {
+                    projectViewModel.duplicateTrack(trackID: track.id)
+                }
+                Divider()
+                Button(track.isRecordArmed ? "Disarm Recording" : "Arm for Recording") {
+                    projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed)
+                }
             }
 
             if track.kind == .audio, let svm = settingsViewModel {
@@ -628,6 +625,21 @@ public struct MainContentView: View {
                     ForEach(svm.outputPorts) { port in
                         Button(port.displayName) {
                             projectViewModel.setTrackOutputPort(trackID: track.id, portID: port.id)
+                        }
+                    }
+                }
+            }
+
+            if track.kind == .master, let svm = settingsViewModel {
+                Divider()
+                Menu("Output") {
+                    Button("Default") {
+                        projectViewModel.setMasterOutputPort(portID: nil)
+                    }
+                    if !svm.outputPorts.isEmpty { Divider() }
+                    ForEach(svm.outputPorts) { port in
+                        Button(port.displayName) {
+                            projectViewModel.setMasterOutputPort(portID: port.id)
                         }
                     }
                 }
@@ -660,12 +672,14 @@ public struct MainContentView: View {
                 }
             }
 
-            Divider()
-            Button("Delete Track", role: .destructive) {
-                if track.containers.isEmpty {
-                    projectViewModel.removeTrack(id: track.id)
-                } else {
-                    trackToDelete = track
+            if track.kind != .master {
+                Divider()
+                Button("Delete Track", role: .destructive) {
+                    if track.containers.isEmpty {
+                        projectViewModel.removeTrack(id: track.id)
+                    } else {
+                        trackToDelete = track
+                    }
                 }
             }
         }
@@ -765,7 +779,7 @@ public struct MainContentView: View {
 
     private var addTrackMenu: some View {
         Menu {
-            ForEach(TrackKind.allCases, id: \.self) { kind in
+            ForEach(TrackKind.creatableKinds, id: \.self) { kind in
                 Button(kind.displayName) {
                     projectViewModel.addTrack(kind: kind)
                 }

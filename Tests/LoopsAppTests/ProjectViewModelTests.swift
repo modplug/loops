@@ -21,7 +21,8 @@ struct ProjectViewModelTests {
         let vm = ProjectViewModel()
         vm.newProject()
         vm.addTrack(kind: .audio)
-        #expect(vm.project.songs[0].tracks.count == 1)
+        // 2 tracks: Audio 1 + auto-created Master
+        #expect(vm.project.songs[0].tracks.count == 2)
         #expect(vm.project.songs[0].tracks[0].name == "Audio 1")
         #expect(vm.project.songs[0].tracks[0].kind == .audio)
         #expect(vm.hasUnsavedChanges)
@@ -35,10 +36,12 @@ struct ProjectViewModelTests {
         vm.addTrack(kind: .audio)
         vm.addTrack(kind: .audio)
         vm.addTrack(kind: .midi)
-        #expect(vm.project.songs[0].tracks.count == 3)
+        // 4 tracks: 3 added + Master (always last)
+        #expect(vm.project.songs[0].tracks.count == 4)
         #expect(vm.project.songs[0].tracks[0].name == "Audio 1")
         #expect(vm.project.songs[0].tracks[1].name == "Audio 2")
         #expect(vm.project.songs[0].tracks[2].name == "MIDI 1")
+        #expect(vm.project.songs[0].tracks[3].kind == .master)
     }
 
     @Test("Remove track by ID")
@@ -50,7 +53,8 @@ struct ProjectViewModelTests {
         vm.addTrack(kind: .midi)
         let audioTrackID = vm.project.songs[0].tracks[0].id
         vm.removeTrack(id: audioTrackID)
-        #expect(vm.project.songs[0].tracks.count == 1)
+        // 2 tracks: MIDI + Master
+        #expect(vm.project.songs[0].tracks.count == 2)
         #expect(vm.project.songs[0].tracks[0].kind == .midi)
     }
 
@@ -411,7 +415,7 @@ struct ProjectViewModelTests {
 
         #expect(vm.project.songs.count == 2)
         #expect(vm.project.songs[1].name == "Song 1 Copy")
-        #expect(vm.project.songs[1].tracks.count == 2)
+        #expect(vm.project.songs[1].tracks.count == 3) // audio + midi + master
         #expect(vm.project.songs[1].tempo == vm.project.songs[0].tempo)
         // IDs should be different
         #expect(vm.project.songs[1].id != vm.project.songs[0].id)
@@ -493,14 +497,16 @@ struct ProjectViewModelTests {
     func undoAddTrack() {
         let vm = ProjectViewModel()
         vm.newProject()
-        #expect(vm.project.songs[0].tracks.isEmpty)
+        // Only master track after newProject
+        #expect(vm.project.songs[0].tracks.count == 1)
+        #expect(vm.project.songs[0].tracks[0].kind == .master)
 
         vm.addTrack(kind: .audio)
-        #expect(vm.project.songs[0].tracks.count == 1)
+        #expect(vm.project.songs[0].tracks.count == 2)
         #expect(vm.undoManager?.canUndo == true)
 
         vm.undoManager?.undo()
-        #expect(vm.project.songs[0].tracks.isEmpty)
+        #expect(vm.project.songs[0].tracks.count == 1)
     }
 
     @Test("Redo restores undone action")
@@ -510,14 +516,14 @@ struct ProjectViewModelTests {
         vm.newProject()
 
         vm.addTrack(kind: .audio)
-        #expect(vm.project.songs[0].tracks.count == 1)
+        #expect(vm.project.songs[0].tracks.count == 2)
 
         vm.undoManager?.undo()
-        #expect(vm.project.songs[0].tracks.isEmpty)
+        #expect(vm.project.songs[0].tracks.count == 1)
         #expect(vm.undoManager?.canRedo == true)
 
         vm.undoManager?.redo()
-        #expect(vm.project.songs[0].tracks.count == 1)
+        #expect(vm.project.songs[0].tracks.count == 2)
     }
 
     @Test("Undo remove track restores track")
@@ -529,10 +535,10 @@ struct ProjectViewModelTests {
         let trackID = vm.project.songs[0].tracks[0].id
 
         vm.removeTrack(id: trackID)
-        #expect(vm.project.songs[0].tracks.isEmpty)
+        #expect(vm.project.songs[0].tracks.count == 1) // just master
 
         vm.undoManager?.undo()
-        #expect(vm.project.songs[0].tracks.count == 1)
+        #expect(vm.project.songs[0].tracks.count == 2)
     }
 
     @Test("Undo rename track restores old name")
@@ -805,19 +811,19 @@ struct ProjectViewModelTests {
         vm.addTrack(kind: .audio)
         vm.addTrack(kind: .midi)
         vm.addTrack(kind: .bus)
+        #expect(vm.project.songs[0].tracks.count == 4) // 3 + master
+
+        vm.undoManager?.undo()
         #expect(vm.project.songs[0].tracks.count == 3)
 
         vm.undoManager?.undo()
         #expect(vm.project.songs[0].tracks.count == 2)
 
-        vm.undoManager?.undo()
-        #expect(vm.project.songs[0].tracks.count == 1)
-
-        vm.undoManager?.redo()
-        #expect(vm.project.songs[0].tracks.count == 2)
-
         vm.undoManager?.redo()
         #expect(vm.project.songs[0].tracks.count == 3)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks.count == 4)
     }
 
     // MARK: - Container Detail Editor Tests (Reorder Effects)
@@ -963,7 +969,7 @@ struct ProjectViewModelTests {
         vm.addTrack(kind: .bus)
 
         let allTracks = vm.allTracksInCurrentSong
-        #expect(allTracks.count == 3)
+        #expect(allTracks.count == 4) // 3 added + master
     }
 
     // MARK: - Count-In
@@ -1433,7 +1439,7 @@ struct ProjectViewModelTests {
 
         let copyID = vm.duplicateTrack(trackID: trackID)
         #expect(copyID != nil)
-        #expect(vm.project.songs[0].tracks.count == 2)
+        #expect(vm.project.songs[0].tracks.count == 3) // original + copy + master
 
         let copy = vm.project.songs[0].tracks[1]
         #expect(copy.name == "Lead Guitar Copy")
@@ -1480,13 +1486,13 @@ struct ProjectViewModelTests {
         let trackID = vm.project.songs[0].tracks[0].id
 
         vm.duplicateTrack(trackID: trackID)
-        #expect(vm.project.songs[0].tracks.count == 2)
+        #expect(vm.project.songs[0].tracks.count == 3) // original + copy + master
 
         vm.undoManager?.undo()
-        #expect(vm.project.songs[0].tracks.count == 1)
+        #expect(vm.project.songs[0].tracks.count == 2)
 
         vm.undoManager?.redo()
-        #expect(vm.project.songs[0].tracks.count == 2)
+        #expect(vm.project.songs[0].tracks.count == 3)
     }
 
     // MARK: - Context Menu: Copy/Paste
@@ -2172,129 +2178,96 @@ struct ProjectViewModelTests {
         #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 4)
     }
 
-    // MARK: - Selected Container Track
+    // MARK: - Master Track
 
-    @Test("selectedContainerTrack returns correct track")
+    @Test("New project auto-creates master track")
     @MainActor
-    func selectedContainerTrackReturnsTrack() {
+    func newProjectCreatesMasterTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let song = vm.project.songs[0]
+        #expect(song.masterTrack != nil)
+        #expect(song.tracks.last?.kind == .master)
+        #expect(song.tracks.last?.name == "Master")
+    }
+
+    @Test("Master track is always last after adding tracks")
+    @MainActor
+    func masterTrackAlwaysLast() {
         let vm = ProjectViewModel()
         vm.newProject()
         vm.addTrack(kind: .audio)
         vm.addTrack(kind: .midi)
-        let track1ID = vm.project.songs[0].tracks[0].id
-        let track2ID = vm.project.songs[0].tracks[1].id
-        let _ = vm.addContainer(trackID: track1ID, startBar: 1, lengthBars: 4)
-        let _ = vm.addContainer(trackID: track2ID, startBar: 1, lengthBars: 4)
-        let container2ID = vm.project.songs[0].tracks[1].containers[0].id
-
-        vm.selectedContainerID = container2ID
-        let track = vm.selectedContainerTrack
-        #expect(track != nil)
-        #expect(track?.id == track2ID)
-        #expect(track?.kind == .midi)
+        vm.addTrack(kind: .bus)
+        let tracks = vm.project.songs[0].tracks
+        #expect(tracks.last?.kind == .master)
+        for track in tracks.dropLast() {
+            #expect(track.kind != .master)
+        }
     }
 
-    @Test("selectedContainerTrack returns nil when no selection")
+    @Test("Cannot delete master track")
     @MainActor
-    func selectedContainerTrackNilWhenNoSelection() {
+    func cannotDeleteMasterTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let masterID = vm.project.songs[0].tracks.first(where: { $0.kind == .master })!.id
+        vm.removeTrack(id: masterID)
+        // Master track should still be present
+        #expect(vm.project.songs[0].tracks.contains(where: { $0.kind == .master }))
+    }
+
+    @Test("Cannot duplicate master track")
+    @MainActor
+    func cannotDuplicateMasterTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let masterID = vm.project.songs[0].tracks.first(where: { $0.kind == .master })!.id
+        let copyID = vm.duplicateTrack(trackID: masterID)
+        #expect(copyID == nil)
+        // Only one master track
+        #expect(vm.project.songs[0].tracks.filter({ $0.kind == .master }).count == 1)
+    }
+
+    @Test("Cannot add master track via addTrack")
+    @MainActor
+    func cannotAddMasterTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .master)
+        // Should still have exactly 1 master track
+        #expect(vm.project.songs[0].tracks.filter({ $0.kind == .master }).count == 1)
+    }
+
+    @Test("Master track stays last after move")
+    @MainActor
+    func masterTrackStaysLastAfterMove() {
         let vm = ProjectViewModel()
         vm.newProject()
         vm.addTrack(kind: .audio)
-        vm.selectedContainerID = nil
-        #expect(vm.selectedContainerTrack == nil)
+        vm.addTrack(kind: .midi)
+        // tracks: [Audio, MIDI, Master]
+        vm.moveTrack(from: IndexSet(integer: 0), to: 2)
+        // After move: [MIDI, Audio, Master]
+        #expect(vm.project.songs[0].tracks.last?.kind == .master)
     }
 
-    @Test("selectedContainerTrack returns nil for invalid container ID")
+    @Test("Added song gets master track")
     @MainActor
-    func selectedContainerTrackNilForInvalidID() {
+    func addedSongGetsMasterTrack() {
         let vm = ProjectViewModel()
         vm.newProject()
-        vm.addTrack(kind: .audio)
-        vm.selectedContainerID = ID<Container>()
-        #expect(vm.selectedContainerTrack == nil)
+        vm.addSong()
+        #expect(vm.project.songs[1].masterTrack != nil)
+        #expect(vm.project.songs[1].tracks.last?.kind == .master)
     }
 
-    // MARK: - Update Effect Preset
-
-    @Test("Update container effect preset stores data")
-    @MainActor
-    func updateEffectPreset() {
-        let vm = ProjectViewModel()
-        vm.newProject()
-        vm.addTrack(kind: .audio)
-        let trackID = vm.project.songs[0].tracks[0].id
-        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
-        let containerID = vm.project.songs[0].tracks[0].containers[0].id
-
-        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
-        let effect = InsertEffect(component: comp, displayName: "Reverb")
-        vm.addContainerEffect(containerID: containerID, effect: effect)
-        let effectID = vm.project.songs[0].tracks[0].containers[0].insertEffects[0].id
-
-        let presetData = Data([0x01, 0x02, 0x03])
-        vm.updateContainerEffectPreset(containerID: containerID, effectID: effectID, presetData: presetData)
-
-        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == presetData)
-        #expect(vm.hasUnsavedChanges)
-    }
-
-    @Test("Update container effect preset undo/redo")
-    @MainActor
-    func updateEffectPresetUndoRedo() {
-        let vm = ProjectViewModel()
-        vm.newProject()
-        vm.addTrack(kind: .audio)
-        let trackID = vm.project.songs[0].tracks[0].id
-        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
-        let containerID = vm.project.songs[0].tracks[0].containers[0].id
-
-        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
-        let effect = InsertEffect(component: comp, displayName: "Delay")
-        vm.addContainerEffect(containerID: containerID, effect: effect)
-        let effectID = vm.project.songs[0].tracks[0].containers[0].insertEffects[0].id
-
-        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == nil)
-
-        let presetData = Data([0xAA, 0xBB])
-        vm.updateContainerEffectPreset(containerID: containerID, effectID: effectID, presetData: presetData)
-        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == presetData)
-
-        vm.undoManager?.undo()
-        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == nil)
-
-        vm.undoManager?.redo()
-        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == presetData)
-    }
-
-    @Test("Update container effect preset with nil clears data")
-    @MainActor
-    func updateEffectPresetClear() {
-        let vm = ProjectViewModel()
-        vm.newProject()
-        vm.addTrack(kind: .audio)
-        let trackID = vm.project.songs[0].tracks[0].id
-        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
-        let containerID = vm.project.songs[0].tracks[0].containers[0].id
-
-        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
-        let effect = InsertEffect(component: comp, displayName: "Chorus", presetData: Data([0x01]))
-        vm.addContainerEffect(containerID: containerID, effect: effect)
-        let effectID = vm.project.songs[0].tracks[0].containers[0].insertEffects[0].id
-
-        vm.updateContainerEffectPreset(containerID: containerID, effectID: effectID, presetData: nil)
-        #expect(vm.project.songs[0].tracks[0].containers[0].insertEffects[0].presetData == nil)
-    }
-
-    @Test("Update container effect preset with invalid IDs is no-op")
-    @MainActor
-    func updateEffectPresetInvalidIDs() {
-        let vm = ProjectViewModel()
-        vm.newProject()
-        vm.addTrack(kind: .audio)
-        vm.hasUnsavedChanges = false
-
-        // Should not crash with bogus IDs
-        vm.updateContainerEffectPreset(containerID: ID<Container>(), effectID: ID<InsertEffect>(), presetData: Data([0x01]))
-        #expect(!vm.hasUnsavedChanges)
+    @Test("ensureMasterTrack is idempotent")
+    func ensureMasterTrackIdempotent() {
+        var song = Song(name: "Test")
+        song.ensureMasterTrack()
+        #expect(song.tracks.filter({ $0.kind == .master }).count == 1)
+        song.ensureMasterTrack()
+        #expect(song.tracks.filter({ $0.kind == .master }).count == 1)
     }
 }

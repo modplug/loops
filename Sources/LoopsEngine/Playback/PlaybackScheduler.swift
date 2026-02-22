@@ -33,8 +33,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let trackMixer: AVAudioMixerNode
     }
 
-    /// Track-level mixer nodes (one per track, routes to mainMixerNode).
+    /// Track-level mixer nodes (one per track, routes to master mixer or mainMixerNode).
     private var trackMixers: [ID<Track>: AVAudioMixerNode] = [:]
+
+    /// Master track mixer node and effect chain.
+    private var masterMixerNode: AVAudioMixerNode?
+    private var masterEffectUnits: [AVAudioUnit] = []
 
     /// All active container subgraphs, keyed by container ID.
     private var containerSubgraphs: [ID<Container>: ContainerSubgraph] = [:]
@@ -67,6 +71,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
     /// Prepares playback for a song by creating track mixers and loading audio files.
     /// AU effects for containers are pre-instantiated here.
+    /// Master track effects are loaded and all track mixers route through them.
     public func prepare(song: Song, sourceRecordings: [ID<SourceRecording>: SourceRecording]) async {
         cleanup()
 
@@ -80,11 +85,54 @@ public final class PlaybackScheduler: @unchecked Sendable {
             }
         }
 
-        // Create a mixer node per track, connected to the main mixer
+        // Build master track effect chain: masterMixer → [effects] → mainMixerNode
+        let masterTrack = song.masterTrack
+        let outputTarget: AVAudioNode
+        if let master = masterTrack {
+            let masterMixer = AVAudioMixerNode()
+            engine.attach(masterMixer)
+            masterMixer.volume = master.volume
+            masterMixer.pan = master.pan
+            masterMixerNode = masterMixer
+
+            // Load master effects
+            if !master.isEffectChainBypassed {
+                for effect in master.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                    guard !effect.isBypassed else { continue }
+                    if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
+                        engine.attach(unit)
+                        if let presetData = effect.presetData {
+                            try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
+                        }
+                        masterEffectUnits.append(unit)
+                    }
+                }
+            }
+
+            // Connect: masterMixer → [effects] → mainMixerNode
+            if masterEffectUnits.isEmpty {
+                engine.connect(masterMixer, to: engine.mainMixerNode, format: nil)
+            } else {
+                engine.connect(masterMixer, to: masterEffectUnits[0], format: nil)
+                for i in 0..<(masterEffectUnits.count - 1) {
+                    engine.connect(masterEffectUnits[i], to: masterEffectUnits[i + 1], format: nil)
+                }
+                engine.connect(masterEffectUnits[masterEffectUnits.count - 1], to: engine.mainMixerNode, format: nil)
+            }
+
+            outputTarget = masterMixer
+        } else {
+            outputTarget = engine.mainMixerNode
+        }
+
+        // Create a mixer node per track, connected to master mixer (or mainMixer if no master)
         for track in song.tracks {
+            // Skip master track — it has its own mixer
+            if track.kind == .master { continue }
+
             let trackMixer = AVAudioMixerNode()
             engine.attach(trackMixer)
-            engine.connect(trackMixer, to: engine.mainMixerNode, format: nil)
+            engine.connect(trackMixer, to: outputTarget, format: nil)
             trackMixer.volume = track.isMuted ? 0.0 : track.volume
             trackMixer.pan = track.pan
             trackMixers[track.id] = trackMixer
@@ -125,6 +173,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         for track in song.tracks {
             if track.isMuted { continue }
+            // Master track has no playable containers
+            if track.kind == .master { continue }
 
             // Schedule each container that has a recording (resolve clone fields)
             for container in track.containers {
@@ -191,13 +241,32 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
         trackMixers.removeAll()
 
+        // Cleanup master mixer and effects
+        for unit in masterEffectUnits {
+            engine.disconnectNodeOutput(unit)
+            engine.detach(unit)
+        }
+        masterEffectUnits.removeAll()
+        if let masterMixer = masterMixerNode {
+            engine.disconnectNodeOutput(masterMixer)
+            engine.detach(masterMixer)
+            masterMixerNode = nil
+        }
+
         audioFiles.removeAll()
         currentSong = nil
     }
 
     /// Updates track mix parameters (volume, pan, mute).
     public func updateTrackMix(trackID: ID<Track>, volume: Float, pan: Float, isMuted: Bool) {
-        guard let mixer = trackMixers[trackID] else { return }
+        guard let mixer = trackMixers[trackID] else {
+            // Check if this is the master track
+            if let masterMixer = masterMixerNode {
+                masterMixer.volume = volume
+                masterMixer.pan = pan
+            }
+            return
+        }
         mixer.volume = isMuted ? 0.0 : volume
         mixer.pan = pan
     }

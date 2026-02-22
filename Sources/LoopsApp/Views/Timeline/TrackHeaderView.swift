@@ -92,27 +92,29 @@ public struct TrackHeaderView: View {
                     }
                     .buttonStyle(.plain)
 
-                    Button(action: { onRecordArmToggle?() }) {
-                        Circle()
-                            .fill(track.isRecordArmed ? Color.red : Color.clear)
-                            .overlay(
-                                Circle()
-                                    .strokeBorder(track.isRecordArmed ? Color.red : Color.secondary, lineWidth: 1.5)
-                            )
-                            .frame(width: 14, height: 14)
-                    }
-                    .buttonStyle(.plain)
-                    .frame(width: 18, height: 18)
+                    if track.kind != .master {
+                        Button(action: { onRecordArmToggle?() }) {
+                            Circle()
+                                .fill(track.isRecordArmed ? Color.red : Color.clear)
+                                .overlay(
+                                    Circle()
+                                        .strokeBorder(track.isRecordArmed ? Color.red : Color.secondary, lineWidth: 1.5)
+                                )
+                                .frame(width: 14, height: 14)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: 18, height: 18)
 
-                    Button(action: { onMonitorToggle?() }) {
-                        Image(systemName: track.isMonitoring ? "headphones" : "headphones")
-                            .font(.system(size: 10))
-                            .foregroundStyle(track.isMonitoring ? .white : .secondary)
-                            .frame(width: 18, height: 18)
-                            .background(track.isMonitoring ? Color.orange.opacity(0.8) : Color.clear)
-                            .cornerRadius(3)
+                        Button(action: { onMonitorToggle?() }) {
+                            Image(systemName: track.isMonitoring ? "headphones" : "headphones")
+                                .font(.system(size: 10))
+                                .foregroundStyle(track.isMonitoring ? .white : .secondary)
+                                .frame(width: 18, height: 18)
+                                .background(track.isMonitoring ? Color.orange.opacity(0.8) : Color.clear)
+                                .cornerRadius(3)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
 
                 // Automation toggle
@@ -132,6 +134,20 @@ public struct TrackHeaderView: View {
                         Text("Auto")
                             .font(.system(size: 8))
                             .foregroundStyle(.secondary)
+                    }
+                }
+
+                // Output routing label (master track)
+                if track.kind == .master {
+                    HStack(spacing: 2) {
+                        Image(systemName: "arrow.left.circle")
+                            .font(.system(size: 7))
+                            .foregroundStyle(.secondary)
+                        Text(outputPortName ?? "Default")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
                 }
 
@@ -246,6 +262,7 @@ public struct TrackHeaderView: View {
         case .midi: return .purple
         case .bus: return .green
         case .backing: return .orange
+        case .master: return .gray
         }
     }
 }

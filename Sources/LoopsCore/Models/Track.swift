@@ -1,7 +1,7 @@
 import Foundation
 
 public enum TrackKind: String, Codable, Sendable, CaseIterable {
-    case audio, midi, bus, backing
+    case audio, midi, bus, backing, master
 
     public var displayName: String {
         switch self {
@@ -9,7 +9,13 @@ public enum TrackKind: String, Codable, Sendable, CaseIterable {
         case .midi: return "MIDI"
         case .bus: return "Bus"
         case .backing: return "Backing"
+        case .master: return "Master"
         }
+    }
+
+    /// Track kinds available for user creation (excludes master, which is auto-created).
+    public static var creatableKinds: [TrackKind] {
+        [.audio, .midi, .bus, .backing]
     }
 }
 
@@ -38,6 +44,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var midiInputChannel: UInt8?
     public var isRecordArmed: Bool
     public var isMonitoring: Bool
+    /// Whether the track-level effect chain is bypassed (audio routes directly to output).
+    public var isEffectChainBypassed: Bool
     public var orderIndex: Int
 
     public init(
@@ -58,6 +66,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         midiInputChannel: UInt8? = nil,
         isRecordArmed: Bool = false,
         isMonitoring: Bool = false,
+        isEffectChainBypassed: Bool = false,
         orderIndex: Int = 0
     ) {
         self.id = id
@@ -77,6 +86,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.midiInputChannel = midiInputChannel
         self.isRecordArmed = isRecordArmed
         self.isMonitoring = isMonitoring
+        self.isEffectChainBypassed = isEffectChainBypassed
         self.orderIndex = orderIndex
     }
 
@@ -90,6 +100,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         case midiInputDeviceID, midiInputChannel
         case isRecordArmed
         case isMonitoring
+        case isEffectChainBypassed
         case orderIndex
         // Legacy key
         case inputDeviceUID
@@ -113,6 +124,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         midiInputChannel = try c.decodeIfPresent(UInt8.self, forKey: .midiInputChannel)
         isRecordArmed = try c.decodeIfPresent(Bool.self, forKey: .isRecordArmed) ?? false
         isMonitoring = try c.decodeIfPresent(Bool.self, forKey: .isMonitoring) ?? false
+        isEffectChainBypassed = try c.decodeIfPresent(Bool.self, forKey: .isEffectChainBypassed) ?? false
         orderIndex = try c.decode(Int.self, forKey: .orderIndex)
 
         // Migrate legacy inputDeviceUID → inputPortID
@@ -144,6 +156,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(midiInputChannel, forKey: .midiInputChannel)
         try c.encode(isRecordArmed, forKey: .isRecordArmed)
         try c.encode(isMonitoring, forKey: .isMonitoring)
+        try c.encode(isEffectChainBypassed, forKey: .isEffectChainBypassed)
         try c.encode(orderIndex, forKey: .orderIndex)
     }
 }

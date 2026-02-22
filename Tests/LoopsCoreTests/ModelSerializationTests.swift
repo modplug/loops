@@ -1519,6 +1519,143 @@ struct ModelSerializationTests {
         #expect(resolved.name == "Parent")
     }
 
+    // MARK: - MetronomeSettings
+
+    @Test("MetronomeSubdivision all cases round-trip")
+    func metronomeSubdivisionRoundTrip() throws {
+        for subdivision in MetronomeSubdivision.allCases {
+            let decoded = try roundTrip(subdivision)
+            #expect(subdivision == decoded)
+        }
+    }
+
+    @Test("MetronomeSettings round-trips")
+    func metronomeSettingsRoundTrip() throws {
+        let settings = MetronomeSettings(subdivision: .triplet)
+        let decoded = try roundTrip(settings)
+        #expect(settings == decoded)
+        #expect(decoded.subdivision == .triplet)
+    }
+
+    @Test("MetronomeSettings default subdivision is quarter")
+    func metronomeSettingsDefaultSubdivision() {
+        let settings = MetronomeSettings()
+        #expect(settings.subdivision == .quarter)
+    }
+
+    @Test("Container with metronomeSettings round-trips")
+    func containerWithMetronomeSettingsRoundTrip() throws {
+        let container = Container(
+            name: "Metronome Zone",
+            startBar: 1,
+            lengthBars: 8,
+            metronomeSettings: MetronomeSettings(subdivision: .eighth)
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.metronomeSettings != nil)
+        #expect(decoded.metronomeSettings?.subdivision == .eighth)
+    }
+
+    @Test("Container without metronomeSettings decodes as nil")
+    func containerWithoutMetronomeSettingsRoundTrip() throws {
+        let container = Container(name: "Plain", startBar: 1, lengthBars: 4)
+        let decoded = try roundTrip(container)
+        #expect(decoded.metronomeSettings == nil)
+    }
+
+    // MARK: - Master Track
+
+    @Test("Track with master kind round-trips")
+    func trackMasterKindRoundTrip() throws {
+        let track = Track(
+            name: "Master",
+            kind: .master,
+            volume: 0.9,
+            pan: 0.0,
+            isEffectChainBypassed: true,
+            orderIndex: 5
+        )
+        let decoded = try roundTrip(track)
+        #expect(track == decoded)
+        #expect(decoded.kind == .master)
+        #expect(decoded.isEffectChainBypassed == true)
+    }
+
+    @Test("Track with isEffectChainBypassed round-trips")
+    func trackEffectChainBypassedRoundTrip() throws {
+        let track = Track(
+            name: "Guitar",
+            kind: .audio,
+            isEffectChainBypassed: true,
+            orderIndex: 0
+        )
+        let decoded = try roundTrip(track)
+        #expect(decoded.isEffectChainBypassed == true)
+    }
+
+    @Test("Track decodes from legacy JSON without isEffectChainBypassed")
+    func trackLegacyWithoutEffectChainBypassed() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Bass",
+            "kind": "audio",
+            "volume": 1.0,
+            "pan": 0.0,
+            "isMuted": false,
+            "isSoloed": false,
+            "containers": [],
+            "insertEffects": [],
+            "sendLevels": [],
+            "orderIndex": 0
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try decoder.decode(Track.self, from: data)
+        #expect(decoded.isEffectChainBypassed == false)
+    }
+
+    @Test("TrackKind.creatableKinds excludes master")
+    func creatableKindsExcludesMaster() {
+        let kinds = TrackKind.creatableKinds
+        #expect(!kinds.contains(.master))
+        #expect(kinds.contains(.audio))
+        #expect(kinds.contains(.midi))
+        #expect(kinds.contains(.bus))
+        #expect(kinds.contains(.backing))
+    }
+
+    @Test("Song ensureMasterTrack creates master when absent")
+    func songEnsureMasterTrack() {
+        var song = Song(name: "Test", tracks: [
+            Track(name: "Audio 1", kind: .audio, orderIndex: 0),
+        ])
+        #expect(song.masterTrack == nil)
+        song.ensureMasterTrack()
+        #expect(song.masterTrack != nil)
+        #expect(song.tracks.last?.kind == .master)
+    }
+
+    @Test("Song ensureMasterTrack moves master to end if misplaced")
+    func songEnsureMasterTrackMovesToEnd() {
+        var song = Song(name: "Test", tracks: [
+            Track(name: "Master", kind: .master, orderIndex: 0),
+            Track(name: "Audio 1", kind: .audio, orderIndex: 1),
+        ])
+        song.ensureMasterTrack()
+        #expect(song.tracks.last?.kind == .master)
+        #expect(song.tracks[0].kind == .audio)
+    }
+
+    @Test("MetronomeSubdivision clicksPerBeat values")
+    func metronomeSubdivisionClicksPerBeat() {
+        #expect(MetronomeSubdivision.quarter.clicksPerBeat == 1.0)
+        #expect(MetronomeSubdivision.eighth.clicksPerBeat == 2.0)
+        #expect(MetronomeSubdivision.sixteenth.clicksPerBeat == 4.0)
+        #expect(MetronomeSubdivision.triplet.clicksPerBeat == 3.0)
+    }
+
     @Test("Clone of clone links to original parent (no nesting)")
     func cloneOfCloneLinksToOriginal() {
         // This is tested via ProjectViewModel, but we verify the resolution works

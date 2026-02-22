@@ -248,6 +248,7 @@ public struct TrackLaneView: View {
         case .midi: return .purple
         case .bus: return .green
         case .backing: return .orange
+        case .master: return .gray
         }
     }
 }

@@ -235,6 +235,7 @@ public struct StorylineInspectorView: View {
         case .midi: return "pianokeys"
         case .bus: return "arrow.triangle.branch"
         case .backing: return "music.note"
+        case .master: return "dial.medium"
         }
     }
 

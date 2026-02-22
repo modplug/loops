@@ -40,6 +40,9 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     /// Empty for original containers. Only meaningful when `parentContainerID` is set.
     public var overriddenFields: Set<ContainerField>
 
+    /// Metronome settings for master track containers (defines click behavior for this bar range).
+    public var metronomeSettings: MetronomeSettings?
+
     public var endBar: Int { startBar + lengthBars }
 
     /// Whether this container is a linked clone.
@@ -65,7 +68,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         onExitActions: [ContainerAction] = [],
         automationLanes: [AutomationLane] = [],
         parentContainerID: ID<Container>? = nil,
-        overriddenFields: Set<ContainerField> = []
+        overriddenFields: Set<ContainerField> = [],
+        metronomeSettings: MetronomeSettings? = nil
     ) {
         self.id = id
         self.name = name
@@ -87,6 +91,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         self.automationLanes = automationLanes
         self.parentContainerID = parentContainerID
         self.overriddenFields = overriddenFields
+        self.metronomeSettings = metronomeSettings
     }
 
     // MARK: - Backward-compatible decoding
@@ -97,6 +102,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         case insertEffects, isEffectChainBypassed, instrumentOverride
         case enterFade, exitFade, onEnterActions, onExitActions
         case automationLanes, parentContainerID, overriddenFields
+        case metronomeSettings
     }
 
     public init(from decoder: Decoder) throws {
@@ -121,6 +127,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         automationLanes = try c.decodeIfPresent([AutomationLane].self, forKey: .automationLanes) ?? []
         parentContainerID = try c.decodeIfPresent(LoopsCore.ID<Container>.self, forKey: .parentContainerID)
         overriddenFields = try c.decodeIfPresent(Set<ContainerField>.self, forKey: .overriddenFields) ?? []
+        metronomeSettings = try c.decodeIfPresent(MetronomeSettings.self, forKey: .metronomeSettings)
     }
 
     // MARK: - Clone Resolution

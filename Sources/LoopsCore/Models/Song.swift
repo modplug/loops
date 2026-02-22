@@ -41,4 +41,35 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         countInBars = try c.decodeIfPresent(Int.self, forKey: .countInBars) ?? 0
         sections = try c.decodeIfPresent([SectionRegion].self, forKey: .sections) ?? []
     }
+
+    // MARK: - Master Track
+
+    /// Returns the master track, if one exists.
+    public var masterTrack: Track? {
+        tracks.first(where: { $0.kind == .master })
+    }
+
+    /// Ensures the song has a master track. If absent, creates one at the end.
+    public mutating func ensureMasterTrack() {
+        guard !tracks.contains(where: { $0.kind == .master }) else {
+            ensureMasterTrackLast()
+            return
+        }
+        let master = Track(
+            name: "Master",
+            kind: .master,
+            orderIndex: tracks.count
+        )
+        tracks.append(master)
+    }
+
+    /// Ensures the master track is always at the end of the track list.
+    public mutating func ensureMasterTrackLast() {
+        guard let masterIndex = tracks.firstIndex(where: { $0.kind == .master }) else { return }
+        let lastIndex = tracks.count - 1
+        if masterIndex != lastIndex {
+            let master = tracks.remove(at: masterIndex)
+            tracks.append(master)
+        }
+    }
 }
