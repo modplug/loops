@@ -400,6 +400,12 @@ public final class TransportViewModel {
         }
     }
 
+    /// Sends a MIDI note event to the instrument on the given track.
+    /// Used by the virtual keyboard for live note input.
+    public func sendVirtualNote(trackID: ID<Track>, message: MIDIActionMessage) {
+        playbackScheduler?.sendMIDINoteToTrack(trackID, message: message)
+    }
+
     /// Returns the active subdivision for a given bar position.
     /// Checks master track containers for MetronomeSettings overrides;
     /// falls back to the default metronome subdivision.
@@ -480,15 +486,20 @@ public final class TransportViewModel {
         previousTask?.cancel()
         let needsPrepare = song != lastPreparedSong
             || Set(recordings.keys) != lastPreparedRecordingIDs
+        let containerCount = song.tracks.flatMap(\.containers).count
+        let recCount = recordings.count
+        print("[PLAY] schedulePlayback: needsPrepare=\(needsPrepare) containers=\(containerCount) recordings=\(recCount)")
         playbackTask = Task {
             _ = await previousTask?.value
             guard self.playbackGeneration == gen else { return }
             if needsPrepare {
+                print("[PLAY] calling prepare()")
                 await scheduler?.prepare(song: song, sourceRecordings: recordings)
                 guard self.playbackGeneration == gen else { return }
                 self.lastPreparedSong = song
                 self.lastPreparedRecordingIDs = Set(recordings.keys)
             } else {
+                print("[PLAY] skipping prepare, calling stop()")
                 scheduler?.stop()
             }
             scheduler?.play(
@@ -529,17 +540,40 @@ public final class TransportViewModel {
         sampleRate: Double,
         audioDir: URL
     ) {
-        guard isRecordArmed else { return }
+        print("[REC] startContainerRecordingIfNeeded called, isRecordArmed=\(isRecordArmed)")
+        guard isRecordArmed else {
+            print("[REC] BAIL: transport not record-armed")
+            return
+        }
 
-        // Collect armed containers from audio tracks
+        // Collect armed containers from audio tracks.
+        // If individual containers are armed, use those.
+        // Otherwise, if the track itself is armed, all its containers are candidates.
         var armed: [(containerID: ID<Container>, trackID: ID<Track>, startBar: Int, endBar: Int)] = []
         for track in song.tracks where track.kind == .audio {
-            for container in track.containers where container.isRecordArmed {
-                armed.append((container.id, track.id, container.startBar, container.endBar))
+            let containerArmed = track.containers.filter(\.isRecordArmed)
+            if !containerArmed.isEmpty {
+                for container in containerArmed {
+                    print("[REC]   container '\(container.name)' armed (container-level) bars=\(container.startBar)-\(container.endBar)")
+                    armed.append((container.id, track.id, container.startBar, container.endBar))
+                }
+            } else if track.isRecordArmed {
+                for container in track.containers {
+                    print("[REC]   container '\(container.name)' armed (track-level) bars=\(container.startBar)-\(container.endBar)")
+                    armed.append((container.id, track.id, container.startBar, container.endBar))
+                }
             }
         }
-        guard !armed.isEmpty, let engine = engineManager else { return }
+        guard !armed.isEmpty else {
+            print("[REC] BAIL: no armed containers found")
+            return
+        }
+        guard let engine = engineManager else {
+            print("[REC] BAIL: no engine manager")
+            return
+        }
 
+        print("[REC] Creating ContainerRecorder with \(armed.count) armed container(s), audioDir=\(audioDir.path)")
         let recorder = ContainerRecorder(engine: engine.engine, audioDirURL: audioDir)
         recorder.onPeaksUpdated = { [weak self] containerID, peaks in
             self?.onRecordingPeaksUpdated?(containerID, peaks)

@@ -12,6 +12,7 @@ public struct LoopsRootView: View {
     @State private var mixerViewModel = MixerViewModel()
     @State private var setlistViewModel: SetlistViewModel?
     @State private var midiActivityMonitor = MIDIActivityMonitor()
+    @State private var isVirtualKeyboardVisible = false
 
     public init(viewModel: ProjectViewModel, transportViewModel: TransportViewModel, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
         self.viewModel = viewModel
@@ -45,7 +46,8 @@ public struct LoopsRootView: View {
                     undoHistoryCursor: viewModel.undoHistoryCursor,
                     availableOutputPorts: engineManager?.deviceManager.outputDevices().flatMap { device in
                         engineManager?.deviceManager.outputPorts(for: device) ?? []
-                    } ?? []
+                    } ?? [],
+                    isVirtualKeyboardVisible: $isVirtualKeyboardVisible
                 )
                 Divider()
                 MainContentView(
@@ -56,7 +58,8 @@ public struct LoopsRootView: View {
                     engineManager: engineManager,
                     settingsViewModel: settingsViewModel,
                     mixerViewModel: mixerViewModel,
-                    midiActivityMonitor: midiActivityMonitor
+                    midiActivityMonitor: midiActivityMonitor,
+                    isVirtualKeyboardVisible: $isVirtualKeyboardVisible
                 )
             }
 

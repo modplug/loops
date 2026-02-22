@@ -37,6 +37,7 @@ public struct MainContentView: View {
     var settingsViewModel: SettingsViewModel?
     var mixerViewModel: MixerViewModel?
     var midiActivityMonitor: MIDIActivityMonitor?
+    @Binding var isVirtualKeyboardVisible: Bool
     @State private var contentMode: ContentMode = .timeline
     @State private var trackToDelete: Track?
     @State private var editingTrackID: ID<Track>?
@@ -59,7 +60,7 @@ public struct MainContentView: View {
         focusedField != .main
     }
 
-    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil) {
+    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil, isVirtualKeyboardVisible: Binding<Bool> = .constant(false)) {
         self.projectViewModel = projectViewModel
         self.timelineViewModel = timelineViewModel
         self.transportViewModel = transportViewModel
@@ -68,6 +69,7 @@ public struct MainContentView: View {
         self.settingsViewModel = settingsViewModel
         self.mixerViewModel = mixerViewModel
         self.midiActivityMonitor = midiActivityMonitor
+        self._isVirtualKeyboardVisible = isVirtualKeyboardVisible
     }
 
     private var currentSong: Song? {
@@ -344,6 +346,12 @@ public struct MainContentView: View {
             }
             return .handled
         }
+        // Cmd+Shift+K: toggle virtual MIDI keyboard
+        .onKeyPress("k", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) && keyPress.modifiers.contains(.shift) else { return .ignored }
+            isVirtualKeyboardVisible.toggle()
+            return .handled
+        }
     }
 
     // MARK: - Main Split View
@@ -408,6 +416,17 @@ public struct MainContentView: View {
                     timelineContent(song: song)
                 case .mixer:
                     mixerContent(song: song)
+                }
+
+                // Virtual MIDI keyboard (docked at bottom)
+                if isVirtualKeyboardVisible {
+                    Divider()
+                    VirtualKeyboardView(
+                        onNoteEvent: { message in
+                            guard let trackID = projectViewModel.selectedTrackID else { return }
+                            transportViewModel?.sendVirtualNote(trackID: trackID, message: message)
+                        }
+                    )
                 }
             }
         } else {

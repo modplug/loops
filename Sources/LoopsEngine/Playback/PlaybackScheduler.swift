@@ -13,6 +13,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private let engine: AVAudioEngine
     private let audioUnitHost: AudioUnitHost
     private var audioFiles: [ID<SourceRecording>: AVAudioFile] = [:]
+    /// File URLs for recordings, used to create per-container file handles.
+    private var recordingFileURLs: [ID<SourceRecording>: URL] = [:]
     private let audioDirURL: URL
 
     /// Protects all mutable state from concurrent access.
@@ -36,6 +38,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let instrumentUnit: AVAudioUnit?
         let effectUnits: [AVAudioUnit]
         let trackMixer: AVAudioMixerNode
+        /// Per-container audio file handle. Each container gets its own
+        /// AVAudioFile instance even when sharing a recording, because
+        /// AVAudioFile's internal read cursor is not thread-safe.
+        var audioFile: AVAudioFile?
     }
 
     /// Track-level mixer nodes (one per track, routes to master mixer or mainMixerNode).
@@ -101,11 +107,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         // ── Phase 1: Load files and audio units (async, engine keeps running) ──
 
+        // Map recording IDs to file URLs for per-container file handle creation.
+        // Each container gets its own AVAudioFile instance because AVAudioFile's
+        // internal read cursor is not thread-safe across concurrent player nodes.
+        var recordingFileURLs: [ID<SourceRecording>: URL] = [:]
         var loadedFiles: [ID<SourceRecording>: AVAudioFile] = [:]
         for (id, recording) in sourceRecordings {
             let fileURL = audioDirURL.appendingPathComponent(recording.filename)
             if let file = try? AVAudioFile(forReading: fileURL) {
                 loadedFiles[id] = file
+                recordingFileURLs[id] = fileURL
             }
         }
 
@@ -218,6 +229,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // engine.connect() silently fails on a running engine, so we must
         // stop it for the attach/connect pass. This phase is fast (no awaits).
 
+        let totalContainers = preloadedTracks.flatMap(\.containers).count
+        print("[PLAY] prepare: \(loadedFiles.count) audio files, \(preloadedTracks.count) tracks, \(totalContainers) containers with subgraphs")
+        for pt in preloadedTracks {
+            for pc in pt.containers {
+                print("[PLAY]   container '\(pc.container.name)' id=\(pc.container.id) hasFormat=\(pc.audioFormat != nil) recID=\(pc.container.sourceRecordingID.map { "\($0)" } ?? "none")")
+            }
+        }
+
         let wasRunning = engine.isRunning
         if wasRunning { engine.stop() }
         defer { if wasRunning { try? engine.start() } }
@@ -226,6 +245,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         lock.lock()
         audioFiles = loadedFiles
+        self.recordingFileURLs = recordingFileURLs
         lock.unlock()
 
         // Master mixer chain
@@ -315,12 +335,23 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
                 }
 
+                // Create a per-container AVAudioFile handle so player nodes
+                // don't share a read cursor on the render thread.
+                let containerAudioFile: AVAudioFile?
+                if let recID = pc.container.sourceRecordingID,
+                   let url = recordingFileURLs[recID] {
+                    containerAudioFile = try? AVAudioFile(forReading: url)
+                } else {
+                    containerAudioFile = nil
+                }
+
                 lock.lock()
                 containerSubgraphs[pc.container.id] = ContainerSubgraph(
                     playerNode: player,
                     instrumentUnit: pc.instrument,
                     effectUnits: pc.effects,
-                    trackMixer: trackMixer
+                    trackMixer: trackMixer,
+                    audioFile: containerAudioFile
                 )
                 lock.unlock()
             }
@@ -353,6 +384,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
         lock.unlock()
 
+        print("[PLAY] play() fromBar=\(fromBar) subgraphs=\(containerSubgraphs.count) audioFiles=\(audioFiles.count)")
         for track in song.tracks {
             // Master track has no playable containers
             if track.kind == .master { continue }
@@ -445,6 +477,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let mMixer = masterMixerNode
         masterMixerNode = nil
         audioFiles.removeAll()
+        recordingFileURLs.removeAll()
         currentSong = nil
         lock.unlock()
 
@@ -508,6 +541,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
     public func registerRecording(id: ID<SourceRecording>, file: AVAudioFile) {
         lock.lock()
         audioFiles[id] = file
+        recordingFileURLs[id] = file.url
         lock.unlock()
     }
 
@@ -519,7 +553,36 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let ts = currentTimeSignature
         let sr = currentSampleRate
         let song = currentSong
-        lock.unlock()
+
+        // Reconnect the player node with the audio file's format so the
+        // channel count matches the buffer that will be scheduled.
+        if let recID = container.sourceRecordingID,
+           let file = audioFiles[recID],
+           var subgraph = containerSubgraphs[container.id] {
+            let fileFormat = file.processingFormat
+
+            // Give this container its own AVAudioFile handle
+            if subgraph.audioFile == nil, let url = recordingFileURLs[recID] {
+                subgraph.audioFile = try? AVAudioFile(forReading: url)
+                containerSubgraphs[container.id] = subgraph
+            }
+
+            lock.unlock()
+
+            // Reconnect player → first chain node (or trackMixer) with the file format
+            engine.disconnectNodeOutput(subgraph.playerNode)
+            let firstDownstream: AVAudioNode
+            if let inst = subgraph.instrumentUnit {
+                firstDownstream = inst
+            } else if let firstEffect = subgraph.effectUnits.first {
+                firstDownstream = firstEffect
+            } else {
+                firstDownstream = subgraph.trackMixer
+            }
+            engine.connect(subgraph.playerNode, to: firstDownstream, format: fileFormat)
+        } else {
+            lock.unlock()
+        }
 
         guard song != nil else { return }
         let spb = samplesPerBar(bpm: bpm, timeSignature: ts, sampleRate: sr)
@@ -542,22 +605,33 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let audioFile: AVAudioFile?
         let subgraph: ContainerSubgraph?
         if let recordingID = container.sourceRecordingID {
-            audioFile = audioFiles[recordingID]
-            subgraph = containerSubgraphs[container.id]
+            let sg = containerSubgraphs[container.id]
+            // Prefer per-container audio file; fall back to shared file
+            audioFile = sg?.audioFile ?? audioFiles[recordingID]
+            subgraph = sg
+            if audioFile == nil || subgraph == nil {
+                print("[PLAY] scheduleContainer '\(container.name)' id=\(container.id) MISSING audioFile=\(audioFile != nil) subgraph=\(subgraph != nil) recID=\(recordingID)")
+            }
         } else {
             audioFile = nil
             subgraph = nil
+            print("[PLAY] scheduleContainer '\(container.name)' id=\(container.id) NO sourceRecordingID")
         }
         lock.unlock()
 
         guard let audioFile, let subgraph else { return }
+
+        print("[PLAY] scheduleContainer '\(container.name)' id=\(container.id) bars=\(container.startBar)-\(container.endBar) fileLen=\(audioFile.length) parent=\(container.parentContainerID.map { "\($0)" } ?? "none")")
 
         let containerStartSample = Int64(Double(container.startBar - 1) * samplesPerBar)
         let containerEndSample = Int64(Double(container.endBar - 1) * samplesPerBar)
         let playheadSample = Int64((fromBar - 1.0) * samplesPerBar)
 
         // Skip containers that end before the playhead
-        if containerEndSample <= playheadSample { return }
+        if containerEndSample <= playheadSample {
+            print("[PLAY]   skipping '\(container.name)' — ends before playhead")
+            return
+        }
 
         let startOffset: AVAudioFramePosition
         let frameCount: AVAudioFrameCount
@@ -576,7 +650,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
             frameCount = AVAudioFrameCount(min(containerLength, fileFrames))
         }
 
-        guard frameCount > 0 else { return }
+        guard frameCount > 0 else {
+            print("[PLAY]   '\(container.name)' frameCount=0, skipping")
+            return
+        }
+
+        print("[PLAY]   '\(container.name)' scheduling frameCount=\(frameCount) startOffset=\(startOffset)")
 
         let hasFades = container.enterFade != nil || container.exitFade != nil
 
@@ -628,8 +707,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         // Guard against concurrent cleanup detaching the node from the engine
-        guard subgraph.playerNode.engine != nil else { return }
+        guard subgraph.playerNode.engine != nil else {
+            print("[PLAY]   '\(container.name)' player NOT attached to engine!")
+            return
+        }
         subgraph.playerNode.play()
+        print("[PLAY]   '\(container.name)' player.play() called, isPlaying=\(subgraph.playerNode.isPlaying)")
 
         lock.lock()
         activeContainers.append(container)
@@ -1097,6 +1180,27 @@ extension PlaybackScheduler {
         defer { lock.unlock() }
         guard effectIndex >= 0, effectIndex < masterEffectUnits.count else { return nil }
         return masterEffectUnits[effectIndex]
+    }
+    /// Sends a MIDI message to the first instrument unit found on the given track.
+    /// Used by the virtual keyboard to trigger notes on instrument tracks.
+    /// No-op when no instrument subgraphs exist for the track (e.g. transport stopped).
+    public func sendMIDINoteToTrack(_ trackID: ID<Track>, message: MIDIActionMessage) {
+        lock.lock()
+        let trackMixer = trackMixers[trackID]
+        var instrumentUnit: AVAudioUnit?
+        if trackMixer != nil {
+            for (_, subgraph) in containerSubgraphs {
+                if subgraph.trackMixer === trackMixer, let inst = subgraph.instrumentUnit {
+                    instrumentUnit = inst
+                    break
+                }
+            }
+        }
+        lock.unlock()
+
+        guard let instrumentUnit else { return }
+        let bytes = message.midiBytes
+        instrumentUnit.auAudioUnit.scheduleMIDIEventBlock?(AUEventSampleTimeImmediate, 0, bytes.count, bytes)
     }
 }
 

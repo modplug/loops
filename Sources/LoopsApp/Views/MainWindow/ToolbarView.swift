@@ -27,6 +27,9 @@ public struct ToolbarView: View {
     /// Available output ports for metronome routing.
     var availableOutputPorts: [OutputPort]
 
+    /// Binding to show/hide the virtual MIDI keyboard.
+    @Binding var isVirtualKeyboardVisible: Bool
+
     @State private var showUndoHistory: Bool = false
 
     private static let countInOptions = [0, 1, 2, 4]
@@ -47,7 +50,8 @@ public struct ToolbarView: View {
         redoActionName: String = "",
         undoHistory: [UndoHistoryEntry] = [],
         undoHistoryCursor: Int = -1,
-        availableOutputPorts: [OutputPort] = []
+        availableOutputPorts: [OutputPort] = [],
+        isVirtualKeyboardVisible: Binding<Bool> = .constant(false)
     ) {
         self.viewModel = viewModel
         self.onTimeSignatureChange = onTimeSignatureChange
@@ -61,6 +65,7 @@ public struct ToolbarView: View {
         self.undoHistory = undoHistory
         self.undoHistoryCursor = undoHistoryCursor
         self.availableOutputPorts = availableOutputPorts
+        self._isVirtualKeyboardVisible = isVirtualKeyboardVisible
         _bpmText = State(initialValue: String(format: "%.1f", viewModel.bpm))
     }
 
@@ -297,6 +302,17 @@ public struct ToolbarView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("Count-in: \(viewModel.countInBars == 0 ? "Off" : "\(viewModel.countInBars) bars")")
+
+            Divider().frame(height: 24)
+
+            // Virtual MIDI keyboard toggle
+            Button(action: { isVirtualKeyboardVisible.toggle() }) {
+                Image(systemName: "pianokeys")
+                    .foregroundStyle(isVirtualKeyboardVisible ? Color.accentColor : Color.secondary)
+                    .font(.title3)
+            }
+            .buttonStyle(.plain)
+            .help(isVirtualKeyboardVisible ? "Hide Virtual Keyboard" : "Show Virtual Keyboard")
 
             Spacer()
 
