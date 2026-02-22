@@ -228,6 +228,132 @@ struct ModelSerializationTests {
         #expect(decoded.instrumentOverride == nil)
         #expect(decoded.enterFade == nil)
         #expect(decoded.exitFade == nil)
+        #expect(decoded.onEnterActions.isEmpty)
+        #expect(decoded.onExitActions.isEmpty)
+    }
+
+    // MARK: - ContainerAction
+
+    @Test("ContainerAction sendMIDI program change round-trips")
+    func containerActionProgramChangeRoundTrip() throws {
+        let action = ContainerAction.sendMIDI(
+            id: ID(),
+            message: .programChange(channel: 0, program: 5),
+            destination: .externalPort(name: "MIDI Out 1")
+        )
+        let decoded = try roundTrip(action)
+        #expect(action == decoded)
+        if case .sendMIDI(_, let message, let destination) = decoded {
+            #expect(message == .programChange(channel: 0, program: 5))
+            #expect(destination == .externalPort(name: "MIDI Out 1"))
+        } else {
+            Issue.record("Expected .sendMIDI case")
+        }
+    }
+
+    @Test("ContainerAction sendMIDI CC round-trips")
+    func containerActionCCRoundTrip() throws {
+        let action = ContainerAction.makeSendMIDI(
+            message: .controlChange(channel: 1, controller: 64, value: 127),
+            destination: .externalPort(name: "Pedal Port")
+        )
+        let decoded = try roundTrip(action)
+        #expect(action == decoded)
+    }
+
+    @Test("ContainerAction sendMIDI noteOn/noteOff round-trips")
+    func containerActionNoteRoundTrip() throws {
+        let noteOn = ContainerAction.makeSendMIDI(
+            message: .noteOn(channel: 0, note: 60, velocity: 100),
+            destination: .internalTrack(trackID: ID())
+        )
+        let noteOff = ContainerAction.makeSendMIDI(
+            message: .noteOff(channel: 0, note: 60, velocity: 0),
+            destination: .internalTrack(trackID: ID())
+        )
+        let decodedNoteOn = try roundTrip(noteOn)
+        let decodedNoteOff = try roundTrip(noteOff)
+        #expect(noteOn == decodedNoteOn)
+        #expect(noteOff == decodedNoteOff)
+    }
+
+    @Test("ContainerAction with internal track destination round-trips")
+    func containerActionInternalTrackRoundTrip() throws {
+        let trackID = ID<Track>()
+        let action = ContainerAction.makeSendMIDI(
+            message: .programChange(channel: 0, program: 42),
+            destination: .internalTrack(trackID: trackID)
+        )
+        let decoded = try roundTrip(action)
+        #expect(action == decoded)
+        if case .sendMIDI(_, _, let dest) = decoded {
+            #expect(dest == .internalTrack(trackID: trackID))
+        }
+    }
+
+    @Test("Container with enter/exit actions round-trips")
+    func containerWithActionsRoundTrip() throws {
+        let enterAction = ContainerAction.makeSendMIDI(
+            message: .programChange(channel: 0, program: 5),
+            destination: .externalPort(name: "MIDI Out 1")
+        )
+        let exitAction = ContainerAction.makeSendMIDI(
+            message: .controlChange(channel: 0, controller: 64, value: 0),
+            destination: .externalPort(name: "MIDI Out 1")
+        )
+        let container = Container(
+            name: "Verse",
+            startBar: 1,
+            lengthBars: 8,
+            loopSettings: LoopSettings(loopCount: .fill),
+            onEnterActions: [enterAction],
+            onExitActions: [exitAction]
+        )
+        let decoded = try roundTrip(container)
+        #expect(container == decoded)
+        #expect(decoded.onEnterActions.count == 1)
+        #expect(decoded.onExitActions.count == 1)
+        #expect(decoded.onEnterActions[0].message == .programChange(channel: 0, program: 5))
+        #expect(decoded.onExitActions[0].message == .controlChange(channel: 0, controller: 64, value: 0))
+    }
+
+    @Test("Container without actions round-trips with empty arrays")
+    func containerWithoutActionsRoundTrip() throws {
+        let container = Container(
+            name: "Chorus",
+            startBar: 5,
+            lengthBars: 4,
+            loopSettings: LoopSettings(loopCount: .fill)
+        )
+        let decoded = try roundTrip(container)
+        #expect(decoded.onEnterActions.isEmpty)
+        #expect(decoded.onExitActions.isEmpty)
+    }
+
+    @Test("MIDIActionMessage all cases round-trip")
+    func midiActionMessageAllCasesRoundTrip() throws {
+        let messages: [MIDIActionMessage] = [
+            .programChange(channel: 0, program: 127),
+            .controlChange(channel: 15, controller: 0, value: 64),
+            .noteOn(channel: 9, note: 60, velocity: 100),
+            .noteOff(channel: 9, note: 60, velocity: 0),
+        ]
+        for message in messages {
+            let decoded = try roundTrip(message)
+            #expect(message == decoded)
+        }
+    }
+
+    @Test("MIDIDestination all cases round-trip")
+    func midiDestinationAllCasesRoundTrip() throws {
+        let destinations: [MIDIDestination] = [
+            .externalPort(name: "USB MIDI"),
+            .internalTrack(trackID: ID()),
+        ]
+        for dest in destinations {
+            let decoded = try roundTrip(dest)
+            #expect(dest == decoded)
+        }
     }
 
     // MARK: - Track

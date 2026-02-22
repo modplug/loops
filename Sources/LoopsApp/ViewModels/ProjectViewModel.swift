@@ -577,6 +577,60 @@ public final class ProjectViewModel {
         }
     }
 
+    // MARK: - Container Enter/Exit Actions
+
+    /// Adds an action to a container's enter action list.
+    public func addContainerEnterAction(containerID: ID<Container>, action: ContainerAction) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Add Enter Action")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].onEnterActions.append(action)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Removes an action from a container's enter action list.
+    public func removeContainerEnterAction(containerID: ID<Container>, actionID: ID<ContainerAction>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Remove Enter Action")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].onEnterActions.removeAll { $0.id == actionID }
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Adds an action to a container's exit action list.
+    public func addContainerExitAction(containerID: ID<Container>, action: ContainerAction) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Add Exit Action")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].onExitActions.append(action)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Removes an action from a container's exit action list.
+    public func removeContainerExitAction(containerID: ID<Container>, actionID: ID<ContainerAction>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Remove Exit Action")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].onExitActions.removeAll { $0.id == actionID }
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
     /// Returns the selected container if one is selected.
     public var selectedContainer: Container? {
         guard let id = selectedContainerID, let song = currentSong else { return nil }

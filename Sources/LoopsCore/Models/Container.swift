@@ -25,6 +25,10 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     public var enterFade: FadeSettings?
     /// Optional fade-out applied at the container end (gain ramp 1→0).
     public var exitFade: FadeSettings?
+    /// Actions to fire when this container enters (starts playing).
+    public var onEnterActions: [ContainerAction]
+    /// Actions to fire when this container exits (stops playing).
+    public var onExitActions: [ContainerAction]
 
     public var endBar: Int { startBar + lengthBars }
 
@@ -43,7 +47,9 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         isEffectChainBypassed: Bool = false,
         instrumentOverride: AudioComponentInfo? = nil,
         enterFade: FadeSettings? = nil,
-        exitFade: FadeSettings? = nil
+        exitFade: FadeSettings? = nil,
+        onEnterActions: [ContainerAction] = [],
+        onExitActions: [ContainerAction] = []
     ) {
         self.id = id
         self.name = name
@@ -60,6 +66,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         self.instrumentOverride = instrumentOverride
         self.enterFade = enterFade
         self.exitFade = exitFade
+        self.onEnterActions = onEnterActions
+        self.onExitActions = onExitActions
     }
 
     // MARK: - Backward-compatible decoding
@@ -68,7 +76,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         case id, name, startBar, lengthBars, sourceRecordingID, linkGroupID
         case loopSettings, isRecordArmed, volumeOverride, panOverride
         case insertEffects, isEffectChainBypassed, instrumentOverride
-        case enterFade, exitFade
+        case enterFade, exitFade, onEnterActions, onExitActions
     }
 
     public init(from decoder: Decoder) throws {
@@ -88,5 +96,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         instrumentOverride = try c.decodeIfPresent(AudioComponentInfo.self, forKey: .instrumentOverride)
         enterFade = try c.decodeIfPresent(FadeSettings.self, forKey: .enterFade)
         exitFade = try c.decodeIfPresent(FadeSettings.self, forKey: .exitFade)
+        onEnterActions = try c.decodeIfPresent([ContainerAction].self, forKey: .onEnterActions) ?? []
+        onExitActions = try c.decodeIfPresent([ContainerAction].self, forKey: .onExitActions) ?? []
     }
 }

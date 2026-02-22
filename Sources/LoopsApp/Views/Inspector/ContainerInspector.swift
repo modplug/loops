@@ -15,6 +15,10 @@ public struct ContainerInspector: View {
     var onSetInstrumentOverride: ((AudioComponentInfo?) -> Void)?
     var onSetEnterFade: ((FadeSettings?) -> Void)?
     var onSetExitFade: ((FadeSettings?) -> Void)?
+    var onAddEnterAction: ((ContainerAction) -> Void)?
+    var onRemoveEnterAction: ((ID<ContainerAction>) -> Void)?
+    var onAddExitAction: ((ContainerAction) -> Void)?
+    var onRemoveExitAction: ((ID<ContainerAction>) -> Void)?
 
     @State private var editingName: String = ""
     @State private var selectedBoundaryMode: BoundaryMode = .hardCut
@@ -45,7 +49,11 @@ public struct ContainerInspector: View {
         onToggleChainBypass: (() -> Void)? = nil,
         onSetInstrumentOverride: ((AudioComponentInfo?) -> Void)? = nil,
         onSetEnterFade: ((FadeSettings?) -> Void)? = nil,
-        onSetExitFade: ((FadeSettings?) -> Void)? = nil
+        onSetExitFade: ((FadeSettings?) -> Void)? = nil,
+        onAddEnterAction: ((ContainerAction) -> Void)? = nil,
+        onRemoveEnterAction: ((ID<ContainerAction>) -> Void)? = nil,
+        onAddExitAction: ((ContainerAction) -> Void)? = nil,
+        onRemoveExitAction: ((ID<ContainerAction>) -> Void)? = nil
     ) {
         self.container = container
         self.trackKind = trackKind
@@ -58,6 +66,10 @@ public struct ContainerInspector: View {
         self.onSetInstrumentOverride = onSetInstrumentOverride
         self.onSetEnterFade = onSetEnterFade
         self.onSetExitFade = onSetExitFade
+        self.onAddEnterAction = onAddEnterAction
+        self.onRemoveEnterAction = onRemoveEnterAction
+        self.onAddExitAction = onAddExitAction
+        self.onRemoveExitAction = onRemoveExitAction
     }
 
     public var body: some View {
@@ -253,6 +265,22 @@ public struct ContainerInspector: View {
                     .onChange(of: exitFadeCurve) { _, _ in commitExitFade(enabled: true) }
                 }
             }
+
+            Section("Enter Actions") {
+                actionListView(
+                    actions: container.onEnterActions,
+                    onAdd: onAddEnterAction,
+                    onRemove: onRemoveEnterAction
+                )
+            }
+
+            Section("Exit Actions") {
+                actionListView(
+                    actions: container.onExitActions,
+                    onAdd: onAddExitAction,
+                    onRemove: onRemoveExitAction
+                )
+            }
         }
         .formStyle(.grouped)
         .onAppear {
@@ -261,6 +289,88 @@ public struct ContainerInspector: View {
                 availableInstruments = AudioUnitDiscovery().instruments()
             }
         }
+    }
+
+    @ViewBuilder
+    private func actionListView(
+        actions: [ContainerAction],
+        onAdd: ((ContainerAction) -> Void)?,
+        onRemove: ((ID<ContainerAction>) -> Void)?
+    ) -> some View {
+        if actions.isEmpty {
+            Text("No actions")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        } else {
+            ForEach(actions) { action in
+                HStack {
+                    Image(systemName: "music.note")
+                        .foregroundStyle(.blue)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(action.message.summary)
+                            .font(.callout)
+                        Text(action.destination.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(role: .destructive) {
+                        onRemove?(action.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        Menu("Add MIDI Action") {
+            Menu("Program Change") {
+                ForEach(Array(stride(from: 0, to: 128, by: 1)), id: \.self) { program in
+                    Button("PC \(program)") {
+                        let action = ContainerAction.makeSendMIDI(
+                            message: .programChange(channel: 0, program: UInt8(program)),
+                            destination: .externalPort(name: "MIDI Out")
+                        )
+                        onAdd?(action)
+                    }
+                }
+            }
+            Menu("Control Change") {
+                ForEach([0, 1, 7, 10, 11, 64, 91, 93], id: \.self) { cc in
+                    Button("CC \(cc) = 127") {
+                        let action = ContainerAction.makeSendMIDI(
+                            message: .controlChange(channel: 0, controller: UInt8(cc), value: 127),
+                            destination: .externalPort(name: "MIDI Out")
+                        )
+                        onAdd?(action)
+                    }
+                }
+            }
+            Menu("Note On") {
+                ForEach([36, 48, 60, 72, 84], id: \.self) { note in
+                    Button("Note \(note) vel 127") {
+                        let action = ContainerAction.makeSendMIDI(
+                            message: .noteOn(channel: 0, note: UInt8(note), velocity: 127),
+                            destination: .externalPort(name: "MIDI Out")
+                        )
+                        onAdd?(action)
+                    }
+                }
+            }
+            Menu("Note Off") {
+                ForEach([36, 48, 60, 72, 84], id: \.self) { note in
+                    Button("Note Off \(note)") {
+                        let action = ContainerAction.makeSendMIDI(
+                            message: .noteOff(channel: 0, note: UInt8(note), velocity: 0),
+                            destination: .externalPort(name: "MIDI Out")
+                        )
+                        onAdd?(action)
+                    }
+                }
+            }
+        }
+        .font(.caption)
     }
 
     private func loadFromContainer() {
@@ -344,6 +454,32 @@ extension BoundaryMode {
         case .hardCut: return "Audio stops and restarts cleanly at loop boundaries."
         case .crossfade: return "Smooth crossfade between end of one pass and start of next."
         case .overdub: return "Each loop pass layers on top of previous passes."
+        }
+    }
+}
+
+extension MIDIActionMessage {
+    var summary: String {
+        switch self {
+        case .programChange(let channel, let program):
+            return "PC \(program) ch \(channel + 1)"
+        case .controlChange(let channel, let controller, let value):
+            return "CC \(controller) = \(value) ch \(channel + 1)"
+        case .noteOn(let channel, let note, let velocity):
+            return "Note On \(note) vel \(velocity) ch \(channel + 1)"
+        case .noteOff(let channel, let note, _):
+            return "Note Off \(note) ch \(channel + 1)"
+        }
+    }
+}
+
+extension MIDIDestination {
+    var summary: String {
+        switch self {
+        case .externalPort(let name):
+            return "→ \(name)"
+        case .internalTrack(let trackID):
+            return "→ Track \(trackID.rawValue.uuidString.prefix(8))"
         }
     }
 }

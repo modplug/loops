@@ -15,6 +15,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private var audioFiles: [ID<SourceRecording>: AVAudioFile] = [:]
     private let audioDirURL: URL
 
+    /// Optional action dispatcher for container enter/exit MIDI actions.
+    public var actionDispatcher: ActionDispatcher?
+
     /// Per-container audio subgraph.
     private struct ContainerSubgraph {
         let playerNode: AVAudioPlayerNode
@@ -28,6 +31,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
     /// All active container subgraphs, keyed by container ID.
     private var containerSubgraphs: [ID<Container>: ContainerSubgraph] = [:]
+
+    /// Containers currently playing, for firing exit actions on stop.
+    private var activeContainers: [Container] = []
 
     public init(engine: AVAudioEngine, audioDirURL: URL) {
         self.engine = engine
@@ -160,6 +166,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 }
 
                 subgraph.playerNode.play()
+                activeContainers.append(container)
+                actionDispatcher?.containerDidEnter(container)
             }
         }
     }
@@ -169,6 +177,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
         for (_, subgraph) in containerSubgraphs {
             subgraph.playerNode.stop()
         }
+        for container in activeContainers {
+            actionDispatcher?.containerDidExit(container)
+        }
+        activeContainers.removeAll()
     }
 
     /// Cleans up all nodes and audio files.
@@ -187,6 +199,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             }
         }
         containerSubgraphs.removeAll()
+        activeContainers.removeAll()
 
         for (_, mixer) in trackMixers {
             engine.disconnectNodeOutput(mixer)

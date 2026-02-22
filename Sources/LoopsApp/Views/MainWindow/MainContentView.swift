@@ -175,6 +175,18 @@ public struct MainContentView: View {
                         },
                         onSetExitFade: { fade in
                             projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
+                        },
+                        onAddEnterAction: { action in
+                            projectViewModel.addContainerEnterAction(containerID: container.id, action: action)
+                        },
+                        onRemoveEnterAction: { actionID in
+                            projectViewModel.removeContainerEnterAction(containerID: container.id, actionID: actionID)
+                        },
+                        onAddExitAction: { action in
+                            projectViewModel.addContainerExitAction(containerID: container.id, action: action)
+                        },
+                        onRemoveExitAction: { actionID in
+                            projectViewModel.removeContainerExitAction(containerID: container.id, actionID: actionID)
                         }
                     )
                 } else {
