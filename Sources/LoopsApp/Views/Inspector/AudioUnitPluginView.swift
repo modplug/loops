@@ -11,6 +11,12 @@ final class PluginWindowManager {
 
     private var windows: [String: NSWindow] = [:]
 
+    /// Returns the window for the given component key, if one is open.
+    func window(for component: AudioComponentInfo) -> NSWindow? {
+        let key = "\(component.componentType)-\(component.componentSubType)-\(component.componentManufacturer)"
+        return windows[key]
+    }
+
     /// Opens (or brings to front) a plugin window for the given component.
     func open(
         component: AudioComponentInfo,
@@ -46,6 +52,7 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
     private var avAudioUnit: AVAudioUnit?
     private var onPresetChanged: ((Data?) -> Void)?
     private var onClose: (() -> Void)?
+    private var sizeObservation: NSKeyValueObservation?
 
     convenience init(
         component: AudioComponentInfo,
@@ -122,16 +129,24 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
                 self.contentViewController = vc
 
                 // Size window to fit the plugin's preferred content size
-                let preferred = vc.preferredContentSize
-                if preferred.width > 0 && preferred.height > 0 {
-                    self.setContentSize(preferred)
+                if self.applyPreferredSize(from: vc) {
+                    self.center()
                 } else {
-                    let viewSize = vc.view.fittingSize
-                    if viewSize.width > 0 && viewSize.height > 0 {
-                        self.setContentSize(viewSize)
+                    // Plugin hasn't reported its preferred size yet — observe for
+                    // async updates (common with AU effect plugins).
+                    self.sizeObservation = vc.observe(
+                        \.preferredContentSize,
+                        options: [.new]
+                    ) { [weak self] viewController, _ in
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            if self.applyPreferredSize(from: viewController) {
+                                self.center()
+                                self.sizeObservation = nil
+                            }
+                        }
                     }
                 }
-                self.center()
             } else {
                 // No custom UI — show generic parameter sliders in SwiftUI
                 let params = au.auAudioUnit.parameterTree?.allParameters ?? []
@@ -151,7 +166,25 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
         }
     }
 
+    /// Attempts to size the window to the view controller's preferred or fitting size.
+    /// Returns true if a valid size was applied.
+    @discardableResult
+    private func applyPreferredSize(from vc: NSViewController) -> Bool {
+        let preferred = vc.preferredContentSize
+        if preferred.width > 0 && preferred.height > 0 {
+            self.setContentSize(preferred)
+            return true
+        }
+        let viewSize = vc.view.fittingSize
+        if viewSize.width > 0 && viewSize.height > 0 {
+            self.setContentSize(viewSize)
+            return true
+        }
+        return false
+    }
+
     func windowWillClose(_ notification: Notification) {
+        sizeObservation = nil
         // Save preset before closing
         if let au = avAudioUnit {
             let host = AudioUnitHost(engine: AVAudioEngine())

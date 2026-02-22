@@ -537,3 +537,26 @@
 - Updated `MixerStripView` track name label from fixed `frame(width: 60)` to `frame(maxWidth: 64)` to accommodate wider fader
 - 4 new tests: fader drag propagation (rapid updates reflected immediately), engine volume state readback, pan drag propagation, engine pan state readback
 - All 600 tests pass
+
+### Iteration 3 — #85 Wall-time clock in transport and inspector
+- New `WallTimeConverter` enum in LoopsCore/Position: pure utility for bar-position → wall-clock-seconds conversion
+- `seconds(forBar:bpm:beatsPerBar:)` converts 1-based bar position to seconds using tempo and time signature
+- `formatted(_:)` formats seconds as MM:SS.ms (two-digit hundredths)
+- `formattedTime(forBar:bpm:beatsPerBar:)` convenience combines conversion and formatting
+- `ToolbarView`: wall-time clock (MM:SS.ms) displayed next to existing "Bar X.X" position, updates in real-time during playback
+- `ContainerInspector`: new "Time" row showing wall-time start and end positions (monospaced, MM:SS.ms — MM:SS.ms)
+- `ContainerInspector`: added `bpm` and `beatsPerBar` parameters (with defaults) for time conversion
+- `MainContentView`: passes `transportViewModel.bpm` and `transportViewModel.timeSignature.beatsPerBar` to ContainerInspector
+- 16 new tests: bar 1 = 0s, 120/60/90/140 BPM conversions, 3/4 and 6/8 time signatures, fractional bar, below-bar clamping, formatted zero/65.5s/large/negative, formatted time convenience
+- All 616 tests pass
+
+### Iteration 4 — #86 AU effect plugin window sizing verification
+- Root cause: `PluginWindow.loadPlugin` checked `preferredContentSize` synchronously after setting `contentViewController`, but many AU effect plugins report their preferred size asynchronously after the view is added to a window
+- Added `sizeObservation: NSKeyValueObservation?` to `PluginWindow` — KVO observation on the view controller's `preferredContentSize`
+- When the plugin's preferred size isn't immediately available, the window now observes for async updates and resizes when the plugin reports its actual size
+- Extracted `applyPreferredSize(from:)` helper: checks `preferredContentSize` first, falls back to `view.fittingSize`, returns whether a valid size was applied
+- KVO observation is one-shot: cleared after first successful resize, and cleaned up on window close
+- Added `window(for:)` query method on `PluginWindowManager` for testing
+- Both instrument and effect plugin windows now consistently resize to their preferred dimensions
+- 3 new tests: effect plugin window opens with non-loading dimensions (AUDelay), two different effects open separate windows (AUDelay + AUReverb2), same plugin reuses existing window
+- All 619 tests pass
