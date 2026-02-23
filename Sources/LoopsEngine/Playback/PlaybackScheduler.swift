@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CoreFoundation
 import LoopsCore
 
 /// Schedules playback of recorded containers on AVAudioPlayerNodes,
@@ -160,6 +161,43 @@ public final class PlaybackScheduler: @unchecked Sendable {
         return playbackStartTime != nil
     }
 
+    /// Invalidates the prepared graph fingerprints, forcing the next
+    /// `needsPrepare()` call to return `true`. Use after operations that
+    /// may corrupt the engine topology (e.g. input monitoring toggles).
+    public func invalidatePreparedState() {
+        lock.lock()
+        preparedTrackFingerprints.removeAll()
+        preparedMasterFingerprint = nil
+        lock.unlock()
+    }
+
+    /// Returns `true` when the audio graph needs rebuilding for this song.
+    /// Compares graph-shape fingerprints (effects, instruments, container audio
+    /// assignments) — cosmetic changes like renaming, volume, pan, or moving
+    /// containers do NOT require a re-prepare.
+    public func needsPrepare(song: Song, recordingIDs: Set<ID<SourceRecording>>) -> Bool {
+        let allContainers = song.tracks.flatMap(\.containers)
+        var newFingerprints: [ID<Track>: TrackGraphFingerprint] = [:]
+        for track in song.tracks where track.kind != .master {
+            newFingerprints[track.id] = TrackGraphFingerprint.from(track, allContainers: allContainers)
+        }
+        let newMasterFP = song.masterTrack.map { TrackGraphFingerprint.from($0, allContainers: allContainers) }
+
+        lock.lock()
+        let oldFingerprints = preparedTrackFingerprints
+        let oldMasterFP = preparedMasterFingerprint
+        let oldRecordingIDs = Set(audioFiles.keys)
+        lock.unlock()
+
+        if oldFingerprints.isEmpty && oldMasterFP == nil {
+            return true // never prepared
+        }
+        if recordingIDs != oldRecordingIDs { return true }
+        if newMasterFP != oldMasterFP { return true }
+        if newFingerprints != oldFingerprints { return true }
+        return false
+    }
+
     public init(engine: AVAudioEngine, audioDirURL: URL) {
         self.engine = engine
         self.audioUnitHost = AudioUnitHost(engine: engine)
@@ -186,6 +224,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// the synchronous attach/connect pass.
     @MainActor
     public func prepare(song: Song, sourceRecordings: [ID<SourceRecording>: SourceRecording]) async {
+        let prepareStart = CFAbsoluteTimeGetCurrent()
         let allContainers = song.tracks.flatMap(\.containers)
 
         // ── Phase 1: Load files and audio units (async, engine keeps running) ──
@@ -314,13 +353,15 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // stop it for the attach/connect pass. This phase is fast (no awaits).
 
         let totalContainers = preloadedTracks.flatMap(\.containers).count
-        print("[PLAY] prepare: \(loadedFiles.count) audio files, \(preloadedTracks.count) tracks, \(totalContainers) containers with subgraphs")
+        let phase1Ms = (CFAbsoluteTimeGetCurrent() - prepareStart) * 1000
+        print("[PERF] prepare phase1 (AU load): \(String(format: "%.1f", phase1Ms))ms — \(loadedFiles.count) files, \(preloadedTracks.count) tracks, \(totalContainers) containers")
         for pt in preloadedTracks {
             for pc in pt.containers {
                 print("[PLAY]   container '\(pc.container.name)' id=\(pc.container.id) hasFormat=\(pc.audioFormat != nil) recID=\(pc.container.sourceRecordingID.map { "\($0)" } ?? "none")")
             }
         }
 
+        let phase2Start = CFAbsoluteTimeGetCurrent()
         let wasRunning = engine.isRunning
         if wasRunning { engine.stop() }
         defer { if wasRunning { try? engine.start() } }
@@ -451,6 +492,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
         preparedTrackFingerprints = newFingerprints
         preparedMasterFingerprint = masterFP
         lock.unlock()
+
+        let phase2Ms = (CFAbsoluteTimeGetCurrent() - phase2Start) * 1000
+        let totalMs = (CFAbsoluteTimeGetCurrent() - prepareStart) * 1000
+        print("[PERF] prepare phase2 (engine rebuild): \(String(format: "%.1f", phase2Ms))ms — total: \(String(format: "%.1f", totalMs))ms")
     }
 
     /// Incrementally updates the audio graph, rebuilding only tracks whose
@@ -878,6 +923,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         timeSignature: TimeSignature,
         sampleRate: Double
     ) {
+        let playStart = CFAbsoluteTimeGetCurrent()
         let samplesPerBar = self.samplesPerBar(bpm: bpm, timeSignature: timeSignature, sampleRate: sampleRate)
         let allContainers = song.tracks.flatMap(\.containers)
 
@@ -941,10 +987,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         startAutomationTimer(song: song, fromBar: fromBar, bpm: bpm, timeSignature: timeSignature)
+
+        let playMs = (CFAbsoluteTimeGetCurrent() - playStart) * 1000
+        print("[PERF] play(): \(String(format: "%.1f", playMs))ms — \(song.tracks.flatMap(\.containers).count) containers from bar \(fromBar)")
     }
 
     /// Stops all playback.
-    public func stop() {
+    /// - Parameter skipDeclick: When `true`, stops player nodes immediately without
+    ///   the ~8ms fade-out ramp. Use this for seeks where playback restarts immediately.
+    public func stop(skipDeclick: Bool = false) {
+        let stopStart = CFAbsoluteTimeGetCurrent()
         stopAutomationTimer()
 
         // Copy state under lock, then operate on copies
@@ -965,19 +1017,26 @@ public final class PlaybackScheduler: @unchecked Sendable {
             sendMIDINoteToTrack(midiNote.trackID, message: .noteOff(channel: midiNote.channel, note: midiNote.note, velocity: 0))
         }
 
-        // Declick fade-out: ramp main mixer output volume to zero over ~8ms
-        // so the render thread picks up intermediate values before we stop nodes.
         if !subgraphs.isEmpty {
-            let savedVolume = engine.mainMixerNode.outputVolume
-            let steps = 8
-            for i in 1...steps {
-                engine.mainMixerNode.outputVolume = savedVolume * Float(steps - i) / Float(steps)
-                usleep(1000)
+            if skipDeclick {
+                // Immediate stop — no fade, playback is about to restart
+                for (_, subgraph) in subgraphs {
+                    subgraph.playerNode.stop()
+                }
+            } else {
+                // Declick fade-out: ramp main mixer output volume to zero over ~8ms
+                // so the render thread picks up intermediate values before we stop nodes.
+                let savedVolume = engine.mainMixerNode.outputVolume
+                let steps = 8
+                for i in 1...steps {
+                    engine.mainMixerNode.outputVolume = savedVolume * Float(steps - i) / Float(steps)
+                    usleep(1000)
+                }
+                for (_, subgraph) in subgraphs {
+                    subgraph.playerNode.stop()
+                }
+                engine.mainMixerNode.outputVolume = savedVolume
             }
-            for (_, subgraph) in subgraphs {
-                subgraph.playerNode.stop()
-            }
-            engine.mainMixerNode.outputVolume = savedVolume
         }
 
         for container in containers {
@@ -987,6 +1046,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
         for trackID in tracks {
             inputMonitor?.unsuppressMonitoring(trackID: trackID)
         }
+
+        let stopMs = (CFAbsoluteTimeGetCurrent() - stopStart) * 1000
+        print("[PERF] stop(skipDeclick=\(skipDeclick)): \(String(format: "%.1f", stopMs))ms — \(subgraphs.count) subgraphs, \(midiNotes.count) MIDI notes")
     }
 
     /// Cleans up all nodes and audio files.

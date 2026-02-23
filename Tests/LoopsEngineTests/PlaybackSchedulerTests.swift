@@ -44,6 +44,49 @@ struct PlaybackSchedulerTests {
         scheduler.stop()
     }
 
+    @Test("Stop with skipDeclick skips fade and stops immediately",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func stopWithSkipDeclick() async throws {
+        let fixture = try Self.makeTestFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        scheduler.play(
+            song: fixture.song,
+            fromBar: 1.0,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        Self.renderFrames(engine: engine, count: 2)
+
+        // skipDeclick should stop immediately without the ~8ms fade
+        scheduler.stop(skipDeclick: true)
+
+        // Verify player nodes are stopped
+        let containerID = fixture.song.tracks[0].containers[0].id
+        let player = Self.playerNode(in: scheduler, containerID: containerID)
+        #expect(!player.isPlaying)
+        #expect(!scheduler.isActive)
+
+        scheduler.cleanup()
+    }
+
+    @Test("Stop with skipDeclick is idempotent",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func stopWithSkipDeclickIdempotent() {
+        let engine = AVAudioEngine()
+        let tempDir = FileManager.default.temporaryDirectory
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        scheduler.stop(skipDeclick: true)
+        scheduler.stop(skipDeclick: true)
+        scheduler.stop(skipDeclick: true)
+    }
+
     @Test("Rapid sequential prepare/play/stop cycles don't crash",
           .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
     func rapidSequentialCycles() async throws {
@@ -1490,6 +1533,61 @@ struct PlaybackSchedulerTests {
         #expect(playerB.isPlaying)
 
         scheduler.stop()
+        scheduler.cleanup()
+    }
+
+    // MARK: - needsPrepare / invalidatePreparedState
+
+    @Test("needsPrepare returns true before first prepare",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func needsPrepareBeforeFirstPrepare() throws {
+        let fixture = try Self.makeTestFixture()
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        #expect(scheduler.needsPrepare(song: fixture.song, recordingIDs: Set(fixture.recordings.keys)))
+        scheduler.cleanup()
+    }
+
+    @Test("needsPrepare returns false after prepare with same graph shape",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func needsPrepareFalseAfterPrepare() async throws {
+        let fixture = try Self.makeTestFixture()
+        let engine = AVAudioEngine()
+        try engine.enableManualRenderingMode(.offline, format: engine.outputNode.outputFormat(forBus: 0), maximumFrameCount: 4096)
+        try engine.start()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // Same song — needsPrepare should be false
+        #expect(!scheduler.needsPrepare(song: fixture.song, recordingIDs: Set(fixture.recordings.keys)))
+
+        // Cosmetic change (rename track) — should still be false
+        var renamed = fixture.song
+        renamed.tracks[0] = Track(
+            id: fixture.song.tracks[0].id,
+            name: "Renamed",
+            kind: fixture.song.tracks[0].kind,
+            containers: fixture.song.tracks[0].containers
+        )
+        #expect(!scheduler.needsPrepare(song: renamed, recordingIDs: Set(fixture.recordings.keys)))
+
+        scheduler.cleanup()
+    }
+
+    @Test("needsPrepare returns true after invalidatePreparedState",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func needsPrepareAfterInvalidate() async throws {
+        let fixture = try Self.makeTestFixture()
+        let engine = AVAudioEngine()
+        try engine.enableManualRenderingMode(.offline, format: engine.outputNode.outputFormat(forBus: 0), maximumFrameCount: 4096)
+        try engine.start()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        #expect(!scheduler.needsPrepare(song: fixture.song, recordingIDs: Set(fixture.recordings.keys)))
+
+        scheduler.invalidatePreparedState()
+        #expect(scheduler.needsPrepare(song: fixture.song, recordingIDs: Set(fixture.recordings.keys)))
+
         scheduler.cleanup()
     }
 }
