@@ -77,14 +77,27 @@ public final class ProjectViewModel {
     /// that should be scheduled for playback.
     public var onRecordingPropagated: ((ID<SourceRecording>, String, [Container]) -> Void)?
 
+    /// Dedicated undo state observable, extracted so undo history and toast changes
+    /// don't invalidate unrelated parts of the view tree.
+    public let undoState = UndoState()
+
     /// History of undo/redo actions for the undo history panel.
-    public var undoHistory: [UndoHistoryEntry] = []
+    public var undoHistory: [UndoHistoryEntry] {
+        get { undoState.undoHistory }
+        set { undoState.undoHistory = newValue }
+    }
     /// The index in undoHistory pointing to the current state.
     /// Entries above this index are "undone" (available for redo).
-    public var undoHistoryCursor: Int = -1
+    public var undoHistoryCursor: Int {
+        get { undoState.undoHistoryCursor }
+        set { undoState.undoHistoryCursor = newValue }
+    }
 
     /// Current toast message, set on undo/redo and auto-cleared.
-    public var undoToastMessage: UndoToastMessage?
+    public var undoToastMessage: UndoToastMessage? {
+        get { undoState.undoToastMessage }
+        set { undoState.undoToastMessage = newValue }
+    }
 
     private let persistence = ProjectPersistence()
     private var undoObservers: [NSObjectProtocol] = []
@@ -123,26 +136,11 @@ public final class ProjectViewModel {
     }
 
     private func handleUndoNotification() {
-        if undoHistoryCursor >= 0 {
-            undoHistoryCursor -= 1
-            // Mark current entry
-            for i in undoHistory.indices {
-                undoHistory[i].isCurrent = (i == undoHistoryCursor)
-            }
-        }
-        let actionName = undoManager?.redoActionName ?? ""
-        undoToastMessage = UndoToastMessage(text: "Undo: \(actionName)")
+        undoState.handleUndo(redoActionName: undoManager?.redoActionName ?? "")
     }
 
     private func handleRedoNotification() {
-        if undoHistoryCursor < undoHistory.count - 1 {
-            undoHistoryCursor += 1
-            for i in undoHistory.indices {
-                undoHistory[i].isCurrent = (i == undoHistoryCursor)
-            }
-        }
-        let actionName = undoManager?.undoActionName ?? ""
-        undoToastMessage = UndoToastMessage(text: "Redo: \(actionName)")
+        undoState.handleRedo(undoActionName: undoManager?.undoActionName ?? "")
     }
 
     /// Registers an undo action that snapshots and restores the full project state.
@@ -175,17 +173,7 @@ public final class ProjectViewModel {
 
     /// Adds an entry to the undo history, trimming any "future" entries above the cursor.
     private func appendToUndoHistory(actionName: String) {
-        // Remove entries above the current cursor (they represent undone actions that are now invalidated)
-        if undoHistoryCursor < undoHistory.count - 1 {
-            undoHistory.removeSubrange((undoHistoryCursor + 1)...)
-        }
-        // Unmark previous current
-        for i in undoHistory.indices {
-            undoHistory[i].isCurrent = false
-        }
-        let entry = UndoHistoryEntry(actionName: actionName, isCurrent: true)
-        undoHistory.append(entry)
-        undoHistoryCursor = undoHistory.count - 1
+        undoState.appendToHistory(actionName: actionName)
     }
 
     /// Creates a new empty project with a default song (with master track).
@@ -234,8 +222,7 @@ public final class ProjectViewModel {
 
     /// Clears the undo history panel.
     public func clearUndoHistory() {
-        undoHistory.removeAll()
-        undoHistoryCursor = -1
+        undoState.clear()
     }
 
     // MARK: - Song Access

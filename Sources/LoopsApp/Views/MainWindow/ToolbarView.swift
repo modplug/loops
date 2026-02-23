@@ -20,9 +20,8 @@ public struct ToolbarView: View {
     var undoActionName: String
     var redoActionName: String
 
-    /// Undo history panel data.
-    var undoHistory: [UndoHistoryEntry]
-    var undoHistoryCursor: Int
+    /// Dedicated undo state observable for history panel and toast.
+    var undoState: UndoState
 
     /// Available output ports for metronome routing.
     var availableOutputPorts: [OutputPort]
@@ -48,8 +47,7 @@ public struct ToolbarView: View {
         canRedo: Bool = false,
         undoActionName: String = "",
         redoActionName: String = "",
-        undoHistory: [UndoHistoryEntry] = [],
-        undoHistoryCursor: Int = -1,
+        undoState: UndoState = UndoState(),
         availableOutputPorts: [OutputPort] = [],
         isVirtualKeyboardVisible: Binding<Bool> = .constant(false)
     ) {
@@ -62,8 +60,7 @@ public struct ToolbarView: View {
         self.canRedo = canRedo
         self.undoActionName = undoActionName
         self.redoActionName = redoActionName
-        self.undoHistory = undoHistory
-        self.undoHistoryCursor = undoHistoryCursor
+        self.undoState = undoState
         self.availableOutputPorts = availableOutputPorts
         self._isVirtualKeyboardVisible = isVirtualKeyboardVisible
         _bpmText = State(initialValue: String(format: "%.1f", viewModel.bpm))
@@ -135,13 +132,13 @@ public struct ToolbarView: View {
                 Button(action: { showUndoHistory.toggle() }) {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.caption)
-                        .foregroundStyle(undoHistory.isEmpty ? Color.secondary.opacity(0.4) : Color.primary)
+                        .foregroundStyle(undoState.undoHistory.isEmpty ? Color.secondary.opacity(0.4) : Color.primary)
                 }
                 .buttonStyle(.plain)
-                .disabled(undoHistory.isEmpty)
+                .disabled(undoState.undoHistory.isEmpty)
                 .help("Undo History")
                 .popover(isPresented: $showUndoHistory) {
-                    UndoHistoryView(entries: undoHistory, cursor: undoHistoryCursor)
+                    UndoHistoryView(entries: undoState.undoHistory, cursor: undoState.undoHistoryCursor)
                 }
             }
 

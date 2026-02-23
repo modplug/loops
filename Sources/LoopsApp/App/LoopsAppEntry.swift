@@ -42,8 +42,7 @@ public struct LoopsRootView: View {
                     canRedo: viewModel.undoManager?.canRedo ?? false,
                     undoActionName: viewModel.undoManager?.undoActionName ?? "",
                     redoActionName: viewModel.undoManager?.redoActionName ?? "",
-                    undoHistory: viewModel.undoHistory,
-                    undoHistoryCursor: viewModel.undoHistoryCursor,
+                    undoState: viewModel.undoState,
                     availableOutputPorts: engineManager?.deviceManager.outputDevices().flatMap { device in
                         engineManager?.deviceManager.outputPorts(for: device) ?? []
                     } ?? [],
@@ -60,24 +59,24 @@ public struct LoopsRootView: View {
             // Undo/redo toast notification
             VStack {
                 Spacer()
-                if let toast = viewModel.undoToastMessage {
+                if let toast = viewModel.undoState.undoToastMessage {
                     UndoToastView(message: toast)
                         .padding(.bottom, 24)
                         .id(toast.id)
                 }
             }
-            .animation(.easeInOut(duration: 0.25), value: viewModel.undoToastMessage)
+            .animation(.easeInOut(duration: 0.25), value: viewModel.undoState.undoToastMessage)
         }
         .frame(minWidth: 800, minHeight: 500)
-        .onChange(of: viewModel.undoToastMessage) { _, newValue in
+        .onChange(of: viewModel.undoState.undoToastMessage) { _, newValue in
             guard newValue != nil else { return }
             // Auto-dismiss toast after 2 seconds
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
                 // Only dismiss if the toast hasn't been replaced
-                if viewModel.undoToastMessage?.id == newValue?.id {
+                if viewModel.undoState.undoToastMessage?.id == newValue?.id {
                     withAnimation(.easeInOut(duration: 0.25)) {
-                        viewModel.undoToastMessage = nil
+                        viewModel.undoState.undoToastMessage = nil
                     }
                 }
             }

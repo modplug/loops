@@ -174,12 +174,13 @@ struct UndoHistoryTests {
 
     // MARK: - ToolbarView History Integration
 
-    @Test("ToolbarView accepts undo history parameters")
+    @Test("ToolbarView accepts UndoState parameter")
     @MainActor
-    func toolbarViewAcceptsHistoryParams() {
+    func toolbarViewAcceptsUndoState() {
         let transport = TransportManager()
         let transportVM = TransportViewModel(transport: transport)
-        let entries = [UndoHistoryEntry(actionName: "Add Track")]
+        let undoState = UndoState()
+        undoState.appendToHistory(actionName: "Add Track")
         let _ = ToolbarView(
             viewModel: transportVM,
             onUndo: {},
@@ -188,9 +189,115 @@ struct UndoHistoryTests {
             canRedo: false,
             undoActionName: "Add Track",
             redoActionName: "",
-            undoHistory: entries,
-            undoHistoryCursor: 0
+            undoState: undoState
         )
+    }
+
+    // MARK: - Standalone UndoState Tests
+
+    @Test("UndoState standalone properties default empty")
+    @MainActor
+    func undoStateDefaultsEmpty() {
+        let state = UndoState()
+        #expect(state.undoHistory.isEmpty)
+        #expect(state.undoHistoryCursor == -1)
+        #expect(state.undoToastMessage == nil)
+    }
+
+    @Test("UndoState appendToHistory adds entries and advances cursor")
+    @MainActor
+    func undoStateAppendToHistory() {
+        let state = UndoState()
+        state.appendToHistory(actionName: "Add Track")
+        #expect(state.undoHistory.count == 1)
+        #expect(state.undoHistoryCursor == 0)
+        #expect(state.undoHistory[0].isCurrent == true)
+
+        state.appendToHistory(actionName: "Remove Track")
+        #expect(state.undoHistory.count == 2)
+        #expect(state.undoHistoryCursor == 1)
+        #expect(state.undoHistory[0].isCurrent == false)
+        #expect(state.undoHistory[1].isCurrent == true)
+    }
+
+    @Test("UndoState handleUndo moves cursor back and sets toast")
+    @MainActor
+    func undoStateHandleUndo() {
+        let state = UndoState()
+        state.appendToHistory(actionName: "Add Track")
+        state.appendToHistory(actionName: "Remove Track")
+
+        state.handleUndo(redoActionName: "Remove Track")
+        #expect(state.undoHistoryCursor == 0)
+        #expect(state.undoHistory[0].isCurrent == true)
+        #expect(state.undoHistory[1].isCurrent == false)
+        #expect(state.undoToastMessage?.text == "Undo: Remove Track")
+    }
+
+    @Test("UndoState handleRedo moves cursor forward and sets toast")
+    @MainActor
+    func undoStateHandleRedo() {
+        let state = UndoState()
+        state.appendToHistory(actionName: "Add Track")
+        state.appendToHistory(actionName: "Remove Track")
+        state.handleUndo(redoActionName: "Remove Track")
+
+        state.handleRedo(undoActionName: "Remove Track")
+        #expect(state.undoHistoryCursor == 1)
+        #expect(state.undoHistory[1].isCurrent == true)
+        #expect(state.undoToastMessage?.text == "Redo: Remove Track")
+    }
+
+    @Test("UndoState clear resets all history")
+    @MainActor
+    func undoStateClear() {
+        let state = UndoState()
+        state.appendToHistory(actionName: "Add Track")
+        state.appendToHistory(actionName: "Remove Track")
+
+        state.clear()
+        #expect(state.undoHistory.isEmpty)
+        #expect(state.undoHistoryCursor == -1)
+    }
+
+    @Test("UndoState appendToHistory trims future entries after undo")
+    @MainActor
+    func undoStateAppendTrimsFuture() {
+        let state = UndoState()
+        state.appendToHistory(actionName: "Action 1")
+        state.appendToHistory(actionName: "Action 2")
+        // Simulate undo: move cursor back
+        state.handleUndo(redoActionName: "Action 2")
+        #expect(state.undoHistoryCursor == 0)
+
+        // New action should trim the undone entry
+        state.appendToHistory(actionName: "Action 3")
+        #expect(state.undoHistory.count == 2)
+        #expect(state.undoHistoryCursor == 1)
+        #expect(state.undoHistory[1].actionName == "Action 3")
+    }
+
+    @Test("ProjectViewModel delegates undoHistory to undoState")
+    @MainActor
+    func vmDelegatesUndoHistory() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+
+        #expect(vm.undoHistory.count == vm.undoState.undoHistory.count)
+        #expect(vm.undoHistoryCursor == vm.undoState.undoHistoryCursor)
+    }
+
+    @Test("ProjectViewModel delegates undoToastMessage to undoState")
+    @MainActor
+    func vmDelegatesUndoToast() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        vm.undoManager?.undo()
+
+        #expect(vm.undoToastMessage == vm.undoState.undoToastMessage)
+        #expect(vm.undoToastMessage != nil)
     }
 
     // MARK: - Full Undo Cycle
