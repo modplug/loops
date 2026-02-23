@@ -88,7 +88,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private var playbackStartBar: Double = 1.0
 
     /// MIDI notes currently sounding (for sending note-off on stop).
-    private var activeMIDINotes: [(trackID: ID<Track>, note: UInt8, channel: UInt8)] = []
+    private var activeMIDINotes: [(trackID: ID<Track>, containerID: ID<Container>, note: UInt8, channel: UInt8)] = []
 
     // MARK: - Graph Fingerprinting (for incremental updates)
 
@@ -487,31 +487,54 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     engine.attach(unit)
                 }
 
-                var chain: [AVAudioNode] = []
-                if let inst = pc.instrument { chain.append(inst) }
-                chain.append(contentsOf: pc.effects)
+                // Instrument AUs (music devices) are audio generators — they
+                // don't accept input connections. Build the chain differently:
+                //   MIDI container:  instrument → [effects] → trackMixer
+                //                    player → trackMixer (unused but needs a connection)
+                //   Audio container: player → [effects] → trackMixer
+                let hasInstrument = pc.instrument != nil
+                var effectChain: [AVAudioNode] = pc.effects.map { $0 }
 
                 let playerFormat = pc.audioFormat
                 var chainConnected = true
-                if chain.isEmpty {
-                    engine.connect(player, to: trackMixer, format: playerFormat)
-                } else {
-                    // Use nil format for effect chain connections to let AU
-                    // nodes auto-negotiate formats. Passing playerFormat here
-                    // crashes (-10868) when a plugin doesn't support that
-                    // format/channel-count. Wrap in ObjC try/catch since
-                    // engine.connect() raises NSExceptions on failure.
+
+                if hasInstrument {
+                    let inst = pc.instrument!
+                    // Connect instrument → effects → trackMixer
+                    var instChain: [AVAudioNode] = [inst] + effectChain
                     var connectError: NSError?
                     let success = ObjCTryCatch({
-                        self.engine.connect(player, to: chain[0], format: nil)
-                        for i in 0..<(chain.count - 1) {
-                            self.engine.connect(chain[i], to: chain[i + 1], format: nil)
+                        for i in 0..<(instChain.count - 1) {
+                            self.engine.connect(instChain[i], to: instChain[i + 1], format: nil)
                         }
-                        self.engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
+                        self.engine.connect(instChain[instChain.count - 1], to: trackMixer, format: nil)
+                    }, &connectError)
+                    if !success {
+                        print("[WARN] Instrument chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
+                        for node in effectChain { engine.detach(node) }
+                        // Connect instrument directly to trackMixer as fallback
+                        engine.connect(inst, to: trackMixer, format: nil)
+                        chainConnected = false
+                        newFailedContainerIDs.insert(pc.container.id)
+                    }
+                    // Player node is unused for MIDI containers but must be
+                    // connected to satisfy engine graph validation.
+                    engine.connect(player, to: trackMixer, format: playerFormat)
+                } else if effectChain.isEmpty {
+                    engine.connect(player, to: trackMixer, format: playerFormat)
+                } else {
+                    // Audio container: player → effects → trackMixer
+                    var connectError: NSError?
+                    let success = ObjCTryCatch({
+                        self.engine.connect(player, to: effectChain[0], format: nil)
+                        for i in 0..<(effectChain.count - 1) {
+                            self.engine.connect(effectChain[i], to: effectChain[i + 1], format: nil)
+                        }
+                        self.engine.connect(effectChain[effectChain.count - 1], to: trackMixer, format: nil)
                     }, &connectError)
                     if !success {
                         print("[WARN] Effect chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
-                        for node in chain { engine.detach(node) }
+                        for node in effectChain { engine.detach(node) }
                         engine.connect(player, to: trackMixer, format: playerFormat)
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
@@ -924,27 +947,46 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     engine.attach(unit)
                 }
 
-                var chain: [AVAudioNode] = []
-                if let inst = pc.instrument { chain.append(inst) }
-                chain.append(contentsOf: pc.effects)
+                // Same instrument-aware wiring as prepare() — instrument AUs
+                // are generators and don't accept input connections.
+                let hasInstrument = pc.instrument != nil
+                let effectChain: [AVAudioNode] = pc.effects.map { $0 }
 
                 let playerFormat = pc.audioFormat
                 var chainConnected = true
-                if chain.isEmpty {
-                    engine.connect(player, to: trackMixer, format: playerFormat)
-                } else {
-                    // Use nil format for effect chain connections (same as prepare())
+
+                if hasInstrument {
+                    let inst = pc.instrument!
+                    var instChain: [AVAudioNode] = [inst] + effectChain
                     var connectError: NSError?
                     let success = ObjCTryCatch({
-                        self.engine.connect(player, to: chain[0], format: nil)
-                        for i in 0..<(chain.count - 1) {
-                            self.engine.connect(chain[i], to: chain[i + 1], format: nil)
+                        for i in 0..<(instChain.count - 1) {
+                            self.engine.connect(instChain[i], to: instChain[i + 1], format: nil)
                         }
-                        self.engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
+                        self.engine.connect(instChain[instChain.count - 1], to: trackMixer, format: nil)
+                    }, &connectError)
+                    if !success {
+                        print("[WARN] Instrument chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
+                        for node in effectChain { engine.detach(node) }
+                        engine.connect(inst, to: trackMixer, format: nil)
+                        chainConnected = false
+                        newFailedContainerIDs.insert(pc.container.id)
+                    }
+                    engine.connect(player, to: trackMixer, format: playerFormat)
+                } else if effectChain.isEmpty {
+                    engine.connect(player, to: trackMixer, format: playerFormat)
+                } else {
+                    var connectError: NSError?
+                    let success = ObjCTryCatch({
+                        self.engine.connect(player, to: effectChain[0], format: nil)
+                        for i in 0..<(effectChain.count - 1) {
+                            self.engine.connect(effectChain[i], to: effectChain[i + 1], format: nil)
+                        }
+                        self.engine.connect(effectChain[effectChain.count - 1], to: trackMixer, format: nil)
                     }, &connectError)
                     if !success {
                         print("[WARN] Effect chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
-                        for node in chain { engine.detach(node) }
+                        for node in effectChain { engine.detach(node) }
                         engine.connect(player, to: trackMixer, format: playerFormat)
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
@@ -1216,7 +1258,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         // Send note-off for all active MIDI notes
         for midiNote in midiNotes {
-            sendMIDINoteToTrack(midiNote.trackID, message: .noteOff(channel: midiNote.channel, note: midiNote.note, velocity: 0))
+            sendMIDINoteToContainer(midiNote.containerID, message: .noteOff(channel: midiNote.channel, note: midiNote.note, velocity: 0))
         }
 
         if !subgraphs.isEmpty {
@@ -1253,11 +1295,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
         print("[PERF] stop(skipDeclick=\(skipDeclick)): \(String(format: "%.1f", stopMs))ms — \(subgraphs.count) subgraphs, \(midiNotes.count) MIDI notes")
     }
 
-    /// Safely disconnects a node's output, catching NSExceptions from nodes
-    /// that were already detached (e.g. after a failed effect chain connection).
+    /// Safely disconnects a node's output and input, catching NSExceptions from
+    /// nodes that were already detached (e.g. after a failed effect chain connection).
     private func safeDisconnect(_ node: AVAudioNode) {
         var error: NSError?
         ObjCTryCatch({ self.engine.disconnectNodeOutput(node) }, &error)
+        ObjCTryCatch({ self.engine.disconnectNodeInput(node) }, &error)
     }
 
     /// Installs host musical context and transport state blocks on an Audio Unit
@@ -1371,41 +1414,36 @@ public final class PlaybackScheduler: @unchecked Sendable {
         preparedMasterFingerprint = nil
         lock.unlock()
 
-        // Engine operations on local copies — no lock needed
+        // Stop all player nodes before tearing down the graph
         for (_, subgraph) in subgraphs {
             subgraph.playerNode.stop()
-            safeDisconnect(subgraph.playerNode)
-            engine.detach(subgraph.playerNode)
-            if let inst = subgraph.instrumentUnit {
-                safeDisconnect(inst)
-                engine.detach(inst)
-            }
-            for unit in subgraph.effectUnits {
-                safeDisconnect(unit)
-                engine.detach(unit)
-            }
         }
 
-        for (_, units) in tEffectUnits {
-            for unit in units {
-                safeDisconnect(unit)
-                engine.detach(unit)
-            }
+        // Collect ALL manually-attached nodes so we can disconnect them all
+        // before detaching. Disconnecting first avoids leaving stale upstream
+        // references on engine-owned nodes like mainMixerNode.
+        var allNodes: [AVAudioNode] = []
+        for (_, subgraph) in subgraphs {
+            allNodes.append(subgraph.playerNode)
+            if let inst = subgraph.instrumentUnit { allNodes.append(inst) }
+            allNodes.append(contentsOf: subgraph.effectUnits)
         }
+        for (_, units) in tEffectUnits { allNodes.append(contentsOf: units) }
+        for (_, mixer) in tMixers { allNodes.append(mixer) }
+        allNodes.append(contentsOf: mEffectUnits)
+        if let masterMixer = mMixer { allNodes.append(masterMixer) }
 
-        for (_, mixer) in tMixers {
-            safeDisconnect(mixer)
-            engine.detach(mixer)
+        // Phase 1: Disconnect all nodes (both output and input)
+        for node in allNodes {
+            safeDisconnect(node)
         }
+        // Also clear mainMixerNode's input buses (it's engine-owned, never detached)
+        var mmError: NSError?
+        ObjCTryCatch({ self.engine.disconnectNodeInput(self.engine.mainMixerNode) }, &mmError)
 
-        // Cleanup master mixer and effects
-        for unit in mEffectUnits {
-            safeDisconnect(unit)
-            engine.detach(unit)
-        }
-        if let masterMixer = mMixer {
-            safeDisconnect(masterMixer)
-            engine.detach(masterMixer)
+        // Phase 2: Detach all nodes (now safe — no dangling connections)
+        for node in allNodes {
+            engine.detach(node)
         }
     }
 
@@ -2252,7 +2290,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Weak reference to self for MIDI note sending
         weak var weakSelf = self
 
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInteractive))
+        let timerQueue = DispatchQueue(label: "com.loops.automationTimer", qos: .userInteractive)
+        let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         // Evaluate at ~60 Hz (every ~16ms) for smooth parameter updates and MIDI scheduling
         timer.schedule(deadline: .now(), repeating: .milliseconds(16))
         timer.setEventHandler {
@@ -2269,7 +2308,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     // Send note-off for any active notes from this container that's out of range
                     for active in activeNotes where active.containerID == midiInfo.container.id {
                         if let note = midiInfo.notes.first(where: { $0.id == active.noteID }) {
-                            weakSelf?.sendMIDINoteToTrack(midiInfo.trackID, message: .noteOff(channel: note.channel, note: note.pitch, velocity: 0))
+                            weakSelf?.sendMIDINoteToContainer(midiInfo.container.id, message: .noteOff(channel: note.channel, note: note.pitch, velocity: 0))
+                            weakSelf?.lock.lock()
+                            weakSelf?.activeMIDINotes.removeAll { $0.note == note.pitch && $0.channel == note.channel && $0.containerID == midiInfo.container.id }
+                            weakSelf?.lock.unlock()
                         }
                     }
                     activeNotes = activeNotes.filter { $0.containerID != midiInfo.container.id }
@@ -2286,13 +2328,20 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         // Note should be on
                         if !activeNotes.contains(key) {
                             activeNotes.insert(key)
-                            weakSelf?.sendMIDINoteToTrack(midiInfo.trackID, message: .noteOn(channel: note.channel, note: note.pitch, velocity: note.velocity))
+                            weakSelf?.sendMIDINoteToContainer(midiInfo.container.id, message: .noteOn(channel: note.channel, note: note.pitch, velocity: note.velocity))
+                            // Register with scheduler so stop() can send note-offs
+                            weakSelf?.lock.lock()
+                            weakSelf?.activeMIDINotes.append((trackID: midiInfo.trackID, containerID: midiInfo.container.id, note: note.pitch, channel: note.channel))
+                            weakSelf?.lock.unlock()
                         }
                     } else {
                         // Note should be off
                         if activeNotes.contains(key) {
                             activeNotes.remove(key)
-                            weakSelf?.sendMIDINoteToTrack(midiInfo.trackID, message: .noteOff(channel: note.channel, note: note.pitch, velocity: 0))
+                            weakSelf?.sendMIDINoteToContainer(midiInfo.container.id, message: .noteOff(channel: note.channel, note: note.pitch, velocity: 0))
+                            weakSelf?.lock.lock()
+                            weakSelf?.activeMIDINotes.removeAll { $0.note == note.pitch && $0.channel == note.channel && $0.containerID == midiInfo.container.id }
+                            weakSelf?.lock.unlock()
                         }
                     }
                 }
@@ -2467,6 +2516,18 @@ extension PlaybackScheduler {
                 }
             }
         }
+        lock.unlock()
+
+        guard let instrumentUnit else { return }
+        let bytes = message.midiBytes
+        instrumentUnit.auAudioUnit.scheduleMIDIEventBlock?(AUEventSampleTimeImmediate, 0, bytes.count, bytes)
+    }
+
+    /// Sends a MIDI event to a specific container's instrument unit.
+    /// Used during scheduled playback where each container has its own instrument → effects chain.
+    private func sendMIDINoteToContainer(_ containerID: ID<Container>, message: MIDIActionMessage) {
+        lock.lock()
+        let instrumentUnit = containerSubgraphs[containerID]?.instrumentUnit
         lock.unlock()
 
         guard let instrumentUnit else { return }
