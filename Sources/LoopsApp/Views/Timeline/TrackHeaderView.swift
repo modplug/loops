@@ -24,6 +24,7 @@ public struct TrackHeaderView: View {
     var onAutomationToggle: (() -> Void)?
     var isTrackSelected: Bool
     var isMIDIActive: Bool
+    var headerWidth: CGFloat
     var onResizeTrack: ((CGFloat) -> Void)?
     var onResetTrackHeight: (() -> Void)?
 
@@ -43,6 +44,7 @@ public struct TrackHeaderView: View {
         onAutomationToggle: (() -> Void)? = nil,
         isTrackSelected: Bool = false,
         isMIDIActive: Bool = false,
+        headerWidth: CGFloat = 160,
         onResizeTrack: ((CGFloat) -> Void)? = nil,
         onResetTrackHeight: (() -> Void)? = nil
     ) {
@@ -61,6 +63,7 @@ public struct TrackHeaderView: View {
         self.onAutomationToggle = onAutomationToggle
         self.isTrackSelected = isTrackSelected
         self.isMIDIActive = isMIDIActive
+        self.headerWidth = headerWidth
         self.onResizeTrack = onResizeTrack
         self.onResetTrackHeight = onResetTrackHeight
     }
@@ -247,7 +250,7 @@ public struct TrackHeaderView: View {
                             .truncationMode(.tail)
                     }
                     .padding(.horizontal, 6)
-                    .frame(width: 160, height: TimelineViewModel.automationSubLaneHeight, alignment: .leading)
+                    .frame(width: headerWidth, height: TimelineViewModel.automationSubLaneHeight, alignment: .leading)
                     .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
                     .overlay(
                         Rectangle()
@@ -258,7 +261,7 @@ public struct TrackHeaderView: View {
                 }
             }
         }
-        .frame(width: 160, height: height)
+        .frame(width: headerWidth, height: height)
         .background(
             track.isRecordArmed
                 ? Color.red.opacity(0.1)

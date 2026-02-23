@@ -51,6 +51,7 @@ public struct MainContentView: View {
     @State private var editingSectionName: String = ""
     @State private var inspectorMode: InspectorMode = .container
     @State private var draggingTrackID: ID<Track>?
+    @State private var headerDragStartWidth: CGFloat = 0
     @State private var pendingTrackAutomationLane: PendingEffectSelection?
     @FocusState private var focusedField: FocusedField?
     @Namespace private var inspectorNamespace
@@ -519,8 +520,8 @@ public struct MainContentView: View {
     private func timelineContent(song: Song) -> some View {
         // Ruler row (fixed, not scrollable vertically)
         HStack(spacing: 0) {
-            Color.clear.frame(width: 160, height: 20)
-            Divider()
+            Color.clear.frame(width: timelineViewModel.trackHeaderWidth, height: 20)
+            headerColumnResizeHandle
             ScrollView(.horizontal, showsIndicators: false) {
                 RulerView(
                     totalBars: timelineViewModel.totalBars,
@@ -547,9 +548,9 @@ public struct MainContentView: View {
             Text("Sections")
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
-                .frame(width: 160, height: 24)
+                .frame(width: timelineViewModel.trackHeaderWidth, height: 24)
                 .background(Color(nsColor: .controlBackgroundColor))
-            Divider()
+            headerColumnResizeHandle
             ScrollView(.horizontal, showsIndicators: false) {
                 SectionLaneView(
                     sections: song.sections,
@@ -638,11 +639,11 @@ public struct MainContentView: View {
                                 }
                             }
                     }
-                    .frame(width: 160)
+                    .frame(width: timelineViewModel.trackHeaderWidth)
                     .frame(minHeight: geo.size.height)
                     .background(Color(nsColor: .controlBackgroundColor))
 
-                    Divider()
+                    headerColumnResizeHandle
 
                     // Timeline — scrolls horizontally inside, vertically with parent
                     ScrollView(.horizontal, showsIndicators: true) {
@@ -681,10 +682,10 @@ public struct MainContentView: View {
             Divider()
             HStack(alignment: .top, spacing: 0) {
                 trackHeaderWithActions(track: master)
-                    .frame(width: 160, height: masterHeight)
+                    .frame(width: timelineViewModel.trackHeaderWidth, height: masterHeight)
                     .background(Color(nsColor: .controlBackgroundColor))
 
-                Divider()
+                headerColumnResizeHandle
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     TimelineView(
@@ -711,7 +712,7 @@ public struct MainContentView: View {
         HStack {
             addTrackMenu
                 .padding(4)
-                .frame(width: 160)
+                .frame(width: timelineViewModel.trackHeaderWidth)
             Spacer()
         }
     }
@@ -763,7 +764,7 @@ public struct MainContentView: View {
         HStack {
             addTrackMenu
                 .padding(4)
-                .frame(width: 160)
+                .frame(width: timelineViewModel.trackHeaderWidth)
             Spacer()
         }
     }
@@ -1002,6 +1003,7 @@ public struct MainContentView: View {
             },
             isTrackSelected: isSelected,
             isMIDIActive: midiActivityMonitor?.isTrackActive(track.id) ?? false,
+            headerWidth: timelineViewModel.trackHeaderWidth,
             onResizeTrack: { newHeight in
                 timelineViewModel.setTrackHeight(newHeight, for: track.id)
             },
@@ -1320,6 +1322,29 @@ public struct MainContentView: View {
             projectViewModel.renameSection(sectionID: id, name: editingSectionName)
         }
         editingSectionID = nil
+    }
+
+    private var headerColumnResizeHandle: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.3))
+            .frame(width: 4)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if headerDragStartWidth == 0 {
+                            headerDragStartWidth = timelineViewModel.trackHeaderWidth
+                        }
+                        let newWidth = headerDragStartWidth + value.translation.width
+                        timelineViewModel.setTrackHeaderWidth(newWidth)
+                    }
+                    .onEnded { _ in
+                        headerDragStartWidth = 0
+                    }
+            )
     }
 
     private var addTrackMenu: some View {

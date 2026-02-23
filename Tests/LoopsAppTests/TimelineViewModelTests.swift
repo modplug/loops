@@ -430,4 +430,62 @@ struct TimelineViewModelTests {
         let view2 = TimelineView(viewModel: vm, projectViewModel: pvm, song: song)
         #expect(view2.totalContentHeight == 180.0)
     }
+
+    // MARK: - Track Header Width (#115)
+
+    @Test("Track header width defaults to 160pt")
+    @MainActor
+    func trackHeaderWidthDefault() {
+        let vm = TimelineViewModel()
+        #expect(vm.trackHeaderWidth == 160)
+        #expect(vm.trackHeaderWidth == TimelineViewModel.defaultHeaderWidth)
+    }
+
+    @Test("Set track header width stores value")
+    @MainActor
+    func setTrackHeaderWidth() {
+        let vm = TimelineViewModel()
+        vm.setTrackHeaderWidth(200)
+        #expect(vm.trackHeaderWidth == 200)
+    }
+
+    @Test("Track header width clamps to minimum")
+    @MainActor
+    func trackHeaderWidthClampsMin() {
+        let vm = TimelineViewModel()
+        vm.setTrackHeaderWidth(50)
+        #expect(vm.trackHeaderWidth == TimelineViewModel.minHeaderWidth)
+        #expect(vm.trackHeaderWidth == 100)
+    }
+
+    @Test("Track header width clamps to maximum")
+    @MainActor
+    func trackHeaderWidthClampsMax() {
+        let vm = TimelineViewModel()
+        vm.setTrackHeaderWidth(500)
+        #expect(vm.trackHeaderWidth == TimelineViewModel.maxHeaderWidth)
+        #expect(vm.trackHeaderWidth == 400)
+    }
+
+    @Test("Track header width at exact boundaries")
+    @MainActor
+    func trackHeaderWidthBoundaries() {
+        let vm = TimelineViewModel()
+        vm.setTrackHeaderWidth(100)
+        #expect(vm.trackHeaderWidth == 100)
+        vm.setTrackHeaderWidth(400)
+        #expect(vm.trackHeaderWidth == 400)
+    }
+
+    @Test("Track header width persists during session")
+    @MainActor
+    func trackHeaderWidthPersistsDuringSession() {
+        let vm = TimelineViewModel()
+        vm.setTrackHeaderWidth(250)
+        #expect(vm.trackHeaderWidth == 250)
+        // Simulate other operations
+        vm.zoomIn()
+        vm.zoomOut()
+        #expect(vm.trackHeaderWidth == 250)
+    }
 }

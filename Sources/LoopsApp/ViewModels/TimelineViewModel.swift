@@ -17,6 +17,9 @@ public final class TimelineViewModel {
     /// Per-track custom row heights. Tracks not in this dictionary use the default height.
     public var trackHeights: [ID<Track>: CGFloat] = [:]
 
+    /// Width of the track header column in points.
+    public var trackHeaderWidth: CGFloat = 160
+
     /// Default track row height.
     public static let defaultTrackHeight: CGFloat = 80
 
@@ -37,6 +40,15 @@ public final class TimelineViewModel {
 
     /// Tracks selected for range copy filtering. Empty means all tracks included.
     public var selectedTrackIDs: Set<ID<Track>> = []
+
+    /// Default track header column width.
+    public static let defaultHeaderWidth: CGFloat = 160
+
+    /// Minimum track header column width.
+    public static let minHeaderWidth: CGFloat = 100
+
+    /// Maximum track header column width.
+    public static let maxHeaderWidth: CGFloat = 400
 
     /// Minimum pixels per bar (fully zoomed out).
     public static let minPixelsPerBar: CGFloat = 30.0
@@ -99,6 +111,11 @@ public final class TimelineViewModel {
     /// Zooms out by one step.
     public func zoomOut() {
         pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, Self.minPixelsPerBar)
+    }
+
+    /// Sets the track header column width, clamped to min/max bounds.
+    public func setTrackHeaderWidth(_ width: CGFloat) {
+        trackHeaderWidth = min(max(width, Self.minHeaderWidth), Self.maxHeaderWidth)
     }
 
     /// Toggles a track's selection for range copy filtering.
