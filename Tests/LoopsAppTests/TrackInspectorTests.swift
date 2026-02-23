@@ -452,4 +452,155 @@ struct TrackInspectorTests {
         #expect(vm.selectedTrack?.name == track.name)
         #expect(vm.selectedContainerID == nil)
     }
+
+    // MARK: - Inline I/O Controls Tests
+
+    @Test("Inline input port selection updates audio track routing")
+    @MainActor
+    func inlineInputPortSelection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(vm.project.songs[0].tracks[0].inputPortID == nil)
+
+        vm.setTrackInputPort(trackID: trackID, portID: "device:0:0")
+        #expect(vm.project.songs[0].tracks[0].inputPortID == "device:0:0")
+    }
+
+    @Test("Inline output port selection updates audio track routing")
+    @MainActor
+    func inlineOutputPortSelection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(vm.project.songs[0].tracks[0].outputPortID == nil)
+
+        vm.setTrackOutputPort(trackID: trackID, portID: "device:1:0")
+        #expect(vm.project.songs[0].tracks[0].outputPortID == "device:1:0")
+    }
+
+    @Test("Inline MIDI device selection updates MIDI track routing")
+    @MainActor
+    func inlineMIDIDeviceSelection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks[0].id
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == nil)
+
+        vm.setTrackMIDIInput(trackID: trackID, deviceID: "midi-device-1", channel: nil)
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == "midi-device-1")
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == nil)
+    }
+
+    @Test("Inline MIDI channel selection updates MIDI track routing")
+    @MainActor
+    func inlineMIDIChannelSelection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackMIDIInput(trackID: trackID, deviceID: nil, channel: 5)
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == 5)
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == nil)
+    }
+
+    @Test("Inline output port selection on master track updates master routing")
+    @MainActor
+    func inlineMasterOutputPortSelection() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        guard let masterTrack = vm.currentSong?.masterTrack else {
+            Issue.record("No master track found")
+            return
+        }
+        #expect(masterTrack.outputPortID == nil)
+
+        vm.setMasterOutputPort(portID: "device:2:0")
+        #expect(vm.currentSong?.masterTrack?.outputPortID == "device:2:0")
+    }
+
+    @Test("Selecting Default clears port to nil")
+    @MainActor
+    func inlineSelectDefaultClearsPort() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackInputPort(trackID: trackID, portID: "device:0:0")
+        #expect(vm.project.songs[0].tracks[0].inputPortID == "device:0:0")
+
+        vm.setTrackInputPort(trackID: trackID, portID: nil)
+        #expect(vm.project.songs[0].tracks[0].inputPortID == nil)
+    }
+
+    @Test("Inline routing change supports undo")
+    @MainActor
+    func inlineRoutingChangeUndo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        vm.setTrackInputPort(trackID: trackID, portID: "device:0:0")
+        #expect(vm.project.songs[0].tracks[0].inputPortID == "device:0:0")
+
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].inputPortID == nil)
+
+        vm.undoManager?.redo()
+        #expect(vm.project.songs[0].tracks[0].inputPortID == "device:0:0")
+    }
+
+    @Test("TrackHeaderView accepts available ports and devices")
+    func trackHeaderAcceptsPortsAndDevices() {
+        let ports = [
+            InputPort(deviceUID: "dev1", streamIndex: 0, channelOffset: 0, layout: .stereo, defaultName: "In 1/2"),
+            InputPort(deviceUID: "dev1", streamIndex: 0, channelOffset: 2, layout: .stereo, defaultName: "In 3/4")
+        ]
+        let outputs = [
+            OutputPort(deviceUID: "dev1", streamIndex: 0, channelOffset: 0, layout: .stereo, defaultName: "Out 1/2")
+        ]
+        let devices = [
+            MIDIInputDevice(id: "123", displayName: "Arturia KeyStep")
+        ]
+        let track = Track(name: "Audio 1", kind: .audio)
+        let header = TrackHeaderView(
+            track: track,
+            availableInputPorts: ports,
+            availableOutputPorts: outputs,
+            availableMIDIDevices: devices
+        )
+        #expect(header.availableInputPorts.count == 2)
+        #expect(header.availableOutputPorts.count == 1)
+        #expect(header.availableMIDIDevices.count == 1)
+    }
+
+    @Test("MIDI device and channel change preserves other field")
+    @MainActor
+    func midiDeviceChangePreservesChannel() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        // Set device and channel
+        vm.setTrackMIDIInput(trackID: trackID, deviceID: "dev-1", channel: 3)
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == "dev-1")
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == 3)
+
+        // Change only device, keeping channel
+        vm.setTrackMIDIInput(trackID: trackID, deviceID: "dev-2", channel: 3)
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == "dev-2")
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == 3)
+
+        // Change only channel, keeping device
+        vm.setTrackMIDIInput(trackID: trackID, deviceID: "dev-2", channel: 10)
+        #expect(vm.project.songs[0].tracks[0].midiInputDeviceID == "dev-2")
+        #expect(vm.project.songs[0].tracks[0].midiInputChannel == 10)
+    }
 }

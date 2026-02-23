@@ -27,6 +27,13 @@ public struct TrackHeaderView: View {
     var headerWidth: CGFloat
     var onResizeTrack: ((CGFloat) -> Void)?
     var onResetTrackHeight: (() -> Void)?
+    // Inline I/O routing
+    var availableInputPorts: [InputPort] = []
+    var availableOutputPorts: [OutputPort] = []
+    var availableMIDIDevices: [MIDIInputDevice] = []
+    var onSetInputPort: ((String?) -> Void)?
+    var onSetOutputPort: ((String?) -> Void)?
+    var onSetMIDIInput: ((String?, UInt8?) -> Void)?
 
     public init(
         track: Track,
@@ -46,7 +53,13 @@ public struct TrackHeaderView: View {
         isMIDIActive: Bool = false,
         headerWidth: CGFloat = 160,
         onResizeTrack: ((CGFloat) -> Void)? = nil,
-        onResetTrackHeight: (() -> Void)? = nil
+        onResetTrackHeight: (() -> Void)? = nil,
+        availableInputPorts: [InputPort] = [],
+        availableOutputPorts: [OutputPort] = [],
+        availableMIDIDevices: [MIDIInputDevice] = [],
+        onSetInputPort: ((String?) -> Void)? = nil,
+        onSetOutputPort: ((String?) -> Void)? = nil,
+        onSetMIDIInput: ((String?, UInt8?) -> Void)? = nil
     ) {
         self.track = track
         self.height = height
@@ -66,6 +79,12 @@ public struct TrackHeaderView: View {
         self.headerWidth = headerWidth
         self.onResizeTrack = onResizeTrack
         self.onResetTrackHeight = onResetTrackHeight
+        self.availableInputPorts = availableInputPorts
+        self.availableOutputPorts = availableOutputPorts
+        self.availableMIDIDevices = availableMIDIDevices
+        self.onSetInputPort = onSetInputPort
+        self.onSetOutputPort = onSetOutputPort
+        self.onSetMIDIInput = onSetMIDIInput
     }
 
     public var body: some View {
@@ -171,66 +190,21 @@ public struct TrackHeaderView: View {
                     }
                 }
 
-                // Output routing label (master track)
+                // Output routing picker (master track)
                 if track.kind == .master {
-                    HStack(spacing: 2) {
-                        Image(systemName: "arrow.left.circle")
-                            .font(.system(size: 7))
-                            .foregroundStyle(.secondary)
-                        Text(outputPortName ?? "Default")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+                    inlineOutputPicker
                 }
 
-                // I/O routing labels (audio tracks only)
+                // I/O routing pickers (audio tracks only)
                 if track.kind == .audio {
-                    HStack(spacing: 2) {
-                        Image(systemName: "arrow.right.circle")
-                            .font(.system(size: 7))
-                            .foregroundStyle(.secondary)
-                        Text(inputPortName ?? "Default")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    HStack(spacing: 2) {
-                        Image(systemName: "arrow.left.circle")
-                            .font(.system(size: 7))
-                            .foregroundStyle(.secondary)
-                        Text(outputPortName ?? "Default")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+                    inlineInputPicker
+                    inlineOutputPicker
                 }
 
-                // MIDI routing labels (MIDI tracks only)
+                // MIDI routing pickers (MIDI tracks only)
                 if track.kind == .midi {
-                    HStack(spacing: 2) {
-                        Image(systemName: "pianokeys")
-                            .font(.system(size: 7))
-                            .foregroundStyle(.secondary)
-                        Text(midiDeviceName ?? "All Devices")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    HStack(spacing: 2) {
-                        Image(systemName: "number")
-                            .font(.system(size: 7))
-                            .foregroundStyle(.secondary)
-                        Text(midiChannelLabel ?? "Omni")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+                    inlineMIDIDevicePicker
+                    inlineMIDIChannelPicker
                 }
             }
             .padding(.horizontal, 6)
@@ -293,6 +267,108 @@ public struct TrackHeaderView: View {
                 )
             }
         }
+    }
+
+    // MARK: - Inline I/O Pickers
+
+    @ViewBuilder
+    private var inlineInputPicker: some View {
+        Menu {
+            Button("Default") { onSetInputPort?(nil) }
+            if !availableInputPorts.isEmpty { Divider() }
+            ForEach(availableInputPorts) { port in
+                Button(port.displayName) { onSetInputPort?(port.id) }
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "arrow.right.circle")
+                    .font(.system(size: 7))
+                    .foregroundStyle(.secondary)
+                Text(inputPortName ?? "Default")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private var inlineOutputPicker: some View {
+        Menu {
+            Button("Default") { onSetOutputPort?(nil) }
+            if !availableOutputPorts.isEmpty { Divider() }
+            ForEach(availableOutputPorts) { port in
+                Button(port.displayName) { onSetOutputPort?(port.id) }
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "arrow.left.circle")
+                    .font(.system(size: 7))
+                    .foregroundStyle(.secondary)
+                Text(outputPortName ?? "Default")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private var inlineMIDIDevicePicker: some View {
+        Menu {
+            Button("All Devices") { onSetMIDIInput?(nil, track.midiInputChannel) }
+            if !availableMIDIDevices.isEmpty { Divider() }
+            ForEach(availableMIDIDevices) { device in
+                Button(device.displayName) { onSetMIDIInput?(device.id, track.midiInputChannel) }
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "pianokeys")
+                    .font(.system(size: 7))
+                    .foregroundStyle(.secondary)
+                Text(midiDeviceName ?? "All Devices")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private var inlineMIDIChannelPicker: some View {
+        Menu {
+            Button("Omni") { onSetMIDIInput?(track.midiInputDeviceID, nil) }
+            Divider()
+            ForEach(1...16, id: \.self) { ch in
+                Button("Ch \(ch)") { onSetMIDIInput?(track.midiInputDeviceID, UInt8(ch)) }
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "number")
+                    .font(.system(size: 7))
+                    .foregroundStyle(.secondary)
+                Text(midiChannelLabel ?? "Omni")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var hasAutomation: Bool {

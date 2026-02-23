@@ -1009,6 +1009,22 @@ public struct MainContentView: View {
             },
             onResetTrackHeight: {
                 timelineViewModel.resetTrackHeight(for: track.id)
+            },
+            availableInputPorts: settingsViewModel?.inputPorts ?? [],
+            availableOutputPorts: settingsViewModel?.outputPorts ?? [],
+            availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? [],
+            onSetInputPort: { portID in
+                projectViewModel.setTrackInputPort(trackID: track.id, portID: portID)
+            },
+            onSetOutputPort: { portID in
+                if track.kind == .master {
+                    projectViewModel.setMasterOutputPort(portID: portID)
+                } else {
+                    projectViewModel.setTrackOutputPort(trackID: track.id, portID: portID)
+                }
+            },
+            onSetMIDIInput: { deviceID, channel in
+                projectViewModel.setTrackMIDIInput(trackID: track.id, deviceID: deviceID, channel: channel)
             }
         )
         .simultaneousGesture(
