@@ -40,10 +40,16 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     /// Empty for original containers. Only meaningful when `parentContainerID` is set.
     public var overriddenFields: Set<ContainerField>
 
+    /// MIDI note sequence for MIDI containers (nil for audio containers).
+    public var midiSequence: MIDISequence?
+
     /// Metronome settings for master track containers (defines click behavior for this bar range).
     public var metronomeSettings: MetronomeSettings?
 
     public var endBar: Int { startBar + lengthBars }
+
+    /// Whether this container has MIDI content.
+    public var hasMIDI: Bool { midiSequence != nil }
 
     /// Whether this container is a linked clone.
     public var isClone: Bool { parentContainerID != nil }
@@ -69,6 +75,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         automationLanes: [AutomationLane] = [],
         parentContainerID: ID<Container>? = nil,
         overriddenFields: Set<ContainerField> = [],
+        midiSequence: MIDISequence? = nil,
         metronomeSettings: MetronomeSettings? = nil
     ) {
         self.id = id
@@ -91,6 +98,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         self.automationLanes = automationLanes
         self.parentContainerID = parentContainerID
         self.overriddenFields = overriddenFields
+        self.midiSequence = midiSequence
         self.metronomeSettings = metronomeSettings
     }
 
@@ -102,7 +110,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         case insertEffects, isEffectChainBypassed, instrumentOverride
         case enterFade, exitFade, onEnterActions, onExitActions
         case automationLanes, parentContainerID, overriddenFields
-        case metronomeSettings
+        case midiSequence, metronomeSettings
     }
 
     public init(from decoder: Decoder) throws {
@@ -127,6 +135,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         automationLanes = try c.decodeIfPresent([AutomationLane].self, forKey: .automationLanes) ?? []
         parentContainerID = try c.decodeIfPresent(LoopsCore.ID<Container>.self, forKey: .parentContainerID)
         overriddenFields = try c.decodeIfPresent(Set<ContainerField>.self, forKey: .overriddenFields) ?? []
+        midiSequence = try c.decodeIfPresent(MIDISequence.self, forKey: .midiSequence)
         metronomeSettings = try c.decodeIfPresent(MetronomeSettings.self, forKey: .metronomeSettings)
     }
 
@@ -166,6 +175,9 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         }
         if !overriddenFields.contains(.sourceRecording) {
             result.sourceRecordingID = parent.sourceRecordingID
+        }
+        if !overriddenFields.contains(.midiSequence) {
+            result.midiSequence = parent.midiSequence
         }
         return result
     }

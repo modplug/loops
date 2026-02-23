@@ -77,6 +77,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private var playbackStartTime: Date?
     private var playbackStartBar: Double = 1.0
 
+    /// MIDI notes currently sounding (for sending note-off on stop).
+    private var activeMIDINotes: [(trackID: ID<Track>, note: UInt8, channel: UInt8)] = []
+
     public init(engine: AVAudioEngine, audioDirURL: URL) {
         self.engine = engine
         self.audioUnitHost = AudioUnitHost(engine: engine)
@@ -176,12 +179,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 guard !Task.isCancelled else { return }
                 let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
                 let hasAudio = resolved.sourceRecordingID != nil
+                let hasMIDI = resolved.midiSequence != nil
                 let isLinkedClone = container.parentContainerID != nil
 
-                // Skip containers without audio unless they are linked clones
+                // Skip containers without audio or MIDI unless they are linked clones
                 // (linked clones get pre-allocated subgraphs so audio can be
                 // registered mid-session when the parent finishes recording).
-                guard hasAudio || isLinkedClone else { continue }
+                guard hasAudio || hasMIDI || isLinkedClone else { continue }
 
                 let fileFormat: AVAudioFormat?
                 if let recID = resolved.sourceRecordingID {
@@ -393,6 +397,22 @@ public final class PlaybackScheduler: @unchecked Sendable {
             // handled by mixer volumes so tracks can be unmuted during playback.
             for container in track.containers {
                 let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
+
+                // MIDI containers are scheduled via the automation/MIDI timer, not audio scheduling.
+                // Register them as active so they fire enter/exit actions and suppress monitoring.
+                if resolved.hasMIDI && resolved.sourceRecordingID == nil {
+                    let containerEndBar = Double(resolved.endBar)
+                    let containerStartBar = Double(resolved.startBar)
+                    if fromBar < containerEndBar && fromBar >= containerStartBar - 1 {
+                        lock.lock()
+                        activeContainers.append(resolved)
+                        tracksWithActiveContainers.insert(track.id)
+                        lock.unlock()
+                        actionDispatcher?.containerDidEnter(resolved)
+                    }
+                    continue
+                }
+
                 scheduleContainer(
                     container: resolved,
                     fromBar: fromBar,
@@ -422,11 +442,18 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let subgraphs = containerSubgraphs
         let containers = activeContainers
         let tracks = tracksWithActiveContainers
+        let midiNotes = activeMIDINotes
         activeContainers.removeAll()
         tracksWithActiveContainers.removeAll()
         containerToTrack.removeAll()
+        activeMIDINotes.removeAll()
         currentSong = nil
         lock.unlock()
+
+        // Send note-off for all active MIDI notes
+        for midiNote in midiNotes {
+            sendMIDINoteToTrack(midiNote.trackID, message: .noteOff(channel: midiNote.channel, note: midiNote.note, velocity: 0))
+        }
 
         // Declick fade-out: ramp main mixer output volume to zero over ~8ms
         // so the render thread picks up intermediate values before we stop nodes.
@@ -636,18 +663,23 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let startOffset: AVAudioFramePosition
         let frameCount: AVAudioFrameCount
 
+        // For future containers, compute the delay in frames so audio starts
+        // at the correct bar position instead of immediately.
+        let futureDelayFrames: AVAudioFramePosition
         if playheadSample >= containerStartSample {
             // Playhead is inside this container
             startOffset = AVAudioFramePosition(playheadSample - containerStartSample)
             let remaining = containerEndSample - playheadSample
             let fileFrames = audioFile.length - startOffset
             frameCount = AVAudioFrameCount(min(remaining, fileFrames))
+            futureDelayFrames = 0
         } else {
-            // Container starts in the future
+            // Container starts in the future — schedule with delay
             startOffset = 0
             let containerLength = containerEndSample - containerStartSample
             let fileFrames = audioFile.length
             frameCount = AVAudioFrameCount(min(containerLength, fileFrames))
+            futureDelayFrames = AVAudioFramePosition(containerStartSample - playheadSample)
         }
 
         guard frameCount > 0 else {
@@ -655,7 +687,15 @@ public final class PlaybackScheduler: @unchecked Sendable {
             return
         }
 
-        print("[PLAY]   '\(container.name)' scheduling frameCount=\(frameCount) startOffset=\(startOffset)")
+        // Build AVAudioTime for future containers (nil = play immediately)
+        let scheduleTime: AVAudioTime?
+        if futureDelayFrames > 0 {
+            scheduleTime = AVAudioTime(sampleTime: futureDelayFrames, atRate: audioFile.processingFormat.sampleRate)
+            print("[PLAY]   '\(container.name)' scheduling frameCount=\(frameCount) delay=\(futureDelayFrames) frames")
+        } else {
+            scheduleTime = nil
+            print("[PLAY]   '\(container.name)' scheduling frameCount=\(frameCount) startOffset=\(startOffset)")
+        }
 
         let hasFades = container.enterFade != nil || container.exitFade != nil
 
@@ -694,14 +734,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     containerLengthSamples: containerEndSample - containerStartSample,
                     samplesPerBar: samplesPerBar,
                     enterFade: container.enterFade,
-                    exitFade: container.exitFade
+                    exitFade: container.exitFade,
+                    at: scheduleTime
                 )
             } else {
                 scheduleDeclickedSegment(
                     player: subgraph.playerNode,
                     audioFile: audioFile,
                     startingFrame: startOffset,
-                    frameCount: frameCount
+                    frameCount: frameCount,
+                    at: scheduleTime
                 )
             }
         }
@@ -756,8 +798,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
         player: AVAudioPlayerNode,
         audioFile: AVAudioFile,
         startingFrame: AVAudioFramePosition,
-        frameCount: AVAudioFrameCount
+        frameCount: AVAudioFrameCount,
+        at when: AVAudioTime? = nil
     ) {
+        // For future containers (scheduled with a delay), skip the declick
+        // fade-in since the silence gap naturally prevents clicks.
+        if when != nil {
+            player.scheduleSegment(audioFile, startingFrame: startingFrame, frameCount: frameCount, at: when)
+            return
+        }
+
         let declickFrames = min(Self.declickFrameCount, frameCount)
         let format = audioFile.processingFormat
 
@@ -846,7 +896,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         containerLengthSamples: Int64,
         samplesPerBar: Double,
         enterFade: FadeSettings?,
-        exitFade: FadeSettings?
+        exitFade: FadeSettings?,
+        at when: AVAudioTime? = nil
     ) {
         let format = audioFile.processingFormat
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
@@ -869,7 +920,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             Self.applyDeclickFadeIn(to: buffer)
         }
 
-        player.scheduleBuffer(buffer)
+        player.scheduleBuffer(buffer, at: when)
     }
 
     /// Schedules looping playback with enter/exit fades applied at container boundaries.
@@ -1016,7 +1067,28 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Collect tracks with track-level automation
         let tracksWithAutomation = song.tracks.filter { !$0.trackAutomationLanes.isEmpty }
 
-        guard !containersWithAutomation.isEmpty || !tracksWithAutomation.isEmpty else { return }
+        // Collect MIDI containers for note scheduling
+        struct MIDIContainerInfo {
+            let container: Container
+            let trackID: ID<Track>
+            let notes: [MIDINoteEvent]
+        }
+        var midiContainers: [MIDIContainerInfo] = []
+        for track in song.tracks {
+            guard track.kind == .midi else { continue }
+            for container in track.containers {
+                let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
+                if let sequence = resolved.midiSequence, !sequence.notes.isEmpty {
+                    midiContainers.append(MIDIContainerInfo(
+                        container: resolved,
+                        trackID: track.id,
+                        notes: sequence.notes
+                    ))
+                }
+            }
+        }
+
+        guard !containersWithAutomation.isEmpty || !tracksWithAutomation.isEmpty || !midiContainers.isEmpty else { return }
 
         let startTime = Date()
 
@@ -1052,12 +1124,61 @@ public final class PlaybackScheduler: @unchecked Sendable {
         lock.unlock()
         let startBar = fromBar
 
+        // MIDI note tracking: notes currently sounding (for note-off on timer tick)
+        // Protected by the timer's serial queue — no additional locking needed.
+        struct ActiveMIDINote: Hashable {
+            let containerID: ID<Container>
+            let noteID: ID<MIDINoteEvent>
+        }
+        var activeNotes = Set<ActiveMIDINote>()
+        // Weak reference to self for MIDI note sending
+        weak var weakSelf = self
+
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInteractive))
-        // Evaluate at ~60 Hz (every ~16ms) for smooth parameter updates
+        // Evaluate at ~60 Hz (every ~16ms) for smooth parameter updates and MIDI scheduling
         timer.schedule(deadline: .now(), repeating: .milliseconds(16))
         timer.setEventHandler {
             let elapsed = Date().timeIntervalSince(startTime)
             let currentBar = startBar + elapsed / secondsPerBar
+
+            // ── MIDI note scheduling ──
+            for midiInfo in midiContainers {
+                let containerStartBar = Double(midiInfo.container.startBar)
+                let containerEndBar = Double(midiInfo.container.endBar)
+
+                // Skip containers outside playback range
+                guard currentBar >= containerStartBar - 0.1 && currentBar < containerEndBar + 0.1 else {
+                    // Send note-off for any active notes from this container that's out of range
+                    for active in activeNotes where active.containerID == midiInfo.container.id {
+                        if let note = midiInfo.notes.first(where: { $0.id == active.noteID }) {
+                            weakSelf?.sendMIDINoteToTrack(midiInfo.trackID, message: .noteOff(channel: note.channel, note: note.pitch, velocity: 0))
+                        }
+                    }
+                    activeNotes = activeNotes.filter { $0.containerID != midiInfo.container.id }
+                    continue
+                }
+
+                // Current position in beats within the container
+                let beatOffset = (currentBar - containerStartBar) * beatsPerBar
+
+                for note in midiInfo.notes {
+                    let key = ActiveMIDINote(containerID: midiInfo.container.id, noteID: note.id)
+
+                    if beatOffset >= note.startBeat && beatOffset < note.endBeat {
+                        // Note should be on
+                        if !activeNotes.contains(key) {
+                            activeNotes.insert(key)
+                            weakSelf?.sendMIDINoteToTrack(midiInfo.trackID, message: .noteOn(channel: note.channel, note: note.pitch, velocity: note.velocity))
+                        }
+                    } else {
+                        // Note should be off
+                        if activeNotes.contains(key) {
+                            activeNotes.remove(key)
+                            weakSelf?.sendMIDINoteToTrack(midiInfo.trackID, message: .noteOff(channel: note.channel, note: note.pitch, velocity: 0))
+                        }
+                    }
+                }
+            }
 
             // Evaluate container-level automation
             for container in containersWithAutomation {

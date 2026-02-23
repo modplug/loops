@@ -2128,6 +2128,107 @@ public final class ProjectViewModel {
         }
     }
 
+    // MARK: - MIDI Sequence Editing
+
+    /// Sets or replaces the MIDI sequence on a container.
+    public func setContainerMIDISequence(containerID: ID<Container>, sequence: MIDISequence?) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: sequence != nil ? "Set MIDI Sequence" : "Clear MIDI Sequence")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence = sequence
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .midiSequence)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Adds a MIDI note to a container's sequence. Creates the sequence if it doesn't exist.
+    public func addMIDINote(containerID: ID<Container>, note: MIDINoteEvent) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Add MIDI Note")
+                if project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence == nil {
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence = MIDISequence()
+                }
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence?.notes.append(note)
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .midiSequence)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Removes a MIDI note from a container's sequence.
+    public func removeMIDINote(containerID: ID<Container>, noteID: ID<MIDINoteEvent>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                guard project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence != nil else { return }
+                registerUndo(actionName: "Delete MIDI Note")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence?.notes.removeAll { $0.id == noteID }
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .midiSequence)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Updates a MIDI note in a container's sequence (move, resize, velocity change).
+    public func updateMIDINote(containerID: ID<Container>, note: MIDINoteEvent) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                guard var sequence = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence else { return }
+                guard let noteIndex = sequence.notes.firstIndex(where: { $0.id == note.id }) else { return }
+                registerUndo(actionName: "Edit MIDI Note")
+                sequence.notes[noteIndex] = note
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence = sequence
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .midiSequence)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    // MARK: - MIDI File Import
+
+    /// Imports a standard MIDI file and creates containers with MIDI sequences.
+    public func importMIDIFile(url: URL, trackID: ID<Track>, startBar: Int) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+
+        let importer = MIDIFileImporter()
+        guard let result = try? importer.importFile(at: url) else { return }
+        guard !result.sequences.isEmpty else { return }
+
+        registerUndo(actionName: "Import MIDI File")
+
+        let beatsPerBar = Double(project.songs[currentSongIndex].timeSignature.beatsPerBar)
+
+        for sequence in result.sequences {
+            let totalBeats = sequence.durationBeats
+            let lengthBars = max(1, Int(ceil(totalBeats / beatsPerBar)))
+
+            let container = Container(
+                name: url.deletingPathExtension().lastPathComponent,
+                startBar: startBar,
+                lengthBars: lengthBars,
+                midiSequence: sequence
+            )
+
+            // Check for overlap before adding
+            let track = project.songs[currentSongIndex].tracks[trackIndex]
+            guard !hasOverlap(in: track, with: container) else { continue }
+
+            project.songs[currentSongIndex].tracks[trackIndex].containers.append(container)
+        }
+
+        hasUnsavedChanges = true
+    }
+
     // MARK: - Private
 
     /// Checks if a container would overlap any existing container on the same track.

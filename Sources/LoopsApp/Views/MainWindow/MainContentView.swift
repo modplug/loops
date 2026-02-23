@@ -45,6 +45,8 @@ public struct MainContentView: View {
     @State private var isSidebarVisible: Bool = true
     @State private var sidebarTab: SidebarTab = .songs
     @State private var showContainerDetailEditor: Bool = false
+    @State private var showPianoRollEditor: Bool = false
+    @State private var pianoRollSnapResolution: SnapResolution = .sixteenth
     @State private var editingSectionID: ID<SectionRegion>?
     @State private var editingSectionName: String = ""
     @State private var inspectorMode: InspectorMode = .container
@@ -150,10 +152,57 @@ public struct MainContentView: View {
         }
     }
 
+    /// Opens the appropriate editor for the selected container.
+    /// MIDI containers on MIDI tracks open the piano roll; others open the detail editor.
+    private func openContainerEditor() {
+        guard let container = projectViewModel.selectedContainer,
+              let track = projectViewModel.selectedContainerTrack else { return }
+        if track.kind == .midi {
+            // Ensure the container has a MIDI sequence; create one if needed
+            if container.midiSequence == nil {
+                projectViewModel.setContainerMIDISequence(
+                    containerID: container.id,
+                    sequence: MIDISequence()
+                )
+            }
+            showPianoRollEditor = true
+        } else {
+            showContainerDetailEditor = true
+        }
+    }
+
+    @ViewBuilder
+    private var pianoRollEditorSheet: some View {
+        if let container = projectViewModel.selectedContainer,
+           let song = projectViewModel.currentSong {
+            let sequence = container.midiSequence ?? MIDISequence()
+            PianoRollView(
+                containerID: container.id,
+                sequence: sequence,
+                lengthBars: container.lengthBars,
+                timeSignature: song.timeSignature,
+                snapResolution: pianoRollSnapResolution,
+                onAddNote: { note in
+                    projectViewModel.addMIDINote(containerID: container.id, note: note)
+                },
+                onUpdateNote: { note in
+                    projectViewModel.updateMIDINote(containerID: container.id, note: note)
+                },
+                onRemoveNote: { noteID in
+                    projectViewModel.removeMIDINote(containerID: container.id, noteID: noteID)
+                }
+            )
+            .frame(minWidth: 600, minHeight: 400)
+        }
+    }
+
     public var body: some View {
         mainSplitView
         .sheet(isPresented: $showContainerDetailEditor) {
             containerDetailEditorSheet
+        }
+        .sheet(isPresented: $showPianoRollEditor) {
+            pianoRollEditorSheet
         }
         .sheet(item: $pendingTrackAutomationLane) { pending in
             ParameterPickerView(
@@ -235,7 +284,7 @@ public struct MainContentView: View {
         .onKeyPress(.return) {
             guard !isTextFieldFocused else { return .ignored }
             if projectViewModel.selectedContainer != nil {
-                showContainerDetailEditor = true
+                openContainerEditor()
                 return .handled
             }
             return .ignored
@@ -604,7 +653,7 @@ public struct MainContentView: View {
                             tracks: regularTracks,
                             minHeight: geo.size.height,
                             onContainerDoubleClick: {
-                                showContainerDetailEditor = true
+                                openContainerEditor()
                             },
                             onPlayheadPosition: { bar in
                                 transportViewModel?.seek(toBar: bar)
@@ -645,7 +694,7 @@ public struct MainContentView: View {
                         tracks: [master],
                         minHeight: 0,
                         onContainerDoubleClick: {
-                            showContainerDetailEditor = true
+                            openContainerEditor()
                         },
                         onPlayheadPosition: { bar in
                             transportViewModel?.seek(toBar: bar)

@@ -19,13 +19,14 @@ public struct TrackLaneView: View {
     var onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)?
     var onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)?
     var onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)?
+    var onDropMIDIFile: ((_ url: URL, _ startBar: Int) -> Void)?
     var onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)?
     var onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)?
     var onCopyContainer: ((_ containerID: ID<Container>) -> Void)?
     var onDuplicateContainer: ((_ containerID: ID<Container>) -> Void)?
     var onLinkCloneContainer: ((_ containerID: ID<Container>) -> Void)?
     var onUnlinkContainer: ((_ containerID: ID<Container>) -> Void)?
-    var onArmToggle: (() -> Void)?
+    var onContainerArmToggle: ((_ containerID: ID<Container>) -> Void)?
     var onPasteAtBar: ((_ bar: Int) -> Void)?
     var hasClipboard: Bool
     var isAutomationExpanded: Bool
@@ -59,13 +60,14 @@ public struct TrackLaneView: View {
         onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)? = nil,
         onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)? = nil,
         onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil,
+        onDropMIDIFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil,
         onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)? = nil,
         onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)? = nil,
         onCopyContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
         onDuplicateContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
         onLinkCloneContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
         onUnlinkContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
-        onArmToggle: (() -> Void)? = nil,
+        onContainerArmToggle: ((_ containerID: ID<Container>) -> Void)? = nil,
         onPasteAtBar: ((_ bar: Int) -> Void)? = nil,
         hasClipboard: Bool = false,
         isAutomationExpanded: Bool = false,
@@ -94,13 +96,14 @@ public struct TrackLaneView: View {
         self.onContainerResizeRight = onContainerResizeRight
         self.onCreateContainer = onCreateContainer
         self.onDropAudioFile = onDropAudioFile
+        self.onDropMIDIFile = onDropMIDIFile
         self.onContainerDoubleClick = onContainerDoubleClick
         self.onCloneContainer = onCloneContainer
         self.onCopyContainer = onCopyContainer
         self.onDuplicateContainer = onDuplicateContainer
         self.onLinkCloneContainer = onLinkCloneContainer
         self.onUnlinkContainer = onUnlinkContainer
-        self.onArmToggle = onArmToggle
+        self.onContainerArmToggle = onContainerArmToggle
         self.onPasteAtBar = onPasteAtBar
         self.hasClipboard = hasClipboard
         self.isAutomationExpanded = isAutomationExpanded
@@ -175,7 +178,7 @@ public struct TrackLaneView: View {
                         onDuplicate: { onDuplicateContainer?(container.id) },
                         onLinkClone: { onLinkCloneContainer?(container.id) },
                         onUnlink: { onUnlinkContainer?(container.id) },
-                        onArmToggle: { onArmToggle?() },
+                        onArmToggle: { onContainerArmToggle?(container.id) },
                         onSetEnterFade: { fade in onSetEnterFade?(container.id, fade) },
                         onSetExitFade: { fade in onSetExitFade?(container.id, fade) }
                     )
@@ -215,17 +218,22 @@ public struct TrackLaneView: View {
         }
         .frame(width: CGFloat(totalBars) * pixelsPerBar, height: height)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers, location in
-            guard let onDrop = onDropAudioFile else { return false }
             guard let provider = providers.first else { return false }
             let barAtDrop = max(Int(location.x / pixelsPerBar) + 1, 1)
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
                 guard let data = data as? Data,
                       let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
                 let ext = url.pathExtension.lowercased()
-                let supported: Set<String> = ["wav", "aiff", "aif", "caf", "mp3", "m4a"]
-                guard supported.contains(ext) else { return }
-                DispatchQueue.main.async {
-                    onDrop(url, barAtDrop)
+                let audioFormats: Set<String> = ["wav", "aiff", "aif", "caf", "mp3", "m4a"]
+                let midiFormats: Set<String> = ["mid", "midi"]
+                if midiFormats.contains(ext) {
+                    DispatchQueue.main.async {
+                        onDropMIDIFile?(url, barAtDrop)
+                    }
+                } else if audioFormats.contains(ext) {
+                    DispatchQueue.main.async {
+                        onDropAudioFile?(url, barAtDrop)
+                    }
                 }
             }
             return true

@@ -102,6 +102,9 @@ public struct TimelineView: View {
                                 }
                             }
                         },
+                        onDropMIDIFile: { url, startBar in
+                            projectViewModel.importMIDIFile(url: url, trackID: track.id, startBar: startBar)
+                        },
                         onContainerDoubleClick: { containerID in
                             projectViewModel.selectedContainerID = containerID
                             onContainerDoubleClick?()

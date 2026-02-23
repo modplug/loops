@@ -106,12 +106,25 @@ public struct ContainerView: View {
                         )
                 )
 
-            // Waveform
+            // Waveform (audio containers)
             if let peaks = waveformPeaks, !peaks.isEmpty {
                 WaveformView(peaks: peaks, color: trackColor)
                     .padding(.horizontal, 2)
                     .padding(.vertical, 16)
                     .allowsHitTesting(false)
+            }
+
+            // MIDI note minimap (MIDI containers)
+            if let sequence = container.midiSequence, !sequence.notes.isEmpty {
+                MIDINoteMinimapView(
+                    notes: sequence.notes,
+                    containerLengthBars: container.lengthBars,
+                    beatsPerBar: 4,
+                    color: trackColor
+                )
+                .padding(.horizontal, 2)
+                .padding(.vertical, 16)
+                .allowsHitTesting(false)
             }
 
             // Automation overlay curves
