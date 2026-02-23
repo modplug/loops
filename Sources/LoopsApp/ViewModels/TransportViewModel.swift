@@ -20,6 +20,10 @@ public final class TransportViewModel {
     public var metronomeSubdivision: MetronomeSubdivision = .quarter
     public var metronomeOutputPortID: String?
 
+    /// Container IDs whose effect chains failed to connect during the last graph build.
+    /// Updated after each `prepare`/`prepareIncremental` cycle.
+    public var failedContainerIDs: Set<ID<Container>> = []
+
     /// When true, stop returns playhead to where play was last pressed.
     /// Persisted across sessions via UserDefaults.
     public var returnToStartEnabled: Bool = true {
@@ -32,7 +36,11 @@ public final class TransportViewModel {
 
     private let transport: TransportManager
     private let engineManager: AudioEngineManager?
-    private var playbackScheduler: PlaybackScheduler?
+    /// Audio graph scheduler. Exposed as private(set) so the MIDI input
+    /// callback can call forwardExternalMIDI() without hopping to MainActor.
+    /// Writes are @MainActor-only; the scheduler's internal lock protects
+    /// concurrent reads. PlaybackScheduler is @unchecked Sendable.
+    private(set) var playbackScheduler: PlaybackScheduler?
     private var containerRecorder: ContainerRecorder?
     private var playbackGeneration = 0
     private var playbackTask: Task<Void, Never>?
@@ -144,6 +152,11 @@ public final class TransportViewModel {
                         scheduler.actionDispatcher = dispatcher
                         scheduler.inputMonitor = engine.inputMonitor
                         scheduler.onTrackLevelUpdate = onTrackLevelUpdate
+                        scheduler.onEffectChainStatusChanged = { [weak self] failedIDs in
+                            Task { @MainActor [weak self] in
+                                self?.failedContainerIDs = failedIDs
+                            }
+                        }
                         playbackScheduler = scheduler
                     }
                     schedulePlayback(
@@ -172,6 +185,11 @@ public final class TransportViewModel {
                         scheduler.actionDispatcher = dispatcher
                         scheduler.inputMonitor = engine.inputMonitor
                         scheduler.onTrackLevelUpdate = onTrackLevelUpdate
+                        scheduler.onEffectChainStatusChanged = { [weak self] failedIDs in
+                            Task { @MainActor [weak self] in
+                                self?.failedContainerIDs = failedIDs
+                            }
+                        }
                         playbackScheduler = scheduler
                     }
                 }
@@ -507,6 +525,10 @@ public final class TransportViewModel {
             scheduler.installTrackLevelTaps()
 
             if !changedTracks.isEmpty {
+                // Invalidate open plugin windows — the graph rebuild created
+                // new AU instances, so any open window is pointing at a stale AU.
+                PluginWindowManager.shared.invalidateAll()
+
                 scheduler.playChangedTracks(
                     changedTracks,
                     song: context.song,

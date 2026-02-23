@@ -48,6 +48,8 @@ struct ContainerDetailEditor: View {
     var onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)?
     /// Returns the engine's live AVAudioUnit for a container effect at the given index, if available.
     var liveEffectUnit: ((Int) -> AVAudioUnit?)?
+    /// Whether this container's effect chain failed to connect in the engine.
+    var isEffectChainFailed: Bool = false
 
     var onDismiss: (() -> Void)?
 
@@ -153,10 +155,17 @@ struct ContainerDetailEditor: View {
                             Image(systemName: "line.3.horizontal")
                                 .foregroundStyle(.tertiary)
                                 .font(.caption)
-                            Circle()
-                                .fill(effect.isBypassed ? Color.gray : Color.green)
-                                .frame(width: 8, height: 8)
+                            Button {
+                                onToggleEffectBypass?(effect.id)
+                            } label: {
+                                Circle()
+                                    .fill(effect.isBypassed ? Color.gray : (isEffectChainFailed ? Color.red : Color.green))
+                                    .frame(width: 8, height: 8)
+                            }
+                            .buttonStyle(.plain)
+                            .help(effect.isBypassed ? "Enable effect" : "Bypass effect")
                             Text(effect.displayName)
+                                .foregroundStyle(effect.isBypassed ? .secondary : .primary)
                             Spacer()
                             Button {
                                 PluginWindowManager.shared.open(
@@ -174,12 +183,6 @@ struct ContainerDetailEditor: View {
                             }
                             .buttonStyle(.plain)
                             .help("Open plugin UI")
-                            Button(effect.isBypassed ? "Bypassed" : "Active") {
-                                onToggleEffectBypass?(effect.id)
-                            }
-                            .font(.caption)
-                            .foregroundStyle(effect.isBypassed ? .secondary : .primary)
-                            .buttonStyle(.plain)
                             Button(role: .destructive) {
                                 onRemoveEffect?(effect.id)
                             } label: {
@@ -188,9 +191,15 @@ struct ContainerDetailEditor: View {
                             }
                             .buttonStyle(.plain)
                         }
-                    }
-                    .onMove { from, to in
-                        onReorderEffects?(from, to)
+                        .draggable(effect.id.rawValue.uuidString)
+                        .dropDestination(for: String.self) { items, _ in
+                            guard let draggedID = items.first.flatMap(UUID.init).map({ ID<InsertEffect>(rawValue: $0) }),
+                                  let fromIndex = sortedEffects.firstIndex(where: { $0.id == draggedID }) else { return false }
+                            if fromIndex != index {
+                                onReorderEffects?(IndexSet(integer: fromIndex), index > fromIndex ? index + 1 : index)
+                            }
+                            return true
+                        }
                     }
 
                     Toggle("Bypass All Effects", isOn: Binding(

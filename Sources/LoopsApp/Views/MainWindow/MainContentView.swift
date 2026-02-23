@@ -161,6 +161,7 @@ public struct MainContentView: View {
                 liveEffectUnit: { index in
                     transportViewModel?.liveEffectUnit(containerID: container.id, effectIndex: index)
                 },
+                isEffectChainFailed: transportViewModel?.failedContainerIDs.contains(container.id) ?? false,
                 onDismiss: {
                     showContainerDetailEditor = false
                 }
@@ -1577,7 +1578,9 @@ struct SelectionBasedInspectorView: View {
                     component: effect.component,
                     displayName: effect.displayName,
                     presetData: nil,
-                    onPresetChanged: nil
+                    onPresetChanged: { data in
+                        projectViewModel.updateTrackEffectPreset(trackID: track.id, effectID: effect.id, presetData: data)
+                    }
                 )
             },
             onRemoveEffect: { effectID in
@@ -1591,6 +1594,9 @@ struct SelectionBasedInspectorView: View {
             },
             onReorderEffects: { source, destination in
                 projectViewModel.reorderTrackEffects(trackID: track.id, from: source, to: destination)
+            },
+            onUpdateEffectPreset: { effectID, data in
+                projectViewModel.updateTrackEffectPreset(trackID: track.id, effectID: effectID, presetData: data)
             },
             onSetInputPort: { portID in
                 projectViewModel.setTrackInputPort(trackID: track.id, portID: portID)

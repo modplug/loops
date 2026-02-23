@@ -17,6 +17,7 @@ public struct TrackInspectorView: View {
     var onToggleEffectBypass: ((ID<InsertEffect>) -> Void)?
     var onToggleChainBypass: (() -> Void)?
     var onReorderEffects: ((IndexSet, Int) -> Void)?
+    var onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)?
 
     // Routing callbacks
     var onSetInputPort: ((String?) -> Void)?
@@ -312,9 +313,15 @@ public struct TrackInspectorView: View {
     private func effectRows(_ sortedEffects: [InsertEffect]) -> some View {
         ForEach(Array(sortedEffects.enumerated()), id: \.element.id) { effectIndex, effect in
             effectRow(effect: effect, effectIndex: effectIndex)
-        }
-        .onMove { from, to in
-            onReorderEffects?(from, to)
+                .draggable(effect.id.rawValue.uuidString)
+                .dropDestination(for: String.self) { items, _ in
+                    guard let draggedID = items.first.flatMap(UUID.init).map({ ID<InsertEffect>(rawValue: $0) }),
+                          let fromIndex = sortedEffects.firstIndex(where: { $0.id == draggedID }) else { return false }
+                    if fromIndex != effectIndex {
+                        onReorderEffects?(IndexSet(integer: fromIndex), effectIndex > fromIndex ? effectIndex + 1 : effectIndex)
+                    }
+                    return true
+                }
         }
     }
 
@@ -326,12 +333,19 @@ public struct TrackInspectorView: View {
             Image(systemName: "line.3.horizontal")
                 .foregroundStyle(.tertiary)
                 .font(.caption)
-            Circle()
-                .fill(effect.isBypassed ? Color.gray : Color.green)
-                .frame(width: 6, height: 6)
+            Button {
+                onToggleEffectBypass?(effect.id)
+            } label: {
+                Circle()
+                    .fill(effect.isBypassed ? Color.gray : Color.green)
+                    .frame(width: 6, height: 6)
+            }
+            .buttonStyle(.plain)
+            .help(effect.isBypassed ? "Enable effect" : "Bypass effect")
             Text(effect.displayName)
                 .font(.callout)
                 .lineLimit(1)
+                .foregroundStyle(effect.isBypassed ? .secondary : .primary)
             if hasMIDIMapping {
                 Circle()
                     .fill(Color.cyan)
@@ -363,7 +377,9 @@ public struct TrackInspectorView: View {
                 displayName: effect.displayName,
                 presetData: effect.presetData,
                 liveAudioUnit: liveTrackEffectUnit?(effectIndex),
-                onPresetChanged: nil
+                onPresetChanged: { data in
+                    onUpdateEffectPreset?(effect.id, data)
+                }
             )
         } label: {
             Image(systemName: "slider.horizontal.3")
@@ -371,12 +387,6 @@ public struct TrackInspectorView: View {
         }
         .buttonStyle(.plain)
         .help("Open plugin UI")
-        Button(effect.isBypassed ? "Bypassed" : "Active") {
-            onToggleEffectBypass?(effect.id)
-        }
-        .font(.caption)
-        .foregroundStyle(effect.isBypassed ? .secondary : .primary)
-        .buttonStyle(.plain)
         Button(role: .destructive) {
             onRemoveEffect?(effect.id)
         } label: {
