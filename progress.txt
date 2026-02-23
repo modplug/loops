@@ -1078,3 +1078,28 @@
 - `MainContentView`: new `clipboardState: ClipboardState` parameter (defaults to `projectViewModel.clipboardState`); `handlePaste()` reads `clipboardState.hasContent` instead of `projectViewModel.clipboard`
 - `TimelineView`: new `clipboardState: ClipboardState` parameter (defaults to `projectViewModel.clipboardState`); `hasClipboard` flag reads from `clipboardState.clipboard` instead of `projectViewModel.clipboard`
 - All 1011 tests pass
+
+### Iteration 14 — #125 Extract UndoState from ProjectViewModel
+- `UndoState`: new `@Observable @MainActor` class with `undoHistory`, `undoHistoryCursor`, `undoToastMessage` properties
+- `UndoState.appendToHistory(actionName:)`: adds entry, trims future entries above cursor, marks current
+- `UndoState.handleUndo(redoActionName:)`: moves cursor back, sets toast message
+- `UndoState.handleRedo(undoActionName:)`: moves cursor forward, sets toast message
+- `UndoState.clear()`: resets history array and cursor
+- `ProjectViewModel`: new `undoState` property (instance of `UndoState`); three undo display properties become delegating computed properties (`get`/`set` through `undoState`)
+- `ProjectViewModel`: `handleUndoNotification()`, `handleRedoNotification()`, `appendToUndoHistory()`, `clearUndoHistory()` all delegate to `undoState`
+- `ToolbarView`: replaced `undoHistory: [UndoHistoryEntry]` and `undoHistoryCursor: Int` parameters with single `undoState: UndoState` parameter; reads history/cursor from `undoState` directly
+- `LoopsRootView`: passes `viewModel.undoState` to ToolbarView; toast overlay reads from `viewModel.undoState.undoToastMessage` instead of `viewModel.undoToastMessage`
+- 8 new tests: standalone defaults empty, appendToHistory adds entries, handleUndo cursor/toast, handleRedo cursor/toast, clear resets, appendTrimsFuture, VM delegates undoHistory, VM delegates undoToast
+- All 1019 tests pass
+
+### Iteration 15 — #126 Extract ExportState and MIDILearnState from ProjectViewModel
+- `ExportState`: new `@Observable @MainActor` class with `isExportSheetPresented: Bool` property
+- `MIDILearnState`: new `@Observable @MainActor` class with `isMIDIParameterLearning: Bool`, `midiLearnTargetPath: EffectPath?` properties
+- `MIDILearnState`: `startLearn(targetPath:)`, `cancelLearn()`, `clearLearn()` methods for state transitions
+- `ProjectViewModel`: new `exportState` property (instance of `ExportState`); `isExportSheetPresented` becomes delegating computed property through `exportState`
+- `ProjectViewModel`: new `midiLearnState` property (instance of `MIDILearnState`); `isMIDIParameterLearning` and `midiLearnTargetPath` become delegating computed properties through `midiLearnState`
+- `ProjectViewModel`: `startMIDIParameterLearn`, `cancelMIDIParameterLearn`, `completeMIDIParameterLearn` delegate to `midiLearnState` for state management
+- `LoopsAppEntry`: MIDI event handler reads `midiLearnState.isMIDIParameterLearning` directly for observation isolation
+- `MainContentView`: passes `midiLearnState.isMIDIParameterLearning` to TrackInspectorView for observation isolation
+- All existing tests pass unchanged — proxy properties maintain backward compatibility
+- All 1019 tests pass

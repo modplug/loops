@@ -57,7 +57,7 @@ public struct MainContentView: View {
     @State private var pendingTrackAutomationLane: PendingEffectSelection?
     @FocusState private var focusedField: FocusedField?
     @Namespace private var inspectorNamespace
-    // isMIDILearning and midiLearnTargetPath are on projectViewModel
+    // isMIDILearning and midiLearnTargetPath are on projectViewModel.midiLearnState
 
     /// Returns true when keyboard focus has moved away from the main content area
     /// (e.g. to a text field in the inspector panel).
@@ -970,7 +970,7 @@ public struct MainContentView: View {
                 projectViewModel.removeExpressionPedal(trackID: track.id)
             },
             midiParameterMappings: projectViewModel.project.midiParameterMappings,
-            isMIDILearning: projectViewModel.isMIDIParameterLearning,
+            isMIDILearning: projectViewModel.midiLearnState.isMIDIParameterLearning,
             availableInputPorts: settingsViewModel?.inputPorts ?? [],
             availableOutputPorts: settingsViewModel?.outputPorts ?? [],
             availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? [],

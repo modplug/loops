@@ -45,8 +45,17 @@ public final class ProjectViewModel {
     public var project: Project
     public var projectURL: URL?
     public var hasUnsavedChanges: Bool = false
-    public var isExportSheetPresented: Bool = false
     public var undoManager: UndoManager?
+
+    /// Dedicated export state observable, extracted so export sheet presentation
+    /// doesn't invalidate unrelated parts of the view tree.
+    public let exportState = ExportState()
+
+    /// Whether the export audio sheet is currently presented.
+    public var isExportSheetPresented: Bool {
+        get { exportState.isExportSheetPresented }
+        set { exportState.isExportSheetPresented = newValue }
+    }
 
     /// Dedicated clipboard state observable, extracted so clipboard changes don't
     /// invalidate unrelated parts of the view tree.
@@ -2197,11 +2206,21 @@ public final class ProjectViewModel {
         project.midiParameterMappings.first(where: { $0.targetPath == targetPath })
     }
 
+    /// Dedicated MIDI learn state observable, extracted so learn mode toggling
+    /// doesn't invalidate unrelated parts of the view tree.
+    public let midiLearnState = MIDILearnState()
+
     /// Whether MIDI parameter learn mode is active.
-    public var isMIDIParameterLearning: Bool = false
+    public var isMIDIParameterLearning: Bool {
+        get { midiLearnState.isMIDIParameterLearning }
+        set { midiLearnState.isMIDIParameterLearning = newValue }
+    }
 
     /// The target path being learned (set during MIDI learn mode).
-    public var midiLearnTargetPath: EffectPath?
+    public var midiLearnTargetPath: EffectPath? {
+        get { midiLearnState.midiLearnTargetPath }
+        set { midiLearnState.midiLearnTargetPath = newValue }
+    }
 
     /// Callback invoked when MIDI parameter mappings change (to sync dispatcher).
     public var onMIDIParameterMappingsChanged: (() -> Void)?
@@ -2211,19 +2230,17 @@ public final class ProjectViewModel {
 
     /// Starts MIDI parameter learn mode for the given target path.
     public func startMIDIParameterLearn(targetPath: EffectPath) {
-        isMIDIParameterLearning = true
-        midiLearnTargetPath = targetPath
+        midiLearnState.startLearn(targetPath: targetPath)
     }
 
     /// Cancels MIDI parameter learn mode.
     public func cancelMIDIParameterLearn() {
-        isMIDIParameterLearning = false
-        midiLearnTargetPath = nil
+        midiLearnState.cancelLearn()
     }
 
     /// Completes MIDI parameter learn by creating a mapping for the received trigger.
     public func completeMIDIParameterLearn(trigger: MIDITrigger) {
-        guard let targetPath = midiLearnTargetPath else { return }
+        guard let targetPath = midiLearnState.midiLearnTargetPath else { return }
         registerUndo(actionName: "MIDI Learn")
         // Remove any existing mapping for this trigger or target
         project.midiParameterMappings.removeAll { $0.trigger == trigger || $0.targetPath == targetPath }
@@ -2233,8 +2250,7 @@ public final class ProjectViewModel {
         )
         project.midiParameterMappings.append(mapping)
         hasUnsavedChanges = true
-        isMIDIParameterLearning = false
-        midiLearnTargetPath = nil
+        midiLearnState.clearLearn()
         onMIDIParameterMappingsChanged?()
     }
 

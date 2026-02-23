@@ -288,7 +288,7 @@ public struct LoopsRootView: View {
         let previousOnMIDIEvent = midiManager.onMIDIEvent
         midiManager.onMIDIEvent = { [weak viewModel] trigger in
             // Learn mode takes priority
-            if let vm = viewModel, vm.isMIDIParameterLearning {
+            if let vm = viewModel, vm.midiLearnState.isMIDIParameterLearning {
                 Task { @MainActor [weak vm] in
                     vm?.completeMIDIParameterLearn(trigger: trigger)
                     paramDispatcher.updateParameterMappings(vm?.project.midiParameterMappings ?? [])
