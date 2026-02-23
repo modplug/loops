@@ -36,9 +36,6 @@ public final class TransportViewModel {
     private var containerRecorder: ContainerRecorder?
     private var playbackGeneration = 0
     private var playbackTask: Task<Void, Never>?
-    /// Tracks the last prepared song so we can skip re-preparing when unchanged.
-    private var lastPreparedSong: Song?
-    private var lastPreparedRecordingIDs: Set<ID<SourceRecording>> = []
 
     /// Closure to fetch the current song context for playback.
     /// Set by the view layer so play() always uses the latest data.
@@ -188,13 +185,11 @@ public final class TransportViewModel {
     public func pause() {
         playbackGeneration += 1
         stopContainerRecording()
-        let previousTask = playbackTask
-        previousTask?.cancel()
-        let scheduler = playbackScheduler
-        playbackTask = Task {
-            _ = await previousTask?.value
-            scheduler?.stop()
-        }
+        playbackTask?.cancel()
+        playbackTask = nil
+        // Stop the scheduler synchronously — don't queue behind SwiftUI work.
+        // The ~8ms declick fade is acceptable for a user-initiated pause.
+        playbackScheduler?.stop()
         engineManager?.metronome?.setEnabled(false)
         transport.pause()
         syncFromTransport()
@@ -203,13 +198,10 @@ public final class TransportViewModel {
     public func stop() {
         playbackGeneration += 1
         stopContainerRecording()
-        let previousTask = playbackTask
-        previousTask?.cancel()
-        let scheduler = playbackScheduler
-        playbackTask = Task {
-            _ = await previousTask?.value
-            scheduler?.stop()
-        }
+        playbackTask?.cancel()
+        playbackTask = nil
+        // Stop the scheduler synchronously for immediate audio silence.
+        playbackScheduler?.stop()
         engineManager?.metronome?.setEnabled(false)
         engineManager?.metronome?.reset()
         // In perform mode, always return to bar 1 (bypass return-to-start)
@@ -224,16 +216,12 @@ public final class TransportViewModel {
         let wasPlaying = isPlaying || isCountingIn
 
         if wasPlaying {
-            // Stop current playback and scheduler
+            // Stop current playback and scheduler synchronously
             playbackGeneration += 1
             stopContainerRecording()
-            let previousTask = playbackTask
-            previousTask?.cancel()
-            let scheduler = playbackScheduler
-            playbackTask = Task {
-                _ = await previousTask?.value
-                scheduler?.stop()
-            }
+            playbackTask?.cancel()
+            playbackTask = nil
+            playbackScheduler?.stop()
             engineManager?.metronome?.setEnabled(false)
             engineManager?.metronome?.reset()
             transport.pause()
@@ -241,9 +229,8 @@ public final class TransportViewModel {
 
         // Reset playhead to bar 1
         transport.setPlayheadPosition(1.0)
-        // Clear the last prepared song so the scheduler rebuilds the audio graph
-        lastPreparedSong = nil
-        lastPreparedRecordingIDs = []
+        // Invalidate the scheduler's graph so it rebuilds for the new song
+        playbackScheduler?.invalidatePreparedState()
         syncFromTransport()
 
         if wasPlaying {
@@ -301,8 +288,18 @@ public final class TransportViewModel {
     }
 
     public func setPlayheadPosition(_ bar: Double) {
+        let start = CFAbsoluteTimeGetCurrent()
         transport.setPlayheadPosition(bar)
         syncFromTransport()
+        let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        print("[PERF] setPlayheadPosition(\(bar)): \(String(format: "%.1f", ms))ms")
+    }
+
+    /// Updates a single track's volume/pan in the live audio graph without
+    /// touching the model. Used during continuous slider gestures to avoid
+    /// triggering full SwiftUI view re-evaluation.
+    public func updateTrackMixLive(trackID: ID<Track>, volume: Float, pan: Float) {
+        playbackScheduler?.updateTrackMix(trackID: trackID, volume: volume, pan: pan, isMuted: false)
     }
 
     /// Pushes current mute/solo state to the live audio graph.
@@ -326,17 +323,15 @@ public final class TransportViewModel {
     /// Seeks to a new bar position. If currently playing, stops and restarts
     /// playback from the new position so audio is rescheduled.
     public func seek(toBar bar: Double) {
+        let seekStart = CFAbsoluteTimeGetCurrent()
         playbackGeneration += 1
         let wasPlaying = isPlaying
         if wasPlaying {
             stopContainerRecording()
-            let previousTask = playbackTask
-            previousTask?.cancel()
-            let scheduler = playbackScheduler
-            playbackTask = Task {
-                _ = await previousTask?.value
-                scheduler?.stop()
-            }
+            playbackTask?.cancel()
+            playbackTask = nil
+            // Stop synchronously with skipDeclick — we're about to restart playback
+            playbackScheduler?.stop(skipDeclick: true)
             engineManager?.metronome?.reset()
             transport.pause()
         }
@@ -367,6 +362,8 @@ public final class TransportViewModel {
             transport.play(waitForAudioSync: true)
             syncFromTransport()
         }
+        let seekMs = (CFAbsoluteTimeGetCurrent() - seekStart) * 1000
+        print("[PERF] seek(toBar: \(bar)): \(String(format: "%.1f", seekMs))ms wasPlaying=\(wasPlaying)")
     }
 
     public func updateBPM(_ newBPM: Double) {
@@ -392,6 +389,12 @@ public final class TransportViewModel {
             try? engine.start()
         }
         guard let monitor = engine.inputMonitor else { return }
+
+        // Monitoring modifies the engine graph on a running engine.
+        // Invalidate the scheduler's graph fingerprints so the next play()
+        // triggers a full prepare() (engine stop → graph rebuild → restart).
+        playbackScheduler?.invalidatePreparedState()
+
         if enabled {
             Task {
                 await monitor.enableMonitoring(
@@ -483,8 +486,7 @@ public final class TransportViewModel {
         guard isPlaying, let scheduler = playbackScheduler,
               let engine = engineManager, let context = songProvider?() else {
             // Not playing — just invalidate the cache so next play() rebuilds
-            lastPreparedSong = nil
-            lastPreparedRecordingIDs = []
+            playbackScheduler?.invalidatePreparedState()
             return
         }
 
@@ -514,9 +516,6 @@ public final class TransportViewModel {
                     sampleRate: engine.currentSampleRate
                 )
             }
-
-            self.lastPreparedSong = context.song
-            self.lastPreparedRecordingIDs = Set(context.recordings.keys)
         }
     }
 
@@ -525,7 +524,9 @@ public final class TransportViewModel {
     /// concurrent cleanup/prepare races on the audio graph.
     ///
     /// Skips the expensive `prepare()` call (which stops/starts the engine)
-    /// when the song and recordings haven't changed since the last prepare.
+    /// when the audio graph shape hasn't changed (effects, instruments,
+    /// container audio assignments). Cosmetic changes like renaming, volume,
+    /// pan, or container moves do NOT trigger a re-prepare.
     private func schedulePlayback(
         scheduler: PlaybackScheduler?,
         song: Song,
@@ -536,28 +537,34 @@ public final class TransportViewModel {
         sampleRate: Double
     ) {
         let gen = playbackGeneration
-        let previousTask = playbackTask
-        previousTask?.cancel()
-        let needsPrepare = song != lastPreparedSong
-            || Set(recordings.keys) != lastPreparedRecordingIDs
+        playbackTask?.cancel()
+        // Use graph-shape fingerprints so cosmetic changes (rename, volume,
+        // pan, container move) don't trigger a full audio-graph rebuild.
+        let needsPrepare = scheduler?.needsPrepare(
+            song: song,
+            recordingIDs: Set(recordings.keys)
+        ) ?? true
         let containerCount = song.tracks.flatMap(\.containers).count
         let recCount = recordings.count
         print("[PLAY] schedulePlayback: needsPrepare=\(needsPrepare) containers=\(containerCount) recordings=\(recCount)")
+        let scheduleEnqueueTime = CFAbsoluteTimeGetCurrent()
         playbackTask = Task {
-            _ = await previousTask?.value
-            guard self.playbackGeneration == gen else { return }
+            let taskStart = CFAbsoluteTimeGetCurrent()
+            let waitMs = (taskStart - scheduleEnqueueTime) * 1000
+            guard self.playbackGeneration == gen else {
+                print("[PERF] schedulePlayback: cancelled after \(String(format: "%.1f", waitMs))ms queued")
+                return
+            }
             if needsPrepare {
                 print("[PLAY] calling prepare()")
                 await scheduler?.prepare(song: song, sourceRecordings: recordings)
                 guard self.playbackGeneration == gen else { return }
-                self.lastPreparedSong = song
-                self.lastPreparedRecordingIDs = Set(recordings.keys)
                 // Install per-track level taps after graph is built
                 scheduler?.installTrackLevelTaps()
-            } else {
-                print("[PLAY] skipping prepare, calling stop()")
-                scheduler?.stop()
             }
+            // stop() was already called synchronously before this Task was created,
+            // so we can proceed directly to play().
+            guard self.playbackGeneration == gen else { return }
             scheduler?.play(
                 song: song,
                 fromBar: fromBar,
@@ -583,6 +590,9 @@ public final class TransportViewModel {
             let outputLatency = self.engineManager?.engine.outputNode.presentationLatency ?? 0
             self.transport.completeAudioSync(audioOutputLatency: outputLatency)
             self.syncFromTransport()
+
+            let totalMs = (CFAbsoluteTimeGetCurrent() - taskStart) * 1000
+            print("[PERF] schedulePlayback task: \(String(format: "%.1f", totalMs))ms (queued \(String(format: "%.1f", waitMs))ms, needsPrepare=\(needsPrepare))")
         }
     }
 
@@ -654,6 +664,7 @@ public final class TransportViewModel {
     }
 
     private func syncFromTransport() {
+        let syncStart = CFAbsoluteTimeGetCurrent()
         isPlaying = transport.state == .playing || transport.state == .recording
         isCountingIn = transport.state == .countingIn
         isRecordArmed = transport.isRecordArmed
@@ -662,5 +673,9 @@ public final class TransportViewModel {
         playheadBar = bar
         onPlayheadChanged?(bar)
         countInBarsRemaining = transport.countInBarsRemaining
+        let syncMs = (CFAbsoluteTimeGetCurrent() - syncStart) * 1000
+        if syncMs > 1.0 {
+            print("[PERF] syncFromTransport: \(String(format: "%.1f", syncMs))ms")
+        }
     }
 }
