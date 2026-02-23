@@ -454,6 +454,23 @@ public struct ContainerView: View {
     }
 }
 
+// MARK: - Equatable
+
+extension ContainerView: Equatable {
+    public static func == (lhs: ContainerView, rhs: ContainerView) -> Bool {
+        lhs.container == rhs.container &&
+        lhs.pixelsPerBar == rhs.pixelsPerBar &&
+        lhs.height == rhs.height &&
+        lhs.isSelected == rhs.isSelected &&
+        lhs.trackColor == rhs.trackColor &&
+        lhs.waveformPeaks == rhs.waveformPeaks &&
+        lhs.isClone == rhs.isClone &&
+        lhs.overriddenFields == rhs.overriddenFields &&
+        lhs.otherSongs.count == rhs.otherSongs.count &&
+        zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name }
+    }
+}
+
 // MARK: - Fade Overlay Shape
 
 /// Draws the semi-transparent fade overlay on a container.

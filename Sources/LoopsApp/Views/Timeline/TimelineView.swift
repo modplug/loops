@@ -177,6 +177,7 @@ public struct TimelineView: View {
                             projectViewModel.setContainerExitFade(containerID: containerID, fade: fade)
                         }
                     )
+                    .equatable()
                 }
             }
 

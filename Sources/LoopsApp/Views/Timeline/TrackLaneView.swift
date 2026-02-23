@@ -190,6 +190,7 @@ public struct TrackLaneView: View {
                         onSetEnterFade: { fade in onSetEnterFade?(container.id, fade) },
                         onSetExitFade: { fade in onSetExitFade?(container.id, fade) }
                     )
+                    .equatable()
                     .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
                 }
             }
@@ -287,5 +288,23 @@ public struct TrackLaneView: View {
         case .backing: return .orange
         case .master: return .gray
         }
+    }
+}
+
+// MARK: - Equatable
+
+extension TrackLaneView: Equatable {
+    public static func == (lhs: TrackLaneView, rhs: TrackLaneView) -> Bool {
+        lhs.track == rhs.track &&
+        lhs.pixelsPerBar == rhs.pixelsPerBar &&
+        lhs.totalBars == rhs.totalBars &&
+        lhs.height == rhs.height &&
+        lhs.selectedContainerID == rhs.selectedContainerID &&
+        lhs.hasClipboard == rhs.hasClipboard &&
+        lhs.isAutomationExpanded == rhs.isAutomationExpanded &&
+        lhs.automationSubLanePaths == rhs.automationSubLanePaths &&
+        lhs.selectedBreakpointID == rhs.selectedBreakpointID &&
+        lhs.otherSongs.count == rhs.otherSongs.count &&
+        zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name }
     }
 }
