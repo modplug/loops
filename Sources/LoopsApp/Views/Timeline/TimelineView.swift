@@ -191,9 +191,9 @@ public struct TimelineView: View {
                     .allowsHitTesting(false)
             }
 
-            // Playhead — extends full height
-            PlayheadView(
-                xPosition: viewModel.playheadX,
+            // Playhead — isolated so 60fps updates don't re-evaluate track lanes
+            PlayheadOverlayView(
+                viewModel: viewModel,
                 height: displayHeight
             )
         }
