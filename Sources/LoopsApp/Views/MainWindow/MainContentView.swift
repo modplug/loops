@@ -55,6 +55,7 @@ public struct MainContentView: View {
     @State private var draggingTrackID: ID<Track>?
     @State private var headerDragStartWidth: CGFloat = 0
     @State private var pendingTrackAutomationLane: PendingEffectSelection?
+    @State private var scrollSynchronizer = HorizontalScrollSynchronizer()
     @FocusState private var focusedField: FocusedField?
     @Namespace private var inspectorNamespace
     // isMIDILearning and midiLearnTargetPath are on projectViewModel.midiLearnState
@@ -367,6 +368,19 @@ public struct MainContentView: View {
         .onKeyPress("7") { selectTrackByKeyIndex(6) }
         .onKeyPress("8") { selectTrackByKeyIndex(7) }
         .onKeyPress("9") { selectTrackByKeyIndex(8) }
+        // Cmd+E: split selected container at playhead
+        .onKeyPress("e", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) else { return .ignored }
+            handleSplitAtPlayhead()
+            return .handled
+        }
+        // Cmd+Shift+X: split selected container at range selection boundaries
+        .onKeyPress("x", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command),
+                  keyPress.modifiers.contains(.shift) else { return .ignored }
+            handleSplitAtRange()
+            return .handled
+        }
         // Cmd+D: duplicate selected container (or track if no container selected)
         .onKeyPress("d", phases: .down) { keyPress in
             guard keyPress.modifiers.contains(.command) else { return .ignored }
@@ -690,11 +704,30 @@ public struct MainContentView: View {
             }
         }
         .scrollWheelHandler(
-            onCmdScroll: { delta in
-                if delta > 0 {
-                    timelineViewModel.zoomIn()
+            onCmdScroll: { delta, mouseXInWindow in
+                let zoomingIn = delta > 0
+                // Compute the timeline X under the cursor for anchored zoom
+                // mouseXInWindow is the mouse position in the window's coordinate space
+                let headerWidth = timelineViewModel.trackHeaderWidth
+                let mouseXRelativeToTimeline = mouseXInWindow - headerWidth
+                if mouseXRelativeToTimeline > 0, let scrollView = findTimelineScrollView() {
+                    let scrollOffset = scrollView.contentView.bounds.origin.x
+                    let timelineX = mouseXRelativeToTimeline + scrollOffset
+                    let barUnderCursor = timelineViewModel.bar(forXPosition: timelineX)
+
+                    if zoomingIn {
+                        timelineViewModel.zoomIn()
+                    } else {
+                        timelineViewModel.zoomOut()
+                    }
+
+                    // After zoom, scroll so the same bar is under the cursor
+                    let newTimelineX = timelineViewModel.xPosition(forBar: barUnderCursor)
+                    let newScrollOffset = newTimelineX - mouseXRelativeToTimeline
+                    scrollView.contentView.setBoundsOrigin(NSPoint(x: max(0, newScrollOffset), y: scrollView.contentView.bounds.origin.y))
+                    scrollView.reflectScrolledClipView(scrollView.contentView)
                 } else {
-                    timelineViewModel.zoomOut()
+                    if zoomingIn { timelineViewModel.zoomIn() } else { timelineViewModel.zoomOut() }
                 }
             }
         )
@@ -739,6 +772,21 @@ public struct MainContentView: View {
                 .padding(4)
                 .frame(width: timelineViewModel.trackHeaderWidth)
             Spacer()
+        }
+        .onAppear {
+            // Delay to allow SwiftUI to create the backing NSScrollViews
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                scrollSynchronizer.setup(expectedWidth: timelineViewModel.totalWidth)
+            }
+        }
+        .onDisappear {
+            scrollSynchronizer.teardown()
+        }
+        .onChange(of: timelineViewModel.totalWidth) {
+            // Re-discover scroll views after zoom changes the content width
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                scrollSynchronizer.setup(expectedWidth: timelineViewModel.totalWidth)
+            }
         }
     }
 
@@ -1171,6 +1219,40 @@ public struct MainContentView: View {
         return .handled
     }
 
+    private func handleSplitAtPlayhead() {
+        // If a range selection exists, split at the range boundaries instead of the playhead
+        if selectionState.rangeSelection != nil {
+            handleSplitAtRange()
+            return
+        }
+        guard let containerID = selectionState.selectedContainerID,
+              let song = currentSong else { return }
+        let splitBar = Int(timelineViewModel.playheadBar.rounded())
+        for track in song.tracks {
+            if track.containers.contains(where: { $0.id == containerID }) {
+                projectViewModel.splitContainer(trackID: track.id, containerID: containerID, atBar: splitBar)
+                return
+            }
+        }
+    }
+
+    private func handleSplitAtRange() {
+        guard let range = selectionState.rangeSelection,
+              let song = currentSong else { return }
+        for track in song.tracks {
+            if track.containers.contains(where: { $0.id == range.containerID }) {
+                projectViewModel.splitContainerAtRange(
+                    trackID: track.id,
+                    containerID: range.containerID,
+                    rangeStart: range.startBar,
+                    rangeEnd: range.endBar
+                )
+                selectionState.rangeSelection = nil
+                return
+            }
+        }
+    }
+
     private func handleDuplicate() {
         // Prefer duplicating selected container first
         if let containerID = selectionState.selectedContainerID, let song = currentSong {
@@ -1567,7 +1649,7 @@ struct SelectionBasedInspectorView: View {
 /// Uses a local event monitor to intercept Cmd+scroll events for zoom
 /// without blocking normal scroll, scrollbar dragging, or shift+scroll.
 private struct ScrollWheelHandlerModifier: ViewModifier {
-    let onCmdScroll: (CGFloat) -> Void
+    let onCmdScroll: (_ delta: CGFloat, _ mouseXInWindow: CGFloat) -> Void
 
     @State private var monitor: AnyObject?
 
@@ -1578,7 +1660,8 @@ private struct ScrollWheelHandlerModifier: ViewModifier {
                     if event.modifierFlags.contains(.command) {
                         let delta = event.scrollingDeltaY
                         if delta != 0 {
-                            onCmdScroll(delta)
+                            let mouseX = event.locationInWindow.x
+                            onCmdScroll(delta, mouseX)
                         }
                         return nil // consume the event
                     }
@@ -1594,7 +1677,99 @@ private struct ScrollWheelHandlerModifier: ViewModifier {
 }
 
 extension View {
-    func scrollWheelHandler(onCmdScroll: @escaping (CGFloat) -> Void) -> some View {
+    func scrollWheelHandler(onCmdScroll: @escaping (_ delta: CGFloat, _ mouseXInWindow: CGFloat) -> Void) -> some View {
         modifier(ScrollWheelHandlerModifier(onCmdScroll: onCmdScroll))
+    }
+}
+
+/// Finds the NSScrollView backing the timeline's horizontal scroll.
+/// Walks the NSApp key window's view hierarchy looking for the timeline scroll view.
+private func findTimelineScrollView() -> NSScrollView? {
+    guard let window = NSApp.keyWindow else { return nil }
+    return findScrollView(in: window.contentView)
+}
+
+private func findScrollView(in view: NSView?) -> NSScrollView? {
+    guard let view else { return nil }
+    // Look for NSScrollView whose document view is wide (the timeline)
+    if let scrollView = view as? NSScrollView,
+       let documentWidth = scrollView.documentView?.frame.width,
+       documentWidth > 1000,
+       scrollView.hasHorizontalScroller || scrollView.horizontalScroller != nil {
+        return scrollView
+    }
+    for subview in view.subviews {
+        if let found = findScrollView(in: subview) {
+            return found
+        }
+    }
+    return nil
+}
+
+// MARK: - Horizontal Scroll Synchronization
+
+/// Synchronizes all horizontal scroll views whose document width matches
+/// the timeline's total width. This keeps the ruler, section lane, track
+/// timeline, and master track scrolling in unison.
+final class HorizontalScrollSynchronizer {
+    private var observers: [NSObjectProtocol] = []
+    private var scrollViews: [NSScrollView] = []
+    private var isSyncing = false
+
+    func setup(expectedWidth: CGFloat) {
+        teardown()
+        guard let window = NSApp.keyWindow else { return }
+        scrollViews = Self.findTimelineScrollViews(in: window.contentView, expectedWidth: expectedWidth)
+        guard scrollViews.count > 1 else { return }
+
+        for sv in scrollViews {
+            sv.contentView.postsBoundsChangedNotifications = true
+            let observer = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: sv.contentView,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self, !self.isSyncing,
+                      let clipView = notification.object as? NSClipView,
+                      let source = clipView.enclosingScrollView else { return }
+                self.syncFrom(source)
+            }
+            observers.append(observer)
+        }
+    }
+
+    func teardown() {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observers.removeAll()
+        scrollViews.removeAll()
+    }
+
+    private func syncFrom(_ source: NSScrollView) {
+        isSyncing = true
+        let offsetX = source.contentView.bounds.origin.x
+        for sv in scrollViews where sv !== source {
+            if abs(sv.contentView.bounds.origin.x - offsetX) > 0.5 {
+                sv.contentView.setBoundsOrigin(NSPoint(x: offsetX, y: sv.contentView.bounds.origin.y))
+                sv.reflectScrolledClipView(sv.contentView)
+            }
+        }
+        isSyncing = false
+    }
+
+    /// Finds all horizontal NSScrollViews whose document width is close to expectedWidth.
+    private static func findTimelineScrollViews(in view: NSView?, expectedWidth: CGFloat) -> [NSScrollView] {
+        guard let view else { return [] }
+        var result: [NSScrollView] = []
+        if let sv = view as? NSScrollView,
+           let docWidth = sv.documentView?.frame.width,
+           abs(docWidth - expectedWidth) < 20 {
+            result.append(sv)
+        }
+        for subview in view.subviews {
+            result.append(contentsOf: findTimelineScrollViews(in: subview, expectedWidth: expectedWidth))
+        }
+        return result
     }
 }
