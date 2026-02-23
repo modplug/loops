@@ -5,6 +5,7 @@ import SwiftUI
 public struct FaderView: View {
     @Binding var value: Float
     let range: ClosedRange<Float>
+    var onEditingEnd: (() -> Void)?
 
     @State private var isDragging = false
 
@@ -13,9 +14,10 @@ public struct FaderView: View {
     private let faderWidth: CGFloat = 44
     private let faderHeight: CGFloat = 100
 
-    public init(value: Binding<Float>, range: ClosedRange<Float> = 0.0...2.0) {
+    public init(value: Binding<Float>, range: ClosedRange<Float> = 0.0...2.0, onEditingEnd: (() -> Void)? = nil) {
         self._value = value
         self.range = range
+        self.onEditingEnd = onEditingEnd
     }
 
     public var body: some View {
@@ -70,6 +72,7 @@ public struct FaderView: View {
                         }
                         .onEnded { _ in
                             isDragging = false
+                            onEditingEnd?()
                         }
                 )
             }

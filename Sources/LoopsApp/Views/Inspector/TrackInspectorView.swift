@@ -23,7 +23,9 @@ public struct TrackInspectorView: View {
     var onSetOutputPort: ((String?) -> Void)?
     var onSetMIDIInput: ((String?, UInt8?) -> Void)?
 
-    // Mix callbacks
+    // Mix callbacks — live (during drag, audio-only) and commit (on gesture end, persists to model)
+    var onVolumeLive: ((Float) -> Void)?
+    var onPanLive: ((Float) -> Void)?
     var onSetVolume: ((Float) -> Void)?
     var onSetPan: ((Float) -> Void)?
 
@@ -236,25 +238,42 @@ public struct TrackInspectorView: View {
 
     // MARK: - Mix Section
 
+    @State private var isEditingVolume = false
+    @State private var isEditingPan = false
+
     @ViewBuilder
     private var mixSection: some View {
         Section("Mix") {
             HStack {
                 Text("Volume")
-                Slider(value: $volumeValue, in: 0...2.0, step: 0.01)
-                    .onChange(of: volumeValue) { _, newValue in
-                        onSetVolume?(newValue)
+                Slider(value: $volumeValue, in: 0...2.0, step: 0.01) { editing in
+                    isEditingVolume = editing
+                    if !editing {
+                        onSetVolume?(volumeValue)
                     }
+                }
+                .onChange(of: volumeValue) { _, newValue in
+                    if isEditingVolume {
+                        onVolumeLive?(newValue)
+                    }
+                }
                 Text(volumeDisplayString(volumeValue))
                     .font(.caption.monospacedDigit())
                     .frame(width: 45, alignment: .trailing)
             }
             HStack {
                 Text("Pan")
-                Slider(value: $panValue, in: -1.0...1.0, step: 0.01)
-                    .onChange(of: panValue) { _, newValue in
-                        onSetPan?(newValue)
+                Slider(value: $panValue, in: -1.0...1.0, step: 0.01) { editing in
+                    isEditingPan = editing
+                    if !editing {
+                        onSetPan?(panValue)
                     }
+                }
+                .onChange(of: panValue) { _, newValue in
+                    if isEditingPan {
+                        onPanLive?(newValue)
+                    }
+                }
                 Text(panDisplayString(panValue))
                     .font(.caption.monospacedDigit())
                     .frame(width: 35, alignment: .trailing)

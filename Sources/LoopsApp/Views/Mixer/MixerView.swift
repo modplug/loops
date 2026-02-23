@@ -8,6 +8,8 @@ public struct MixerView: View {
     var selectedTrackID: ID<Track>?
     var onVolumeChange: ((ID<Track>, Float) -> Void)?
     var onPanChange: ((ID<Track>, Float) -> Void)?
+    var onVolumeCommit: ((ID<Track>, Float) -> Void)?
+    var onPanCommit: ((ID<Track>, Float) -> Void)?
     var onMuteToggle: ((ID<Track>) -> Void)?
     var onSoloToggle: ((ID<Track>) -> Void)?
     var onRecordArmToggle: ((ID<Track>, Bool) -> Void)?
@@ -20,6 +22,8 @@ public struct MixerView: View {
         selectedTrackID: ID<Track>? = nil,
         onVolumeChange: ((ID<Track>, Float) -> Void)? = nil,
         onPanChange: ((ID<Track>, Float) -> Void)? = nil,
+        onVolumeCommit: ((ID<Track>, Float) -> Void)? = nil,
+        onPanCommit: ((ID<Track>, Float) -> Void)? = nil,
         onMuteToggle: ((ID<Track>) -> Void)? = nil,
         onSoloToggle: ((ID<Track>) -> Void)? = nil,
         onRecordArmToggle: ((ID<Track>, Bool) -> Void)? = nil,
@@ -31,6 +35,8 @@ public struct MixerView: View {
         self.selectedTrackID = selectedTrackID
         self.onVolumeChange = onVolumeChange
         self.onPanChange = onPanChange
+        self.onVolumeCommit = onVolumeCommit
+        self.onPanCommit = onPanCommit
         self.onMuteToggle = onMuteToggle
         self.onSoloToggle = onSoloToggle
         self.onRecordArmToggle = onRecordArmToggle
@@ -85,6 +91,12 @@ public struct MixerView: View {
             },
             onPanChange: { newPan in
                 onPanChange?(track.id, newPan)
+            },
+            onVolumeCommit: { newVolume in
+                onVolumeCommit?(track.id, newVolume)
+            },
+            onPanCommit: { newPan in
+                onPanCommit?(track.id, newPan)
             },
             onMuteToggle: {
                 onMuteToggle?(track.id)

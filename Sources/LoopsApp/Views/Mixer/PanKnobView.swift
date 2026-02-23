@@ -4,6 +4,7 @@ import SwiftUI
 /// Minimum 44pt wide for reliable drag targeting.
 public struct PanKnobView: View {
     @Binding var value: Float
+    var onEditingEnd: (() -> Void)?
 
     @State private var isDragging = false
 
@@ -11,8 +12,9 @@ public struct PanKnobView: View {
     private let knobHeight: CGFloat = 22
     private let thumbWidth: CGFloat = 10
 
-    public init(value: Binding<Float>) {
+    public init(value: Binding<Float>, onEditingEnd: (() -> Void)? = nil) {
         self._value = value
+        self.onEditingEnd = onEditingEnd
     }
 
     public var body: some View {
@@ -68,6 +70,7 @@ public struct PanKnobView: View {
                         }
                         .onEnded { _ in
                             isDragging = false
+                            onEditingEnd?()
                         }
                 )
             }

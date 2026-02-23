@@ -8,6 +8,8 @@ public struct MixerStripView: View {
     var isTrackSelected: Bool
     var onVolumeChange: ((Float) -> Void)?
     var onPanChange: ((Float) -> Void)?
+    var onVolumeCommit: ((Float) -> Void)?
+    var onPanCommit: ((Float) -> Void)?
     var onMuteToggle: (() -> Void)?
     var onSoloToggle: (() -> Void)?
     var onRecordArmToggle: (() -> Void)?
@@ -23,6 +25,8 @@ public struct MixerStripView: View {
         isTrackSelected: Bool = false,
         onVolumeChange: ((Float) -> Void)? = nil,
         onPanChange: ((Float) -> Void)? = nil,
+        onVolumeCommit: ((Float) -> Void)? = nil,
+        onPanCommit: ((Float) -> Void)? = nil,
         onMuteToggle: (() -> Void)? = nil,
         onSoloToggle: (() -> Void)? = nil,
         onRecordArmToggle: (() -> Void)? = nil,
@@ -34,6 +38,8 @@ public struct MixerStripView: View {
         self.isTrackSelected = isTrackSelected
         self.onVolumeChange = onVolumeChange
         self.onPanChange = onPanChange
+        self.onVolumeCommit = onVolumeCommit
+        self.onPanCommit = onPanCommit
         self.onMuteToggle = onMuteToggle
         self.onSoloToggle = onSoloToggle
         self.onRecordArmToggle = onRecordArmToggle
@@ -60,14 +66,18 @@ public struct MixerStripView: View {
                 .foregroundStyle(.secondary)
 
             // Pan knob
-            PanKnobView(value: $pan)
+            PanKnobView(value: $pan, onEditingEnd: {
+                onPanCommit?(pan)
+            })
                 .onChange(of: pan) { _, newValue in
                     onPanChange?(newValue)
                 }
 
             // Fader + meter
             HStack(spacing: 4) {
-                FaderView(value: $volume)
+                FaderView(value: $volume, onEditingEnd: {
+                    onVolumeCommit?(volume)
+                })
                     .onChange(of: volume) { _, newValue in
                         onVolumeChange?(newValue)
                     }
