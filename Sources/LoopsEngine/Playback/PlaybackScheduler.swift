@@ -375,6 +375,19 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         guard !Task.isCancelled else { return }
 
+        // Install host musical context blocks on all preloaded AUs so
+        // tempo-synced plugins can query BPM, time signature, and beat position.
+        for unit in preloadedMasterEffects {
+            installMusicalContext(on: unit)
+        }
+        for pt in preloadedTracks {
+            for unit in pt.effects { installMusicalContext(on: unit) }
+            for pc in pt.containers {
+                if let inst = pc.instrument { installMusicalContext(on: inst) }
+                for unit in pc.effects { installMusicalContext(on: unit) }
+            }
+        }
+
         // ── Phase 2: Stop engine, rebuild graph synchronously, restart ──
         // engine.connect() silently fails on a running engine, so we must
         // stop it for the attach/connect pass. This phase is fast (no awaits).
@@ -740,6 +753,18 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         guard !Task.isCancelled else { return [] }
 
+        // Install host musical context blocks on all preloaded AUs
+        for unit in preloadedMasterEffects {
+            installMusicalContext(on: unit)
+        }
+        for pt in preloadedChangedTracks {
+            for unit in pt.effects { installMusicalContext(on: unit) }
+            for pc in pt.containers {
+                if let inst = pc.instrument { installMusicalContext(on: inst) }
+                for unit in pc.effects { installMusicalContext(on: unit) }
+            }
+        }
+
         // ── Phase 2: Stop engine, selectively rebuild graph, restart ──
 
         print("[PLAY] prepareIncremental: \(changedTrackIDs.count) changed, \(removedTrackIDs.count) removed, master=\(masterChanged)")
@@ -1060,6 +1085,38 @@ public final class PlaybackScheduler: @unchecked Sendable {
         return startBar + elapsed / secondsPerBar
     }
 
+    /// Updates tempo and/or time signature during live playback without rebuilding
+    /// the audio graph. Adjusts the playback start reference so that the current
+    /// beat position remains continuous across the tempo change. The musical context
+    /// block will immediately reflect the new values on its next render-thread poll.
+    public func updateTempo(bpm: Double, timeSignature: TimeSignature) {
+        lock.lock()
+        let oldBPM = currentBPM
+        let oldTS = currentTimeSignature
+        let oldStartTime = playbackStartTime
+        let oldStartBar = playbackStartBar
+
+        // Calculate current bar position under the old tempo
+        let currentBar: Double
+        if let startTime = oldStartTime {
+            let elapsed = Date().timeIntervalSince(startTime)
+            let secondsPerBeat = 60.0 / oldBPM
+            let secondsPerBar = Double(oldTS.beatsPerBar) * secondsPerBeat
+            currentBar = oldStartBar + elapsed / secondsPerBar
+        } else {
+            currentBar = oldStartBar
+        }
+
+        // Re-anchor: new start reference = now at the current bar, with new tempo
+        currentBPM = bpm
+        currentTimeSignature = timeSignature
+        if oldStartTime != nil {
+            playbackStartTime = Date()
+            playbackStartBar = currentBar
+        }
+        lock.unlock()
+    }
+
     /// Schedules and starts playback from the given bar position.
     public func play(
         song: Song,
@@ -1201,6 +1258,83 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private func safeDisconnect(_ node: AVAudioNode) {
         var error: NSError?
         ObjCTryCatch({ self.engine.disconnectNodeOutput(node) }, &error)
+    }
+
+    /// Installs host musical context and transport state blocks on an Audio Unit
+    /// so tempo-synced plugins (e.g. OneKnob Pumper, delay with tempo sync) can
+    /// query the current BPM, time signature, beat position, and transport state.
+    private func installMusicalContext(on audioUnit: AVAudioUnit) {
+        let au = audioUnit.auAudioUnit
+
+        au.musicalContextBlock = { [weak self] tempo, timeSignatureNumerator, timeSignatureDenominator, currentBeatPosition, sampleOffsetToNextBeat, currentMeasureDownbeatPosition in
+            guard let self else { return false }
+            self.lock.lock()
+            let bpm = self.currentBPM
+            let ts = self.currentTimeSignature
+            let startTime = self.playbackStartTime
+            let startBar = self.playbackStartBar
+            let sampleRate = self.currentSampleRate
+            self.lock.unlock()
+
+            tempo?.pointee = bpm
+            timeSignatureNumerator?.pointee = Double(ts.beatsPerBar)
+            timeSignatureDenominator?.pointee = Int(ts.beatUnit)
+
+            // Calculate current beat position from wall-clock elapsed time
+            let secondsPerBeat = 60.0 / bpm
+            if let startTime {
+                let elapsed = Date().timeIntervalSince(startTime)
+                let beatsElapsed = elapsed / secondsPerBeat
+                let startBeat = (startBar - 1.0) * Double(ts.beatsPerBar)
+                let currentBeat = startBeat + beatsElapsed
+                currentBeatPosition?.pointee = currentBeat
+
+                // Downbeat of current measure
+                let beatsPerBar = Double(ts.beatsPerBar)
+                let currentMeasureBeat = floor(currentBeat / beatsPerBar) * beatsPerBar
+                currentMeasureDownbeatPosition?.pointee = currentMeasureBeat
+
+                // Samples to next beat boundary
+                let beatFraction = currentBeat - floor(currentBeat)
+                let secondsToNextBeat = (1.0 - beatFraction) * secondsPerBeat
+                sampleOffsetToNextBeat?.pointee = Int(secondsToNextBeat * sampleRate)
+            } else {
+                currentBeatPosition?.pointee = 0
+                currentMeasureDownbeatPosition?.pointee = 0
+                sampleOffsetToNextBeat?.pointee = 0
+            }
+
+            return true
+        }
+
+        au.transportStateBlock = { [weak self] transportStateFlags, currentSamplePosition, cycleStartBeatPosition, cycleEndBeatPosition in
+            guard let self else { return false }
+            self.lock.lock()
+            let isPlaying = self.playbackStartTime != nil
+            let startTime = self.playbackStartTime
+            let sampleRate = self.currentSampleRate
+            self.lock.unlock()
+
+            var flags: AUHostTransportStateFlags = []
+            if isPlaying {
+                flags.insert(.moving)
+            }
+            flags.insert(.changed)
+            transportStateFlags?.pointee = flags
+
+            if let startTime {
+                let elapsed = Date().timeIntervalSince(startTime)
+                currentSamplePosition?.pointee = elapsed * sampleRate
+            } else {
+                currentSamplePosition?.pointee = 0
+            }
+
+            // No looping support yet
+            cycleStartBeatPosition?.pointee = 0
+            cycleEndBeatPosition?.pointee = 0
+
+            return true
+        }
     }
 
     /// Cleans up all nodes and audio files.

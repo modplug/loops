@@ -580,6 +580,226 @@ struct TrackInspectorTests {
         #expect(header.availableMIDIDevices.count == 1)
     }
 
+    // MARK: - onPlaybackGraphChanged Callback
+
+    @Test("onPlaybackGraphChanged fires on addTrackEffect")
+    @MainActor
+    func onPlaybackGraphChangedFiresOnAddEffect() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        var callbackCount = 0
+        vm.onPlaybackGraphChanged = { callbackCount += 1 }
+
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "Delay"))
+        #expect(callbackCount == 1)
+    }
+
+    @Test("onPlaybackGraphChanged fires on removeTrackEffect")
+    @MainActor
+    func onPlaybackGraphChangedFiresOnRemoveEffect() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "Delay"))
+        let effectID = vm.project.songs[0].tracks[0].insertEffects[0].id
+
+        var callbackCount = 0
+        vm.onPlaybackGraphChanged = { callbackCount += 1 }
+
+        vm.removeTrackEffect(trackID: trackID, effectID: effectID)
+        #expect(callbackCount == 1)
+    }
+
+    @Test("onPlaybackGraphChanged fires on reorderTrackEffects")
+    @MainActor
+    func onPlaybackGraphChangedFiresOnReorder() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "A"))
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "B"))
+
+        var callbackCount = 0
+        vm.onPlaybackGraphChanged = { callbackCount += 1 }
+
+        vm.reorderTrackEffects(trackID: trackID, from: IndexSet(integer: 0), to: 2)
+        #expect(callbackCount == 1)
+    }
+
+    @Test("onPlaybackGraphChanged fires on toggleTrackEffectBypass")
+    @MainActor
+    func onPlaybackGraphChangedFiresOnToggleBypass() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "Delay"))
+        let effectID = vm.project.songs[0].tracks[0].insertEffects[0].id
+
+        var callbackCount = 0
+        vm.onPlaybackGraphChanged = { callbackCount += 1 }
+
+        vm.toggleTrackEffectBypass(trackID: trackID, effectID: effectID)
+        #expect(callbackCount == 1)
+    }
+
+    @Test("onPlaybackGraphChanged fires on toggleTrackEffectChainBypass")
+    @MainActor
+    func onPlaybackGraphChangedFiresOnToggleChainBypass() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        var callbackCount = 0
+        vm.onPlaybackGraphChanged = { callbackCount += 1 }
+
+        vm.toggleTrackEffectChainBypass(trackID: trackID)
+        #expect(callbackCount == 1)
+    }
+
+    @Test("onPlaybackGraphChanged does NOT fire on updateTrackEffectPreset")
+    @MainActor
+    func onPlaybackGraphChangedDoesNotFireOnPresetUpdate() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        vm.addTrackEffect(trackID: trackID, effect: makeEffect(name: "Delay"))
+        let effectID = vm.project.songs[0].tracks[0].insertEffects[0].id
+
+        var callbackCount = 0
+        vm.onPlaybackGraphChanged = { callbackCount += 1 }
+
+        vm.updateTrackEffectPreset(trackID: trackID, effectID: effectID, presetData: Data([1, 2, 3]))
+        #expect(callbackCount == 0, "Preset updates should not trigger graph rebuild")
+    }
+
+    @Test("onPlaybackGraphChanged fires on addContainerEffect")
+    @MainActor
+    func onPlaybackGraphChangedFiresOnAddContainerEffect() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        var callbackCount = 0
+        vm.onPlaybackGraphChanged = { callbackCount += 1 }
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "FX", orderIndex: 0))
+        #expect(callbackCount == 1)
+    }
+
+    @Test("onPlaybackGraphChanged fires on removeContainerEffect")
+    @MainActor
+    func onPlaybackGraphChangedFiresOnRemoveContainerEffect() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "FX", orderIndex: 0))
+        let effectID = vm.project.songs[0].tracks[0].containers[0].insertEffects[0].id
+
+        var callbackCount = 0
+        vm.onPlaybackGraphChanged = { callbackCount += 1 }
+
+        vm.removeContainerEffect(containerID: containerID, effectID: effectID)
+        #expect(callbackCount == 1)
+    }
+
+    // MARK: - Active Index Mapping (Visual → Scheduler)
+
+    @Test("Active index computation skips bypassed effects")
+    func activeIndexSkipsBypassedEffects() {
+        // Simulates the exact computation used in ContainerInspector,
+        // ContainerDetailEditor, and TrackInspectorView:
+        //   let activeIndex = sortedEffects[0..<index].filter { !$0.isBypassed }.count
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effects = [
+            InsertEffect(component: comp, displayName: "A", orderIndex: 0),
+            InsertEffect(component: comp, displayName: "B", isBypassed: true, orderIndex: 1),
+            InsertEffect(component: comp, displayName: "C", orderIndex: 2),
+        ]
+
+        func activeIndex(at visualIndex: Int) -> Int {
+            effects[0..<visualIndex].filter { !$0.isBypassed }.count
+        }
+
+        // A (active) at visual index 0 → scheduler index 0
+        #expect(activeIndex(at: 0) == 0)
+        // B (bypassed) at visual index 1 → scheduler index 1 (A is before it)
+        #expect(activeIndex(at: 1) == 1)
+        // C (active) at visual index 2 → scheduler index 1 (only A is active before it)
+        #expect(activeIndex(at: 2) == 1)
+    }
+
+    @Test("Active index when all effects are bypassed")
+    func activeIndexAllBypassed() {
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effects = [
+            InsertEffect(component: comp, displayName: "A", isBypassed: true, orderIndex: 0),
+            InsertEffect(component: comp, displayName: "B", isBypassed: true, orderIndex: 1),
+        ]
+
+        func activeIndex(at visualIndex: Int) -> Int {
+            effects[0..<visualIndex].filter { !$0.isBypassed }.count
+        }
+
+        #expect(activeIndex(at: 0) == 0)
+        #expect(activeIndex(at: 1) == 0)
+    }
+
+    @Test("Active index when no effects are bypassed")
+    func activeIndexNoneBypassed() {
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effects = [
+            InsertEffect(component: comp, displayName: "A", orderIndex: 0),
+            InsertEffect(component: comp, displayName: "B", orderIndex: 1),
+            InsertEffect(component: comp, displayName: "C", orderIndex: 2),
+        ]
+
+        func activeIndex(at visualIndex: Int) -> Int {
+            effects[0..<visualIndex].filter { !$0.isBypassed }.count
+        }
+
+        // Visual index == scheduler index when nothing is bypassed
+        #expect(activeIndex(at: 0) == 0)
+        #expect(activeIndex(at: 1) == 1)
+        #expect(activeIndex(at: 2) == 2)
+    }
+
+    @Test("Active index with first effect bypassed")
+    func activeIndexFirstBypassed() {
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effects = [
+            InsertEffect(component: comp, displayName: "A", isBypassed: true, orderIndex: 0),
+            InsertEffect(component: comp, displayName: "B", orderIndex: 1),
+            InsertEffect(component: comp, displayName: "C", orderIndex: 2),
+        ]
+
+        func activeIndex(at visualIndex: Int) -> Int {
+            effects[0..<visualIndex].filter { !$0.isBypassed }.count
+        }
+
+        // A (bypassed) at visual 0 → scheduler 0 (no active before it)
+        #expect(activeIndex(at: 0) == 0)
+        // B (active) at visual 1 → scheduler 0 (no active before it)
+        #expect(activeIndex(at: 1) == 0)
+        // C (active) at visual 2 → scheduler 1 (B is the only active before it)
+        #expect(activeIndex(at: 2) == 1)
+    }
+
     @Test("MIDI device and channel change preserves other field")
     @MainActor
     func midiDeviceChangePreservesChannel() {

@@ -95,6 +95,8 @@ public struct LoopsRootView: View {
         // rather than .onChange to avoid re-evaluating this view's body at 60fps.
         .onChange(of: viewModel.currentSong?.tempo.bpm) { _, newValue in
             transportViewModel.bpm = newValue ?? 120.0
+            // Push updated tempo to scheduler so AU plugins see the change
+            transportViewModel.syncTempoToScheduler()
         }
         .onChange(of: viewModel.currentSong?.countInBars) { _, newValue in
             transportViewModel.countInBars = newValue ?? 0
@@ -106,6 +108,8 @@ public struct LoopsRootView: View {
         }
         .onChange(of: viewModel.currentSong?.timeSignature) { _, newValue in
             transportViewModel.timeSignature = newValue ?? TimeSignature()
+            // Push updated time signature to scheduler so AU plugins see the change
+            transportViewModel.syncTempoToScheduler()
         }
         .onChange(of: viewModel.currentSong?.metronomeConfig) { _, newValue in
             let config = newValue ?? MetronomeConfig()

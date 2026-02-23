@@ -280,4 +280,92 @@ struct PluginWindowTests {
 
         #expect(savedPreset != nil)
     }
+
+    // MARK: - invalidateAll Tests
+
+    @Test("invalidateAll clears window cache so window(for:) returns nil")
+    @MainActor
+    func invalidateAllClearsCache() async throws {
+        let manager = PluginWindowManager()
+        manager.open(
+            component: Self.delayComponent,
+            displayName: "AUDelay",
+            presetData: nil,
+            onPresetChanged: nil
+        )
+
+        try await Task.sleep(for: .seconds(1))
+
+        let before = manager.window(for: Self.delayComponent)
+        #expect(before != nil)
+
+        manager.invalidateAll()
+
+        let after = manager.window(for: Self.delayComponent)
+        #expect(after == nil, "window(for:) must return nil after invalidateAll")
+    }
+
+    @Test("invalidateAll allows opening a new window for same component")
+    @MainActor
+    func invalidateAllAllowsNewWindow() async throws {
+        let manager = PluginWindowManager()
+        manager.open(
+            component: Self.delayComponent,
+            displayName: "AUDelay",
+            presetData: nil,
+            onPresetChanged: nil
+        )
+
+        try await Task.sleep(for: .seconds(1))
+
+        let first = manager.window(for: Self.delayComponent)
+        #expect(first != nil)
+
+        manager.invalidateAll()
+
+        // Open a new window for the same component
+        manager.open(
+            component: Self.delayComponent,
+            displayName: "AUDelay v2",
+            presetData: nil,
+            onPresetChanged: nil
+        )
+
+        try await Task.sleep(for: .seconds(1))
+
+        let second = manager.window(for: Self.delayComponent)
+        #expect(second != nil)
+        // Must be a different window instance (old one was invalidated)
+        #expect(first !== second)
+
+        second?.close()
+    }
+
+    @Test("invalidateAll with multiple windows clears all")
+    @MainActor
+    func invalidateAllClearsMultipleWindows() async throws {
+        let manager = PluginWindowManager()
+        manager.open(
+            component: Self.delayComponent,
+            displayName: "AUDelay",
+            presetData: nil,
+            onPresetChanged: nil
+        )
+        manager.open(
+            component: Self.reverbComponent,
+            displayName: "AUReverb2",
+            presetData: nil,
+            onPresetChanged: nil
+        )
+
+        try await Task.sleep(for: .seconds(1))
+
+        #expect(manager.window(for: Self.delayComponent) != nil)
+        #expect(manager.window(for: Self.reverbComponent) != nil)
+
+        manager.invalidateAll()
+
+        #expect(manager.window(for: Self.delayComponent) == nil)
+        #expect(manager.window(for: Self.reverbComponent) == nil)
+    }
 }

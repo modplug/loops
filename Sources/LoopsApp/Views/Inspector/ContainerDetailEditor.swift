@@ -168,11 +168,13 @@ struct ContainerDetailEditor: View {
                                 .foregroundStyle(effect.isBypassed ? .secondary : .primary)
                             Spacer()
                             Button {
+                                let activeIndex = sortedEffects[0..<index].filter { !$0.isBypassed }.count
+                                let liveAU = effect.isBypassed ? nil : liveEffectUnit?(activeIndex)
                                 PluginWindowManager.shared.open(
                                     component: effect.component,
                                     displayName: effect.displayName,
                                     presetData: effect.presetData,
-                                    liveAudioUnit: liveEffectUnit?(index),
+                                    liveAudioUnit: liveAU,
                                     onPresetChanged: { data in
                                         onUpdateEffectPreset?(effect.id, data)
                                     }

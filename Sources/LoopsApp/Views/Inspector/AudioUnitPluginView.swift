@@ -48,11 +48,13 @@ final class PluginWindowManager {
         window.makeKeyAndOrderFront(nil)
     }
 
-    /// Removes all cached windows. Call when prepare() invalidates AU instances
+    /// Destroys all cached windows. Call when prepare() invalidates AU instances
     /// so stale windows pointing to deallocated AUs are discarded.
+    /// Uses orderOut + removeAll instead of close() because close() is overridden
+    /// to just hide the window (for fast reopen in the normal case).
     func invalidateAll() {
         for (_, window) in windows {
-            window.close()
+            window.orderOut(nil)
         }
         windows.removeAll()
     }

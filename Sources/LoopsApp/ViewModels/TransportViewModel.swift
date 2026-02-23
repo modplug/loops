@@ -387,13 +387,22 @@ public final class TransportViewModel {
     public func updateBPM(_ newBPM: Double) {
         bpm = min(max(newBPM, 20.0), 300.0)
         transport.bpm = bpm
-        // Live-update metronome BPM if playing
+        // Live-update metronome and scheduler tempo if playing
         if isPlaying {
             engineManager?.metronome?.update(
                 bpm: bpm,
                 beatsPerBar: timeSignature.beatsPerBar,
                 sampleRate: engineManager?.currentSampleRate ?? 44100.0
             )
+            playbackScheduler?.updateTempo(bpm: bpm, timeSignature: timeSignature)
+        }
+    }
+
+    /// Pushes the current BPM and time signature to the scheduler so that
+    /// AU musical context blocks reflect the latest values during playback.
+    public func syncTempoToScheduler() {
+        if isPlaying {
+            playbackScheduler?.updateTempo(bpm: bpm, timeSignature: timeSignature)
         }
     }
 

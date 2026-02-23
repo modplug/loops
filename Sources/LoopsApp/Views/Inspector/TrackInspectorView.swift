@@ -312,7 +312,7 @@ public struct TrackInspectorView: View {
     @ViewBuilder
     private func effectRows(_ sortedEffects: [InsertEffect]) -> some View {
         ForEach(Array(sortedEffects.enumerated()), id: \.element.id) { effectIndex, effect in
-            effectRow(effect: effect, effectIndex: effectIndex)
+            effectRow(effect: effect, effectIndex: effectIndex, sortedEffects: sortedEffects)
                 .draggable(effect.id.rawValue.uuidString)
                 .dropDestination(for: String.self) { items, _ in
                     guard let draggedID = items.first.flatMap(UUID.init).map({ ID<InsertEffect>(rawValue: $0) }),
@@ -326,7 +326,7 @@ public struct TrackInspectorView: View {
     }
 
     @ViewBuilder
-    private func effectRow(effect: InsertEffect, effectIndex: Int) -> some View {
+    private func effectRow(effect: InsertEffect, effectIndex: Int, sortedEffects: [InsertEffect]) -> some View {
         let effectPath = EffectPath(trackID: track.id, effectIndex: effectIndex, parameterAddress: 0)
         let hasMIDIMapping = midiParameterMappings.contains { $0.targetPath.trackID == track.id && $0.targetPath.containerID == nil && $0.targetPath.effectIndex == effectIndex }
         HStack(spacing: 6) {
@@ -353,7 +353,7 @@ public struct TrackInspectorView: View {
                     .help("MIDI mapped")
             }
             Spacer()
-            effectRowButtons(effect: effect, effectIndex: effectIndex)
+            effectRowButtons(effect: effect, effectIndex: effectIndex, sortedEffects: sortedEffects)
         }
         .contextMenu {
             if hasMIDIMapping {
@@ -370,13 +370,16 @@ public struct TrackInspectorView: View {
     }
 
     @ViewBuilder
-    private func effectRowButtons(effect: InsertEffect, effectIndex: Int) -> some View {
+    private func effectRowButtons(effect: InsertEffect, effectIndex: Int, sortedEffects: [InsertEffect]) -> some View {
         Button {
+            // Map visual index to scheduler index (which skips bypassed effects)
+            let activeIndex = sortedEffects[0..<effectIndex].filter { !$0.isBypassed }.count
+            let liveAU = effect.isBypassed ? nil : liveTrackEffectUnit?(activeIndex)
             PluginWindowManager.shared.open(
                 component: effect.component,
                 displayName: effect.displayName,
                 presetData: effect.presetData,
-                liveAudioUnit: liveTrackEffectUnit?(effectIndex),
+                liveAudioUnit: liveAU,
                 onPresetChanged: { data in
                     onUpdateEffectPreset?(effect.id, data)
                 }
