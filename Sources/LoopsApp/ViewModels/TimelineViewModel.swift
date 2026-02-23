@@ -41,6 +41,15 @@ public final class TimelineViewModel {
     /// Tracks selected for range copy filtering. Empty means all tracks included.
     public var selectedTrackIDs: Set<ID<Track>> = []
 
+    /// Cursor x-coordinate in timeline space. nil when mouse is outside the timeline.
+    public var cursorX: CGFloat?
+
+    /// Cursor position in bars (1-based), derived from cursorX.
+    public var cursorBar: Double? {
+        guard let x = cursorX else { return nil }
+        return bar(forXPosition: x)
+    }
+
     /// Default track header column width.
     public static let defaultHeaderWidth: CGFloat = 160
 
@@ -51,10 +60,11 @@ public final class TimelineViewModel {
     public static let maxHeaderWidth: CGFloat = 400
 
     /// Minimum pixels per bar (fully zoomed out).
-    public static let minPixelsPerBar: CGFloat = 30.0
+    public static let minPixelsPerBar: CGFloat = 8.0
 
     /// Maximum pixels per bar (fully zoomed in).
-    public static let maxPixelsPerBar: CGFloat = 500.0
+    /// 2400 ppb @ 4/4 = 600 px/beat = ~150 px per sixteenth note for drum transient editing.
+    public static let maxPixelsPerBar: CGFloat = 2400.0
 
     /// Zoom step multiplier for each zoom in/out action.
     private static let zoomFactor: CGFloat = 1.3
@@ -81,19 +91,30 @@ public final class TimelineViewModel {
         (Double(x) / Double(pixelsPerBar)) + 1.0
     }
 
-    /// Snaps a bar position to the nearest bar or beat boundary depending on zoom level.
-    /// At low zoom (pixelsPerBar < beatSnapThreshold), snaps to whole bars.
-    /// At high zoom, snaps to the nearest beat within the bar.
+    /// Snaps a bar position to the nearest grid boundary depending on zoom level.
+    /// Multi-level snapping: 1/32 → 1/16 → beat → whole bar as zoom decreases.
     public func snappedBar(forXPosition x: CGFloat, timeSignature: TimeSignature) -> Double {
         let rawBar = bar(forXPosition: max(x, 0))
         let ppBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
-        // Snap to beat when each beat is at least 40 pixels wide
-        if ppBeat >= 40.0 {
-            let beatsPerBar = Double(timeSignature.beatsPerBar)
+        let beatsPerBar = Double(timeSignature.beatsPerBar)
+
+        if ppBeat >= 150.0 {
+            // Snap to 1/32 notes (8 subdivisions per beat)
+            let totalSubdivisions = (rawBar - 1.0) * beatsPerBar * 8.0
+            let snapped = totalSubdivisions.rounded()
+            return max((snapped / (beatsPerBar * 8.0)) + 1.0, 1.0)
+        } else if ppBeat >= 80.0 {
+            // Snap to 1/16 notes (4 subdivisions per beat)
+            let totalSubdivisions = (rawBar - 1.0) * beatsPerBar * 4.0
+            let snapped = totalSubdivisions.rounded()
+            return max((snapped / (beatsPerBar * 4.0)) + 1.0, 1.0)
+        } else if ppBeat >= 40.0 {
+            // Snap to beats
             let totalBeats = (rawBar - 1.0) * beatsPerBar
-            let snappedBeats = (totalBeats).rounded()
+            let snappedBeats = totalBeats.rounded()
             return max((snappedBeats / beatsPerBar) + 1.0, 1.0)
         } else {
+            // Snap to whole bars
             return max(rawBar.rounded(), 1.0)
         }
     }
@@ -111,6 +132,22 @@ public final class TimelineViewModel {
     /// Zooms out by one step.
     public func zoomOut() {
         pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, Self.minPixelsPerBar)
+    }
+
+    /// Zooms in/out around a specific timeline X position.
+    /// Returns the scroll offset delta needed to keep that position visually stable.
+    @discardableResult
+    public func zoomAround(timelineX: CGFloat, zoomIn: Bool) -> CGFloat {
+        let barUnderCursor = bar(forXPosition: timelineX)
+        let oldPPB = pixelsPerBar
+        if zoomIn {
+            pixelsPerBar = min(pixelsPerBar * Self.zoomFactor, Self.maxPixelsPerBar)
+        } else {
+            pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, Self.minPixelsPerBar)
+        }
+        let newX = xPosition(forBar: barUnderCursor)
+        let oldX = CGFloat(barUnderCursor - 1.0) * oldPPB
+        return newX - oldX
     }
 
     /// Sets the track header column width, clamped to min/max bounds.

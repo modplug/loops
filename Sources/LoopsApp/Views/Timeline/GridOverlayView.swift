@@ -43,14 +43,44 @@ public struct GridOverlayView: View {
                 context.stroke(barPath, with: .color(.secondary.opacity(0.25)), lineWidth: 0.5)
 
                 // Beat lines (lighter)
+                let pixelsPerBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
                 if pixelsPerBar > 50 && bar < totalBars {
-                    let pixelsPerBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
                     for beat in 1..<timeSignature.beatsPerBar {
                         let beatX = x + CGFloat(beat) * pixelsPerBeat
                         var beatPath = Path()
                         beatPath.move(to: CGPoint(x: beatX, y: 0))
                         beatPath.addLine(to: CGPoint(x: beatX, y: totalHeight))
                         context.stroke(beatPath, with: .color(.secondary.opacity(0.08)), lineWidth: 0.5)
+                    }
+                }
+
+                // 1/16 subdivision lines
+                if pixelsPerBeat >= 80 && bar < totalBars {
+                    let subdivisions = timeSignature.beatsPerBar * 4
+                    let pixelsPerSub = pixelsPerBar / CGFloat(subdivisions)
+                    for sub in 1..<subdivisions {
+                        // Skip positions that coincide with beat lines
+                        if sub % 4 == 0 { continue }
+                        let subX = x + CGFloat(sub) * pixelsPerSub
+                        var subPath = Path()
+                        subPath.move(to: CGPoint(x: subX, y: 0))
+                        subPath.addLine(to: CGPoint(x: subX, y: totalHeight))
+                        context.stroke(subPath, with: .color(.secondary.opacity(0.04)), lineWidth: 0.5)
+                    }
+                }
+
+                // 1/32 subdivision lines
+                if pixelsPerBeat >= 150 && bar < totalBars {
+                    let subdivisions = timeSignature.beatsPerBar * 8
+                    let pixelsPerSub = pixelsPerBar / CGFloat(subdivisions)
+                    for sub in 1..<subdivisions {
+                        // Skip positions that coincide with 1/16 or beat lines
+                        if sub % 2 == 0 { continue }
+                        let subX = x + CGFloat(sub) * pixelsPerSub
+                        var subPath = Path()
+                        subPath.move(to: CGPoint(x: subX, y: 0))
+                        subPath.addLine(to: CGPoint(x: subX, y: totalHeight))
+                        context.stroke(subPath, with: .color(.secondary.opacity(0.02)), lineWidth: 0.5)
                     }
                 }
             }
