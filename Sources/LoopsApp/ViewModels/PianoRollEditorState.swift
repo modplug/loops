@@ -16,6 +16,15 @@ public final class PianoRollEditorState {
     public var isFocused: Bool = false
     /// Height of the inline piano roll pane in points (drag-resizable).
     public var inlineHeight: CGFloat = 250
+    /// Measured height of the inline toolbar + divider (set by InlinePianoRollView via GeometryReader).
+    public var toolbarHeight: CGFloat = 0
+    /// Height of the bottom resize handle.
+    public static let resizeHandleHeight: CGFloat = 4
+
+    /// Total height of the inline piano roll view including toolbar, divider, and resize handle.
+    public var totalInlineViewHeight: CGFloat {
+        toolbarHeight + inlineHeight + Self.resizeHandleHeight
+    }
 
     /// Horizontal zoom (beats).
     public var pixelsPerBeat: CGFloat = PianoRollLayout.defaultPixelsPerBeat
@@ -27,6 +36,8 @@ public final class PianoRollEditorState {
     public var rowHeight: CGFloat = PianoRollLayout.defaultRowHeight
     /// Snap grid resolution.
     public var snapResolution: SnapResolution = .sixteenth
+    /// Vertical scroll offset tracked from the inline piano roll content (used to sync keyboard labels).
+    public var verticalScrollOffset: CGFloat = 0
     /// Currently selected note IDs.
     public var selectedNoteIDs: Set<ID<MIDINoteEvent>> = []
 
@@ -62,6 +73,12 @@ public final class PianoRollEditorState {
     public func switchContainer(containerID: ID<Container>) {
         self.containerID = containerID
         self.selectedNoteIDs = []
+    }
+
+    /// Returns the extra height added by the inline piano roll for a given track, or 0 if not expanded.
+    public func extraHeight(forTrackID trackID: ID<Track>) -> CGFloat {
+        guard isExpanded, self.trackID == trackID else { return 0 }
+        return totalInlineViewHeight
     }
 
     /// Auto-fits the vertical range to the note content with padding.

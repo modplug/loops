@@ -23,6 +23,83 @@ struct PianoRollGhostLayer {
     let opacity: Double          // 0.25 normal ghost, 0.15 linked/inherited
 }
 
+/// Observes the vertical scroll offset of the enclosing NSScrollView that directly
+/// hosts PianoRollContentView's vertical ScrollView (not the outer track-area scroll).
+private struct VerticalScrollObserver: NSViewRepresentable {
+    let onOffsetChanged: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            context.coordinator.attach(to: view)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // Re-attach if the view moved in the hierarchy (e.g., after layout changes)
+        context.coordinator.reattachIfNeeded(from: nsView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onOffsetChanged: onOffsetChanged)
+    }
+
+    final class Coordinator: NSObject {
+        let onOffsetChanged: (CGFloat) -> Void
+        private var observation: NSObjectProtocol?
+        private weak var observedScrollView: NSScrollView?
+
+        init(onOffsetChanged: @escaping (CGFloat) -> Void) {
+            self.onOffsetChanged = onOffsetChanged
+        }
+
+        func attach(to view: NSView) {
+            // Walk up the view hierarchy to find the nearest NSScrollView
+            // whose document is taller than its frame (vertically scrollable).
+            // Skip horizontal-only scroll views.
+            var candidate: NSView? = view.superview
+            while let current = candidate {
+                if let sv = current as? NSScrollView,
+                   let docHeight = sv.documentView?.frame.height,
+                   docHeight > sv.frame.height + 1 {
+                    observe(scrollView: sv)
+                    return
+                }
+                candidate = current.superview
+            }
+        }
+
+        func reattachIfNeeded(from view: NSView) {
+            if observedScrollView == nil {
+                attach(to: view)
+            }
+        }
+
+        private func observe(scrollView: NSScrollView) {
+            guard observedScrollView !== scrollView else { return }
+            // Remove old observation
+            if let observation { NotificationCenter.default.removeObserver(observation) }
+            observedScrollView = scrollView
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            // Report initial offset
+            onOffsetChanged(-scrollView.contentView.bounds.origin.y)
+            observation = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView,
+                queue: .main
+            ) { [weak self] notification in
+                guard let clipView = notification.object as? NSClipView else { return }
+                self?.onOffsetChanged(-clipView.bounds.origin.y)
+            }
+        }
+
+        deinit {
+            if let observation { NotificationCenter.default.removeObserver(observation) }
+        }
+    }
+}
+
 /// Reusable piano roll content: grid + notes + gestures + playhead + ruler.
 /// Used by both the sheet wrapper (PianoRollView) and inline wrapper (InlinePianoRollView).
 ///
@@ -61,6 +138,8 @@ struct PianoRollContentView: View {
     var onClickOutsideEditableRegion: ((Double) -> Void)?
     /// Called when the piano roll gains or loses keyboard focus.
     var onFocusChanged: ((Bool) -> Void)?
+    /// Called when the vertical scroll offset changes (for syncing external keyboard labels).
+    var onVerticalScrollChanged: ((CGFloat) -> Void)?
 
     var onAddNote: ((MIDINoteEvent) -> Void)?
     var onUpdateNote: ((MIDINoteEvent) -> Void)?
@@ -142,6 +221,12 @@ struct PianoRollContentView: View {
                     }
                 }
             }
+            .background(
+                VerticalScrollObserver { offset in
+                    onVerticalScrollChanged?(offset)
+                }
+                .frame(width: 0, height: 0)
+            )
         }
         .focusable()
         .focusEffectDisabled()

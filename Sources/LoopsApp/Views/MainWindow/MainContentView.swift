@@ -680,20 +680,28 @@ public struct MainContentView: View {
                     // Track headers — fixed width, scroll vertically with tracks (lazy)
                     LazyVStack(spacing: 0, pinnedViews: []) {
                         ForEach(regularTracks) { track in
-                            trackHeaderWithActions(track: track)
-                                .opacity(draggingTrackID == track.id ? 0.4 : 1.0)
-                                .onDrag {
-                                    draggingTrackID = track.id
-                                    return NSItemProvider(object: track.id.rawValue.uuidString as NSString)
+                            VStack(spacing: 0) {
+                                trackHeaderWithActions(track: track)
+                                // Extra space to match inline piano roll height on timeline side
+                                let prExtra = pianoRollEditorState.extraHeight(forTrackID: track.id)
+                                if prExtra > 0 {
+                                    inlinePianoRollKeyboardLabels
+                                        .frame(height: prExtra)
                                 }
-                                .onDrop(of: [.text], delegate: TrackDropDelegate(
-                                    targetTrack: track,
-                                    draggingTrackID: $draggingTrackID,
-                                    song: song,
-                                    onReorder: { source, destination in
-                                        projectViewModel.moveTrack(from: source, to: destination)
-                                    }
-                                ))
+                            }
+                            .opacity(draggingTrackID == track.id ? 0.4 : 1.0)
+                            .onDrag {
+                                draggingTrackID = track.id
+                                return NSItemProvider(object: track.id.rawValue.uuidString as NSString)
+                            }
+                            .onDrop(of: [.text], delegate: TrackDropDelegate(
+                                targetTrack: track,
+                                draggingTrackID: $draggingTrackID,
+                                song: song,
+                                onReorder: { source, destination in
+                                    projectViewModel.moveTrack(from: source, to: destination)
+                                }
+                            ))
                         }
                         // Empty space at bottom for context menu target (at least one track height)
                         Color.clear
@@ -1328,6 +1336,64 @@ public struct MainContentView: View {
         editingSectionID = nil
     }
 
+    /// Pitch labels shown in the track header area when the inline piano roll is expanded.
+    /// Styled like a mini piano keyboard with scroll sync to the piano roll.
+    private var inlinePianoRollKeyboardLabels: some View {
+        let state = pianoRollEditorState
+        let low = state.lowPitch
+        let high = state.highPitch
+        let rh = state.rowHeight
+
+        return VStack(spacing: 0) {
+            // Match toolbar + divider space (measured dynamically)
+            Color(nsColor: .controlBackgroundColor).opacity(0.5)
+                .frame(height: state.toolbarHeight)
+                .overlay(alignment: .bottom) {
+                    Divider()
+                }
+
+            // Pitch label rows — offset synced with piano roll vertical scroll
+            VStack(spacing: 0) {
+                // Match PianoRollContentView ruler (20pt) + divider (1pt)
+                Color.clear.frame(height: 21)
+                ForEach((Int(low)...Int(high)).reversed(), id: \.self) { pitch in
+                    let note = UInt8(pitch)
+                    let isBlack = PianoLayout.isBlackKey(note: note)
+                    let isC = note % 12 == 0
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 2)
+                        Text(PianoLayout.noteName(note))
+                            .font(.system(size: max(7, min(rh - 2, 10)), design: .monospaced))
+                            .foregroundStyle(isC ? Color.primary : isBlack ? Color.secondary : Color.secondary.opacity(0.7))
+                    }
+                    .padding(.trailing, 4)
+                    .frame(height: rh)
+                    .background(isBlack
+                        ? Color(white: 0.15)
+                        : Color(white: 0.92).opacity(0.15))
+                    .overlay(alignment: .bottom) {
+                        if isC {
+                            Rectangle().fill(Color.secondary.opacity(0.2)).frame(height: 0.5)
+                        }
+                    }
+                }
+            }
+            .offset(y: state.verticalScrollOffset)
+            .frame(height: state.inlineHeight, alignment: .topLeading)
+            .clipped()
+
+            // Match resize handle space
+            Color.secondary.opacity(0.3)
+                .frame(height: PianoRollEditorState.resizeHandleHeight)
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.secondary.opacity(0.3))
+                .frame(height: 1)
+        }
+    }
+
     private var headerColumnResizeHandle: some View {
         Rectangle()
             .fill(Color.secondary.opacity(0.3))
@@ -1427,7 +1493,8 @@ public struct MainContentView: View {
 
     private func regularTrackListContentHeight(song: Song) -> CGFloat {
         song.tracks.filter { $0.kind != .master }.reduce(CGFloat(0)) { total, track in
-            total + timelineViewModel.trackHeight(for: track, baseHeight: timelineViewModel.baseTrackHeight(for: track.id))
+            let trackH = timelineViewModel.trackHeight(for: track, baseHeight: timelineViewModel.baseTrackHeight(for: track.id))
+            return total + trackH + pianoRollEditorState.extraHeight(forTrackID: track.id)
         }
     }
 }

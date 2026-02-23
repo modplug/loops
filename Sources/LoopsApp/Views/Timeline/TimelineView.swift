@@ -40,7 +40,9 @@ public struct TimelineView: View {
     public var totalContentHeight: CGFloat {
         tracks.reduce(CGFloat(0)) { total, track in
             let base = viewModel.baseTrackHeight(for: track.id)
-            return total + viewModel.trackHeight(for: track, baseHeight: base)
+            let trackH = viewModel.trackHeight(for: track, baseHeight: base)
+            let prExtra = pianoRollState?.extraHeight(forTrackID: track.id) ?? 0
+            return total + trackH + prExtra
         }
     }
 
@@ -177,6 +179,11 @@ public struct TimelineView: View {
         let subLanePaths = uniqueAutomationPaths(for: track)
         trackLaneView(track: track, song: song, height: perTrackHeight, isExpanded: isExpanded, subLanePaths: subLanePaths)
             .equatable()
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.3))
+                    .frame(height: 1)
+            }
             .onChange(of: selectionState.selectedContainerID) { _, newID in
                 if let prState = pianoRollState,
                    prState.isExpanded,
@@ -235,6 +242,11 @@ public struct TimelineView: View {
                     prState.switchContainer(containerID: containerID)
                 }
             )
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.3))
+                    .frame(height: 1)
+            }
         }
     }
 
