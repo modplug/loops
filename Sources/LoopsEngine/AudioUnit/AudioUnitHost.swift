@@ -23,7 +23,7 @@ public final class AudioUnitHost: @unchecked Sendable {
         )
 
         return try await withCheckedThrowingContinuation { continuation in
-            AVAudioUnit.instantiate(with: description, options: []) { audioUnit, error in
+            AVAudioUnit.instantiate(with: description, options: .loadOutOfProcess) { audioUnit, error in
                 if let audioUnit = audioUnit {
                     continuation.resume(returning: audioUnit)
                 } else {

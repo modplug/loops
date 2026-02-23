@@ -30,8 +30,8 @@ final class PluginWindowManager {
     ) {
         let key = "\(component.componentType)-\(component.componentSubType)-\(component.componentManufacturer)"
 
-        // If a window for this component is already open, bring it to front
-        if let existing = windows[key], existing.isVisible {
+        // If a window for this component already exists, bring it to front
+        if let existing = windows[key] {
             existing.makeKeyAndOrderFront(nil)
             return
         }
@@ -42,12 +42,19 @@ final class PluginWindowManager {
             presetData: presetData,
             liveAudioUnit: liveAudioUnit,
             onPresetChanged: onPresetChanged,
-            onClose: { [weak self] in
-                self?.windows.removeValue(forKey: key)
-            }
+            onClose: nil
         )
         windows[key] = window
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Removes all cached windows. Call when prepare() invalidates AU instances
+    /// so stale windows pointing to deallocated AUs are discarded.
+    func invalidateAll() {
+        for (_, window) in windows {
+            window.close()
+        }
+        windows.removeAll()
     }
 }
 
@@ -58,7 +65,6 @@ final class PluginWindowManager {
 private final class PluginWindow: NSWindow, NSWindowDelegate {
     private var avAudioUnit: AVAudioUnit?
     private var onPresetChanged: ((Data?) -> Void)?
-    private var onClose: (() -> Void)?
     private var sizeObservation: NSKeyValueObservation?
 
     convenience init(
@@ -77,7 +83,6 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
             defer: false
         )
         self.onPresetChanged = onPresetChanged
-        self.onClose = onClose
         self.title = displayName
         self.isReleasedWhenClosed = false
         self.delegate = self
@@ -161,7 +166,7 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
 
         do {
             let au = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AVAudioUnit, Error>) in
-                AVAudioUnit.instantiate(with: description, options: []) { audioUnit, error in
+                AVAudioUnit.instantiate(with: description, options: .loadOutOfProcess) { audioUnit, error in
                     if let audioUnit = audioUnit {
                         continuation.resume(returning: audioUnit)
                     } else {
@@ -204,15 +209,16 @@ private final class PluginWindow: NSWindow, NSWindowDelegate {
         return false
     }
 
-    func windowWillClose(_ notification: Notification) {
-        sizeObservation = nil
-        // Save preset before closing
+    override func close() {
+        // Save preset before hiding
         if let au = avAudioUnit {
             let host = AudioUnitHost(engine: AVAudioEngine())
             let data = host.saveState(audioUnit: au)
             onPresetChanged?(data)
         }
-        onClose?()
+        // Hide the window instead of closing it for faster reopen.
+        // Don't call super.close() — that deallocates the view controller.
+        orderOut(nil)
     }
 }
 

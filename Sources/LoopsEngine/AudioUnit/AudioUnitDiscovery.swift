@@ -69,7 +69,7 @@ public final class AudioUnitDiscovery: Sendable {
         )
 
         do {
-            let audioUnit = try await AUAudioUnit.instantiate(with: description, options: [])
+            let audioUnit = try await AUAudioUnit.instantiate(with: description, options: .loadOutOfProcess)
             let tree = audioUnit.parameterTree
             guard let allParams = tree?.allParameters else { return [] }
 

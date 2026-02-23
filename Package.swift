@@ -31,8 +31,14 @@ let package = Package(
             path: "Tests/LoopsCoreTests"
         ),
         .target(
+            name: "ObjCHelpers",
+            dependencies: [],
+            path: "Sources/ObjCHelpers",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "LoopsEngine",
-            dependencies: ["LoopsCore"],
+            dependencies: ["LoopsCore", "ObjCHelpers"],
             path: "Sources/LoopsEngine"
         ),
         .testTarget(
