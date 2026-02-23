@@ -188,4 +188,96 @@ struct PluginWindowTests {
 
         first?.close()
     }
+
+    @Test("Auto-open plugin window after adding effect opens with nil preset")
+    @MainActor
+    func autoOpenAfterAddEffect() async throws {
+        // Simulate the add-effect flow: create an InsertEffect, then immediately open plugin window
+        let effect = InsertEffect(
+            component: Self.delayComponent,
+            displayName: "AUDelay",
+            orderIndex: 0
+        )
+
+        let manager = PluginWindowManager()
+        manager.open(
+            component: effect.component,
+            displayName: effect.displayName,
+            presetData: nil,
+            onPresetChanged: nil
+        )
+
+        try await Task.sleep(for: .seconds(2))
+
+        let window = manager.window(for: effect.component)
+        #expect(window != nil)
+        #expect(window!.isVisible)
+
+        window?.close()
+    }
+
+    @Test("Auto-open effect while another plugin window is open keeps both visible")
+    @MainActor
+    func autoOpenEffectWithExistingWindowOpen() async throws {
+        let manager = PluginWindowManager()
+
+        // Open first effect (delay)
+        manager.open(
+            component: Self.delayComponent,
+            displayName: "AUDelay",
+            presetData: nil,
+            onPresetChanged: nil
+        )
+
+        try await Task.sleep(for: .seconds(1))
+
+        let delayWindow = manager.window(for: Self.delayComponent)
+        #expect(delayWindow != nil)
+
+        // Auto-open second effect (reverb) — simulating adding a new effect
+        manager.open(
+            component: Self.reverbComponent,
+            displayName: "AUReverb2",
+            presetData: nil,
+            onPresetChanged: nil
+        )
+
+        try await Task.sleep(for: .seconds(2))
+
+        let reverbWindow = manager.window(for: Self.reverbComponent)
+        #expect(reverbWindow != nil)
+        #expect(delayWindow!.isVisible)
+        #expect(reverbWindow!.isVisible)
+        #expect(delayWindow !== reverbWindow)
+
+        delayWindow?.close()
+        reverbWindow?.close()
+    }
+
+    @Test("Auto-opened plugin window receives preset callback on close")
+    @MainActor
+    func autoOpenPresetCallbackOnClose() async throws {
+        var savedPreset: Data?
+
+        let manager = PluginWindowManager()
+        manager.open(
+            component: Self.delayComponent,
+            displayName: "AUDelay",
+            presetData: nil,
+            onPresetChanged: { data in
+                savedPreset = data
+            }
+        )
+
+        try await Task.sleep(for: .seconds(2))
+
+        let window = manager.window(for: Self.delayComponent)
+        #expect(window != nil)
+
+        // Close triggers preset save
+        window?.close()
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(savedPreset != nil)
+    }
 }

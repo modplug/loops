@@ -91,6 +91,14 @@ public struct MainContentView: View {
                 allTracks: projectViewModel.allTracksInCurrentSong,
                 onAddEffect: { effect in
                     projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
+                    PluginWindowManager.shared.open(
+                        component: effect.component,
+                        displayName: effect.displayName,
+                        presetData: nil,
+                        onPresetChanged: { data in
+                            projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effect.id, presetData: data)
+                        }
+                    )
                 },
                 onRemoveEffect: { effectID in
                     projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
@@ -791,6 +799,14 @@ public struct MainContentView: View {
                 },
                 onAddEffect: { effect in
                     projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
+                    PluginWindowManager.shared.open(
+                        component: effect.component,
+                        displayName: effect.displayName,
+                        presetData: nil,
+                        onPresetChanged: { data in
+                            projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effect.id, presetData: data)
+                        }
+                    )
                 },
                 onRemoveEffect: { effectID in
                     projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
@@ -889,6 +905,12 @@ public struct MainContentView: View {
             },
             onAddEffect: { effect in
                 projectViewModel.addTrackEffect(trackID: track.id, effect: effect)
+                PluginWindowManager.shared.open(
+                    component: effect.component,
+                    displayName: effect.displayName,
+                    presetData: nil,
+                    onPresetChanged: nil
+                )
             },
             onRemoveEffect: { effectID in
                 projectViewModel.removeTrackEffect(trackID: track.id, effectID: effectID)
