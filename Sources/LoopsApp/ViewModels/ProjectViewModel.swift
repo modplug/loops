@@ -2397,14 +2397,18 @@ public final class ProjectViewModel {
             timeSignature: song.timeSignature
         )
 
-        // Create a placeholder recording and container immediately
+        // Generate peaks from source URL immediately (sub-second for typical files).
+        // This runs before the background file copy so waveform appears instantly.
+        let generator = WaveformGenerator()
+        let peaks = try? generator.generatePeaks(from: url)
+
         let recordingID = ID<SourceRecording>()
         let recording = SourceRecording(
             id: recordingID,
             filename: "",
             sampleRate: metadata.sampleRate,
             sampleCount: metadata.sampleCount,
-            waveformPeaks: nil
+            waveformPeaks: peaks
         )
 
         let container = Container(
@@ -2428,29 +2432,14 @@ public final class ProjectViewModel {
 
         let containerID = container.id
 
-        // Background: file copy + progressive peak generation
-        // Capture weak self once for the entire detached task
+        // Background: file copy only (peaks already generated)
         let viewModel = self
         Task.detached {
             let importer = AudioImporter()
             guard let imported = try? importer.importAudioFile(from: url, to: audioDirectory) else { return }
 
-            // Update recording with real filename
             await MainActor.run {
                 viewModel.project.sourceRecordings[recordingID]?.filename = imported.filename
-            }
-
-            // Progressive peak generation
-            let destURL = audioDirectory.appendingPathComponent(imported.filename)
-            let generator = WaveformGenerator()
-            let _ = try? generator.generatePeaksProgressively(from: destURL) { progressPeaks in
-                let peaksCopy = progressPeaks
-                Task { @MainActor in
-                    viewModel.project.sourceRecordings[recordingID]?.waveformPeaks = peaksCopy
-                }
-            }
-
-            await MainActor.run {
                 viewModel.hasUnsavedChanges = true
             }
         }
@@ -2467,6 +2456,18 @@ public final class ProjectViewModel {
         guard let recordingID = container.sourceRecordingID,
               let recording = project.sourceRecordings[recordingID] else { return nil }
         return recording.waveformPeaks
+    }
+
+    /// Returns the total duration of the source recording in bars, or nil if unknown.
+    public func recordingDurationBars(for container: Container) -> Double? {
+        guard let recordingID = container.sourceRecordingID,
+              let recording = project.sourceRecordings[recordingID] else { return nil }
+        guard let song = currentSong else { return nil }
+        let bpm = song.tempo.bpm
+        let beatsPerBar = Double(song.timeSignature.beatsPerBar)
+        let secondsPerBar = (beatsPerBar * 60.0) / bpm
+        guard secondsPerBar > 0 else { return nil }
+        return recording.durationSeconds / secondsPerBar
     }
 
     /// Updates live waveform peaks during an in-progress recording.
@@ -2591,6 +2592,247 @@ public final class ProjectViewModel {
         }
 
         hasUnsavedChanges = true
+    }
+
+    // MARK: - Split & Trim
+
+    /// Splits a container at the given bar boundary, creating two independent containers.
+    /// Returns the ID of the new right-half container, or nil on failure.
+    @discardableResult
+    public func splitContainer(trackID: ID<Track>, containerID: ID<Container>, atBar: Int) -> ID<Container>? {
+        guard !project.songs.isEmpty else { return nil }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return nil }
+
+        let source = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+
+        // Validate split point is strictly inside
+        guard atBar > source.startBar && atBar < source.endBar else { return nil }
+
+        // If container is a clone, consolidate first so both halves become independent
+        if source.parentContainerID != nil {
+            consolidateContainer(trackID: trackID, containerID: containerID)
+        }
+
+        // Re-fetch after possible consolidation
+        let container = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+
+        let leftLength = atBar - container.startBar
+        let rightLength = container.endBar - atBar
+
+        registerUndo(actionName: "Split Container")
+
+        // Split MIDI sequence if present
+        var leftSequence = container.midiSequence
+        var rightSequence: MIDISequence?
+        if let midi = container.midiSequence {
+            let beatsPerBar = Double(project.songs[currentSongIndex].timeSignature.beatsPerBar)
+            let splitBeat = Double(leftLength) * beatsPerBar
+            let (left, right) = splitMIDISequence(midi, atBeat: splitBeat)
+            leftSequence = left
+            rightSequence = right
+        }
+
+        // Left half: modify existing container
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].lengthBars = leftLength
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].exitFade = nil
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence = leftSequence
+
+        // Right half: new container
+        let rightContainer = Container(
+            name: container.name,
+            startBar: atBar,
+            lengthBars: rightLength,
+            sourceRecordingID: container.sourceRecordingID,
+            linkGroupID: container.linkGroupID,
+            loopSettings: container.loopSettings,
+            insertEffects: container.insertEffects,
+            isEffectChainBypassed: container.isEffectChainBypassed,
+            instrumentOverride: container.instrumentOverride,
+            enterFade: nil,
+            exitFade: container.exitFade,
+            onEnterActions: [],
+            onExitActions: container.onExitActions,
+            automationLanes: [],
+            midiSequence: rightSequence ?? container.midiSequence,
+            audioStartOffset: container.audioStartOffset + Double(leftLength)
+        )
+
+        project.songs[currentSongIndex].tracks[trackIndex].containers.append(rightContainer)
+        hasUnsavedChanges = true
+        return rightContainer.id
+    }
+
+    /// Splits a MIDISequence at a beat boundary, returning left and right halves.
+    private func splitMIDISequence(_ sequence: MIDISequence, atBeat splitBeat: Double) -> (MIDISequence, MIDISequence) {
+        var leftNotes: [MIDINoteEvent] = []
+        var rightNotes: [MIDINoteEvent] = []
+
+        for note in sequence.notes {
+            let noteEnd = note.startBeat + note.duration
+            if noteEnd <= splitBeat {
+                // Entirely in left half
+                leftNotes.append(note)
+            } else if note.startBeat >= splitBeat {
+                // Entirely in right half — offset startBeat
+                var shifted = note
+                shifted.id = ID()
+                shifted.startBeat -= splitBeat
+                rightNotes.append(shifted)
+            } else {
+                // Straddles the split: truncate in left, start at 0 in right
+                var leftNote = note
+                leftNote.duration = splitBeat - note.startBeat
+                leftNotes.append(leftNote)
+
+                var rightNote = note
+                rightNote.id = ID()
+                rightNote.startBeat = 0
+                rightNote.duration = noteEnd - splitBeat
+                rightNotes.append(rightNote)
+            }
+        }
+
+        return (MIDISequence(notes: leftNotes), MIDISequence(notes: rightNotes))
+    }
+
+    /// Splits a container at two bar boundaries, creating up to three containers:
+    /// the portion before the range, the range itself, and the portion after the range.
+    /// Uses a single undo registration so Cmd+Z undoes the entire operation.
+    @discardableResult
+    public func splitContainerAtRange(trackID: ID<Track>, containerID: ID<Container>,
+                                      rangeStart: Int, rangeEnd: Int) -> Bool {
+        guard rangeEnd > rangeStart else { return false }
+        guard !project.songs.isEmpty else { return false }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
+
+        let source = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+
+        // Range must overlap with container interior
+        let clampedStart = max(rangeStart, source.startBar)
+        let clampedEnd = min(rangeEnd, source.endBar)
+        guard clampedEnd > clampedStart else { return false }
+        let needsLeftSplit = clampedStart > source.startBar
+        let needsRightSplit = clampedEnd < source.endBar
+        guard needsLeftSplit || needsRightSplit else { return false }
+
+        // Consolidate clones first
+        if source.parentContainerID != nil {
+            consolidateContainer(trackID: trackID, containerID: containerID)
+        }
+        let container = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+
+        let beatsPerBar = Double(project.songs[currentSongIndex].timeSignature.beatsPerBar)
+
+        registerUndo(actionName: "Split at Range")
+
+        // Split MIDI once for up to 3 parts
+        var leftSequence: MIDISequence?
+        var middleSequence: MIDISequence?
+        var rightSequence: MIDISequence?
+        if let midi = container.midiSequence {
+            let leftBeat = Double(clampedStart - container.startBar) * beatsPerBar
+            let rightBeat = Double(clampedEnd - container.startBar) * beatsPerBar
+            let (left, rest) = needsLeftSplit ? splitMIDISequence(midi, atBeat: leftBeat) : (nil, midi)
+            if needsRightSplit {
+                let midBeat = needsLeftSplit ? (rightBeat - leftBeat) : rightBeat
+                let (mid, right) = splitMIDISequence(rest, atBeat: midBeat)
+                middleSequence = mid
+                rightSequence = right
+            } else {
+                middleSequence = rest
+            }
+            leftSequence = left
+        }
+
+        // Build new containers
+        var newContainers: [Container] = []
+
+        if needsLeftSplit {
+            var leftPart = container
+            leftPart.id = container.id  // keep original ID for left part
+            leftPart.lengthBars = clampedStart - container.startBar
+            leftPart.exitFade = nil
+            leftPart.midiSequence = leftSequence ?? container.midiSequence
+            newContainers.append(leftPart)
+        }
+
+        let middleOffset = container.audioStartOffset + Double(clampedStart - container.startBar)
+        var middlePart = container
+        middlePart.id = ID()
+        middlePart.startBar = clampedStart
+        middlePart.lengthBars = clampedEnd - clampedStart
+        middlePart.audioStartOffset = middleOffset
+        middlePart.enterFade = needsLeftSplit ? nil : container.enterFade
+        middlePart.exitFade = needsRightSplit ? nil : container.exitFade
+        middlePart.midiSequence = middleSequence ?? container.midiSequence
+        newContainers.append(middlePart)
+
+        if needsRightSplit {
+            let rightOffset = container.audioStartOffset + Double(clampedEnd - container.startBar)
+            var rightPart = container
+            rightPart.id = ID()
+            rightPart.startBar = clampedEnd
+            rightPart.lengthBars = container.endBar - clampedEnd
+            rightPart.audioStartOffset = rightOffset
+            rightPart.enterFade = nil
+            rightPart.midiSequence = rightSequence ?? container.midiSequence
+            newContainers.append(rightPart)
+        }
+
+        // Replace the original container with the new parts
+        project.songs[currentSongIndex].tracks[trackIndex].containers.remove(at: containerIndex)
+        project.songs[currentSongIndex].tracks[trackIndex].containers.append(contentsOf: newContainers)
+        hasUnsavedChanges = true
+        return true
+    }
+
+    /// Trims a container's left edge, adjusting startBar, lengthBars, and audioStartOffset atomically.
+    /// Returns false if the trim would cause an overlap or invalid state.
+    public func trimContainerLeft(trackID: ID<Track>, containerID: ID<Container>,
+                                  newStartBar: Int, newLength: Int, newAudioStartOffset: Double) -> Bool {
+        guard !project.songs.isEmpty else { return false }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
+        guard newStartBar >= 1 && newLength >= 1 && newAudioStartOffset >= 0 else { return false }
+
+        var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+        proposed.startBar = newStartBar
+        proposed.lengthBars = newLength
+        proposed.audioStartOffset = newAudioStartOffset
+
+        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: proposed, excluding: containerID) {
+            return false
+        }
+
+        registerUndoCoalesced(actionName: "Trim Container")
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].startBar = newStartBar
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].lengthBars = newLength
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].audioStartOffset = newAudioStartOffset
+        hasUnsavedChanges = true
+        return true
+    }
+
+    /// Trims a container's right edge, adjusting only lengthBars.
+    /// Returns false if the trim would cause an overlap.
+    public func trimContainerRight(trackID: ID<Track>, containerID: ID<Container>, newLength: Int) -> Bool {
+        guard !project.songs.isEmpty else { return false }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
+        guard newLength >= 1 else { return false }
+
+        var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+        proposed.lengthBars = newLength
+
+        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: proposed, excluding: containerID) {
+            return false
+        }
+
+        registerUndoCoalesced(actionName: "Trim Container")
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].lengthBars = newLength
+        hasUnsavedChanges = true
+        return true
     }
 
     // MARK: - Private
