@@ -137,6 +137,10 @@ public struct LoopsRootView: View {
             viewModel.onSongChanged = { [weak transportViewModel] in
                 transportViewModel?.handleSongChanged()
             }
+            // Wire live plugin updates: refresh the audio graph during playback
+            viewModel.onPlaybackGraphChanged = { [weak transportViewModel] in
+                transportViewModel?.refreshPlaybackGraph()
+            }
             // Sync BPM from the current song
             transportViewModel.bpm = viewModel.currentSong?.tempo.bpm ?? 120.0
             // Sync count-in bars from the current song
@@ -331,10 +335,13 @@ public struct LoopsRootView: View {
         midiActivityMonitor.updateTracks(viewModel.currentSong?.tracks ?? [])
         midiActivityMonitor.updateDeviceNames(midiManager.availableInputDevices())
 
-        midiManager.onRawMIDIMessage = { [weak monitor] word, deviceID in
+        let weakTransport = transportViewModel
+        midiManager.onRawMIDIMessage = { [weak monitor, weak weakTransport] word, deviceID in
             Task { @MainActor [weak monitor] in
                 monitor?.recordMessage(word: word, deviceID: deviceID)
             }
+            // Forward MIDI note/CC events to instrument tracks (runs on MIDI thread)
+            weakTransport?.playbackScheduler?.forwardExternalMIDI(word: word, deviceID: deviceID)
         }
     }
 }

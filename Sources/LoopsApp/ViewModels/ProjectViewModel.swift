@@ -330,6 +330,12 @@ public final class ProjectViewModel {
     /// and restart playback for the new song.
     public var onSongChanged: (() -> Void)?
 
+    /// Called when the audio graph shape changes (effects added/removed/reordered/bypassed,
+    /// instrument overrides changed). The view layer wires this to
+    /// `TransportViewModel.refreshPlaybackGraph()` so live playback updates without
+    /// requiring stop/start.
+    public var onPlaybackGraphChanged: (() -> Void)?
+
     /// Selects a song by its ID.
     public func selectSong(id: ID<Song>) {
         guard project.songs.contains(where: { $0.id == id }) else { return }
@@ -664,6 +670,7 @@ public final class ProjectViewModel {
         newEffect.orderIndex = project.songs[currentSongIndex].tracks[masterIndex].insertEffects.count
         project.songs[currentSongIndex].tracks[masterIndex].insertEffects.append(newEffect)
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Removes an insert effect from the master track.
@@ -676,6 +683,7 @@ public final class ProjectViewModel {
             project.songs[currentSongIndex].tracks[masterIndex].insertEffects[i].orderIndex = i
         }
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Toggles bypass on the master track's entire effect chain.
@@ -685,6 +693,7 @@ public final class ProjectViewModel {
         registerUndo(actionName: "Toggle Master Effect Bypass")
         project.songs[currentSongIndex].tracks[masterIndex].isEffectChainBypassed.toggle()
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Sets the output port on the master track.
@@ -707,6 +716,7 @@ public final class ProjectViewModel {
         newEffect.orderIndex = project.songs[currentSongIndex].tracks[trackIndex].insertEffects.count
         project.songs[currentSongIndex].tracks[trackIndex].insertEffects.append(newEffect)
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Removes an insert effect from a track.
@@ -748,6 +758,7 @@ public final class ProjectViewModel {
             }
         }
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Reorders a track's insert effects by moving from source indices to a destination index.
@@ -785,6 +796,7 @@ public final class ProjectViewModel {
             }
         }
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Toggles bypass on a single effect within a track.
@@ -795,6 +807,7 @@ public final class ProjectViewModel {
         registerUndo(actionName: "Toggle Track Effect Bypass")
         project.songs[currentSongIndex].tracks[trackIndex].insertEffects[effectIndex].isBypassed.toggle()
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Toggles bypass on a track's entire effect chain.
@@ -803,6 +816,17 @@ public final class ProjectViewModel {
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         registerUndo(actionName: "Toggle Track Effect Chain Bypass")
         project.songs[currentSongIndex].tracks[trackIndex].isEffectChainBypassed.toggle()
+        hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
+    }
+
+    /// Updates the preset data for an insert effect within a track.
+    public func updateTrackEffectPreset(trackID: ID<Track>, effectID: ID<InsertEffect>, presetData: Data?) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let effectIndex = project.songs[currentSongIndex].tracks[trackIndex].insertEffects.firstIndex(where: { $0.id == effectID }) else { return }
+        registerUndo(actionName: "Update Track Effect Preset")
+        project.songs[currentSongIndex].tracks[trackIndex].insertEffects[effectIndex].presetData = presetData
         hasUnsavedChanges = true
     }
 
@@ -1092,6 +1116,7 @@ public final class ProjectViewModel {
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.append(newEffect)
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                 hasUnsavedChanges = true
+                onPlaybackGraphChanged?()
                 return
             }
         }
@@ -1139,6 +1164,7 @@ public final class ProjectViewModel {
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                 hasUnsavedChanges = true
+                onPlaybackGraphChanged?()
                 return
             }
         }
@@ -1153,6 +1179,7 @@ public final class ProjectViewModel {
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].isEffectChainBypassed.toggle()
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                 hasUnsavedChanges = true
+                onPlaybackGraphChanged?()
                 return
             }
         }
@@ -1198,6 +1225,7 @@ public final class ProjectViewModel {
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                 hasUnsavedChanges = true
+                onPlaybackGraphChanged?()
                 return
             }
         }
@@ -1213,6 +1241,7 @@ public final class ProjectViewModel {
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[effectIndex].isBypassed.toggle()
                     markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
                     hasUnsavedChanges = true
+                    onPlaybackGraphChanged?()
                     return
                 }
             }
@@ -1259,6 +1288,7 @@ public final class ProjectViewModel {
                 }
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .instrumentOverride)
                 hasUnsavedChanges = true
+                onPlaybackGraphChanged?()
                 return
             }
         }
