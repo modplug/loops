@@ -257,4 +257,24 @@ public final class TimelineViewModel {
         }
         return paths.count
     }
+
+    // MARK: - View Settings Persistence
+
+    /// Captures the current view state into a `SongViewSettings` for persistence.
+    public func captureViewSettings() -> SongViewSettings {
+        SongViewSettings(
+            trackHeights: trackHeights.mapValues { Double($0) },
+            trackHeaderWidth: Double(trackHeaderWidth),
+            pixelsPerBar: Double(pixelsPerBar),
+            automationExpanded: automationExpanded
+        )
+    }
+
+    /// Restores view state from persisted `SongViewSettings`.
+    public func applyViewSettings(_ settings: SongViewSettings) {
+        trackHeights = settings.trackHeights.mapValues { CGFloat($0) }
+        trackHeaderWidth = CGFloat(settings.trackHeaderWidth)
+        pixelsPerBar = CGFloat(settings.pixelsPerBar)
+        automationExpanded = settings.automationExpanded
+    }
 }

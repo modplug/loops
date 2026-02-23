@@ -9,6 +9,7 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
     public var countInBars: Int
     public var sections: [SectionRegion]
     public var metronomeConfig: MetronomeConfig
+    public var viewSettings: SongViewSettings
 
     public init(
         id: ID<Song> = ID(),
@@ -18,7 +19,8 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         tracks: [Track] = [],
         countInBars: Int = 0,
         sections: [SectionRegion] = [],
-        metronomeConfig: MetronomeConfig = MetronomeConfig()
+        metronomeConfig: MetronomeConfig = MetronomeConfig(),
+        viewSettings: SongViewSettings = SongViewSettings()
     ) {
         self.id = id
         self.name = name
@@ -28,10 +30,11 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         self.countInBars = countInBars
         self.sections = sections
         self.metronomeConfig = metronomeConfig
+        self.viewSettings = viewSettings
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, tempo, timeSignature, tracks, countInBars, sections, metronomeConfig
+        case id, name, tempo, timeSignature, tracks, countInBars, sections, metronomeConfig, viewSettings
     }
 
     public init(from decoder: Decoder) throws {
@@ -44,6 +47,7 @@ public struct Song: Codable, Equatable, Sendable, Identifiable {
         countInBars = try c.decodeIfPresent(Int.self, forKey: .countInBars) ?? 0
         sections = try c.decodeIfPresent([SectionRegion].self, forKey: .sections) ?? []
         metronomeConfig = try c.decodeIfPresent(MetronomeConfig.self, forKey: .metronomeConfig) ?? MetronomeConfig()
+        viewSettings = try c.decodeIfPresent(SongViewSettings.self, forKey: .viewSettings) ?? SongViewSettings()
     }
 
     // MARK: - Master Track

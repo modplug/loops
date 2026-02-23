@@ -260,12 +260,17 @@ public final class ProjectViewModel {
         clearUndoHistory()
     }
 
+    /// Called just before saving to disk, so the view layer can flush transient state
+    /// (e.g. timeline view settings) into the project model.
+    public var onWillSave: (() -> Void)?
+
     /// Saves the project to the current URL, or prompts for a location.
     /// Returns true if saved successfully, false if no URL is set.
     public func save() throws -> Bool {
         guard let url = projectURL else {
             return false
         }
+        onWillSave?()
         try persistence.save(project, to: url)
         hasUnsavedChanges = false
         return true
@@ -273,6 +278,7 @@ public final class ProjectViewModel {
 
     /// Saves the project to a specific URL.
     public func save(to url: URL) throws {
+        onWillSave?()
         try persistence.save(project, to: url)
         projectURL = url
         hasUnsavedChanges = false
@@ -363,16 +369,30 @@ public final class ProjectViewModel {
     /// and restart playback for the new song.
     public var onSongChanged: (() -> Void)?
 
+    /// Called just before the active song changes, with the ID of the song being left.
+    /// The view layer uses this to persist timeline view settings before switching.
+    public var onSongWillChange: ((ID<Song>) -> Void)?
+
     /// Called when the audio graph shape changes (effects added/removed/reordered/bypassed,
     /// instrument overrides changed). The view layer wires this to
     /// `TransportViewModel.refreshPlaybackGraph()` so live playback updates without
     /// requiring stop/start.
     public var onPlaybackGraphChanged: (() -> Void)?
 
+    /// Saves the current timeline view settings into the active song's model.
+    public func saveViewSettings(_ settings: SongViewSettings) {
+        guard let songID = currentSongID,
+              let index = project.songs.firstIndex(where: { $0.id == songID }) else { return }
+        project.songs[index].viewSettings = settings
+    }
+
     /// Selects a song by its ID.
     public func selectSong(id: ID<Song>) {
         guard project.songs.contains(where: { $0.id == id }) else { return }
         let previousSongID = currentSongID
+        if let prevID = previousSongID, prevID != id {
+            onSongWillChange?(prevID)
+        }
         currentSongID = id
         selectedContainerID = nil
         if id != previousSongID {

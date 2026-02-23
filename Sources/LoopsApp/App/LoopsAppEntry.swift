@@ -138,9 +138,21 @@ public struct LoopsRootView: View {
                     slVM.updateSongProgress(playheadBar: bar, songLengthBars: songLength)
                 }
             }
-            // Wire song change handler: reset playhead and restart playback
-            viewModel.onSongChanged = { [weak transportViewModel] in
+            // Wire view settings persistence: save before song switch or project save
+            viewModel.onSongWillChange = { [weak viewModel, weak timelineViewModel] _ in
+                guard let vm = viewModel, let tvm = timelineViewModel else { return }
+                vm.saveViewSettings(tvm.captureViewSettings())
+            }
+            viewModel.onWillSave = { [weak viewModel, weak timelineViewModel] in
+                guard let vm = viewModel, let tvm = timelineViewModel else { return }
+                vm.saveViewSettings(tvm.captureViewSettings())
+            }
+            // Wire song change handler: reset playhead and apply new song's view settings
+            viewModel.onSongChanged = { [weak transportViewModel, weak viewModel, weak timelineViewModel] in
                 transportViewModel?.handleSongChanged()
+                if let song = viewModel?.currentSong, let tvm = timelineViewModel {
+                    tvm.applyViewSettings(song.viewSettings)
+                }
             }
             // Wire live plugin updates: refresh the audio graph during playback
             viewModel.onPlaybackGraphChanged = { [weak transportViewModel] in
@@ -158,6 +170,11 @@ public struct LoopsRootView: View {
 
             // Size timeline to fit song content
             timelineViewModel.updateTotalBars(for: viewModel.currentSong?.tracks ?? [])
+
+            // Restore persisted view settings for the initial song
+            if let song = viewModel.currentSong {
+                timelineViewModel.applyViewSettings(song.viewSettings)
+            }
 
             // Wire container recording callbacks
             transportViewModel.onRecordingPeaksUpdated = { [weak viewModel] containerID, peaks in
