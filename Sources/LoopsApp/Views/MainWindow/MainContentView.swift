@@ -645,6 +645,13 @@ public struct MainContentView: View {
 
         GeometryReader { geo in
             ScrollView(.vertical, showsIndicators: true) {
+                Color.clear.frame(width: 0, height: 0)
+                    .onAppear {
+                        timelineViewModel.setViewportWidth(geo.size.width - timelineViewModel.trackHeaderWidth - 4)
+                    }
+                    .onChange(of: geo.size.width) { _, newWidth in
+                        timelineViewModel.setViewportWidth(newWidth - timelineViewModel.trackHeaderWidth - 4)
+                    }
                 HStack(alignment: .top, spacing: 0) {
                     // Track headers — fixed width, scroll vertically with tracks (lazy)
                     LazyVStack(spacing: 0, pinnedViews: []) {

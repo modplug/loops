@@ -127,11 +127,13 @@ public final class TimelineViewModel {
     /// Zooms in by one step.
     public func zoomIn() {
         pixelsPerBar = min(pixelsPerBar * Self.zoomFactor, Self.maxPixelsPerBar)
+        recalculateTotalBars()
     }
 
     /// Zooms out by one step.
     public func zoomOut() {
         pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, Self.minPixelsPerBar)
+        recalculateTotalBars()
     }
 
     /// Zooms in/out around a specific timeline X position.
@@ -145,6 +147,7 @@ public final class TimelineViewModel {
         } else {
             pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, Self.minPixelsPerBar)
         }
+        recalculateTotalBars()
         let newX = xPosition(forBar: barUnderCursor)
         let oldX = CGFloat(barUnderCursor - 1.0) * oldPPB
         return newX - oldX
@@ -201,11 +204,44 @@ public final class TimelineViewModel {
         return baseHeight + CGFloat(laneCount) * Self.automationSubLaneHeight
     }
 
+    /// Minimum number of bars shown in the timeline.
+    public static let minimumTotalBars: Int = 64
+
+    /// Extra bars of padding shown after the last container.
+    private static let barPadding: Int = 16
+
+    /// Visible viewport width in points (set by the timeline's container view).
+    public var viewportWidth: CGFloat = 0
+
+    /// Furthest bar with content.
+    private var contentEndBar: Int = 0
+
     /// Expands the timeline's total bars if the given bar exceeds the current range.
     public func ensureBarVisible(_ bar: Int) {
         if bar > totalBars {
             totalBars = bar + 8
         }
+    }
+
+    /// Updates the content extent from the given tracks and recalculates totalBars.
+    public func updateTotalBars(for tracks: [Track]) {
+        contentEndBar = tracks.flatMap(\.containers).map(\.endBar).max() ?? 0
+        recalculateTotalBars()
+    }
+
+    /// Sets the visible viewport width and recalculates totalBars.
+    public func setViewportWidth(_ width: CGFloat) {
+        guard abs(viewportWidth - width) > 1 else { return }
+        viewportWidth = width
+        recalculateTotalBars()
+    }
+
+    /// Recalculates totalBars from content extent, viewport size, and minimum.
+    private func recalculateTotalBars() {
+        let viewportBars = viewportWidth > 0
+            ? Int(ceil(viewportWidth / pixelsPerBar)) + Self.barPadding
+            : 0
+        totalBars = max(contentEndBar + Self.barPadding, viewportBars, Self.minimumTotalBars)
     }
 
     /// Returns the number of unique automation lanes across all containers and track-level automation.

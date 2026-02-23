@@ -117,6 +117,7 @@ public struct LoopsRootView: View {
         }
         .onChange(of: viewModel.currentSong?.tracks) { _, newValue in
             midiActivityMonitor.updateTracks(newValue ?? [])
+            timelineViewModel.updateTotalBars(for: newValue ?? [])
         }
         .onChange(of: setlistViewModel?.isPerformMode) { _, newValue in
             transportViewModel.isPerformMode = newValue ?? false
@@ -154,6 +155,9 @@ public struct LoopsRootView: View {
             // Sync metronome config from the current song
             let config = viewModel.currentSong?.metronomeConfig ?? MetronomeConfig()
             transportViewModel.applyMetronomeConfig(config)
+
+            // Size timeline to fit song content
+            timelineViewModel.updateTotalBars(for: viewModel.currentSong?.tracks ?? [])
 
             // Wire container recording callbacks
             transportViewModel.onRecordingPeaksUpdated = { [weak viewModel] containerID, peaks in

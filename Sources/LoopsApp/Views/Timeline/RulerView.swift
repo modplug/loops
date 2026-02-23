@@ -34,10 +34,23 @@ public struct RulerView: View {
         return selectedRange
     }
 
+    /// Step between labeled bar numbers based on zoom level.
+    private var labelStep: Int {
+        let minLabelWidth: CGFloat = 30
+        let niceSteps = [1, 2, 4, 5, 8, 10, 16, 20, 25, 32, 50, 64, 100, 200, 500, 1000]
+        for step in niceSteps {
+            if CGFloat(step) * pixelsPerBar >= minLabelWidth {
+                return step
+            }
+        }
+        return 1000
+    }
+
     public var body: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, size in
                 let height = size.height
+                let step = labelStep
 
                 // Bottom border
                 var bottomLine = Path()
@@ -48,15 +61,19 @@ public struct RulerView: View {
                 for bar in 1...totalBars {
                     let x = CGFloat(bar - 1) * pixelsPerBar
 
-                    // Tick mark at bottom
-                    var path = Path()
-                    path.move(to: CGPoint(x: x, y: height - 6))
-                    path.addLine(to: CGPoint(x: x, y: height))
-                    context.stroke(path, with: .color(.secondary.opacity(0.5)), lineWidth: 0.5)
+                    // Tick mark at bottom (skip when bars are too dense)
+                    if pixelsPerBar >= 4 {
+                        var path = Path()
+                        path.move(to: CGPoint(x: x, y: height - 6))
+                        path.addLine(to: CGPoint(x: x, y: height))
+                        context.stroke(path, with: .color(.secondary.opacity(0.5)), lineWidth: 0.5)
+                    }
 
-                    // Bar number — small, near top
-                    let text = Text("\(bar)").font(.system(size: 9, weight: .regular)).foregroundColor(.secondary)
-                    context.draw(text, at: CGPoint(x: x + 3, y: 5), anchor: .topLeading)
+                    // Bar number — only at appropriate intervals
+                    if bar == 1 || bar % step == 0 {
+                        let text = Text("\(bar)").font(.system(size: 9, weight: .regular)).foregroundColor(.secondary)
+                        context.draw(text, at: CGPoint(x: x + 3, y: 5), anchor: .topLeading)
+                    }
 
                     // Beat ticks within bar
                     if pixelsPerBar > 50 {
