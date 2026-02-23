@@ -1205,4 +1205,291 @@ struct PlaybackSchedulerTests {
 
         scheduler.cleanup()
     }
+
+    // MARK: - Incremental Graph Update Tests
+
+    /// Creates a two-track fixture for incremental update tests.
+    /// Returns the fixture plus individual track/container IDs for modification.
+    private static func makeTwoTrackFixture() throws -> (
+        tempDir: URL,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording],
+        trackAID: ID<Track>,
+        trackBID: ID<Track>,
+        containerAID: ID<Container>,
+        containerBID: ID<Container>
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let sampleCount: AVAudioFrameCount = 352800
+        var recordings: [ID<SourceRecording>: SourceRecording] = [:]
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+
+        let recIDA = ID<SourceRecording>()
+        let bufA = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        bufA.frameLength = sampleCount
+        if let d = bufA.floatChannelData {
+            for i in 0..<Int(sampleCount) { d[0][i] = sin(Float(i) * 0.01) * 0.1 }
+        }
+        let fileA = tempDir.appendingPathComponent("trackA.caf")
+        let afA = try AVAudioFile(forWriting: fileA, settings: format.settings)
+        try afA.write(from: bufA)
+        recordings[recIDA] = SourceRecording(filename: "trackA.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let recIDB = ID<SourceRecording>()
+        let bufB = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        bufB.frameLength = sampleCount
+        if let d = bufB.floatChannelData {
+            for i in 0..<Int(sampleCount) { d[0][i] = sin(Float(i) * 0.02) * 0.1 }
+        }
+        let fileB = tempDir.appendingPathComponent("trackB.caf")
+        let afB = try AVAudioFile(forWriting: fileB, settings: format.settings)
+        try afB.write(from: bufB)
+        recordings[recIDB] = SourceRecording(filename: "trackB.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let containerAID = ID<Container>()
+        let containerA = Container(id: containerAID, name: "Container A", startBar: 1, lengthBars: 4, sourceRecordingID: recIDA)
+        let trackAID = ID<Track>()
+        let trackA = Track(id: trackAID, name: "Track A", kind: .audio, containers: [containerA])
+
+        let containerBID = ID<Container>()
+        let containerB = Container(id: containerBID, name: "Container B", startBar: 1, lengthBars: 4, sourceRecordingID: recIDB)
+        let trackBID = ID<Track>()
+        let trackB = Track(id: trackBID, name: "Track B", kind: .audio, containers: [containerB])
+
+        let song = Song(name: "Two Track Song", tracks: [trackA, trackB])
+        return (tempDir, song, recordings, trackAID, trackBID, containerAID, containerBID)
+    }
+
+    @Test("prepareIncremental returns empty set when nothing changed",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func prepareIncrementalNoChanges() async throws {
+        let fixture = try Self.makeTwoTrackFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+
+        // Full prepare first
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // Incremental with same song — nothing changed
+        let changed = await scheduler.prepareIncremental(
+            song: fixture.song,
+            sourceRecordings: fixture.recordings
+        )
+        #expect(changed.isEmpty)
+
+        scheduler.cleanup()
+    }
+
+    @Test("prepareIncremental rebuilds only the track with added effect",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func prepareIncrementalSingleTrackChanged() async throws {
+        let fixture = try Self.makeTwoTrackFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // Modify track B by adding an effect
+        let effect = InsertEffect(component: Self.delayComponent, displayName: "AUDelay", orderIndex: 0)
+        var modifiedTrackB = fixture.song.tracks[1]
+        modifiedTrackB.insertEffects = [effect]
+        let modifiedSong = Song(
+            id: fixture.song.id,
+            name: fixture.song.name,
+            tracks: [fixture.song.tracks[0], modifiedTrackB]
+        )
+
+        let changed = await scheduler.prepareIncremental(
+            song: modifiedSong,
+            sourceRecordings: fixture.recordings
+        )
+
+        // Only track B should have been rebuilt
+        #expect(changed.count == 1)
+        #expect(changed.contains(fixture.trackBID))
+        #expect(!changed.contains(fixture.trackAID))
+
+        scheduler.cleanup()
+    }
+
+    @Test("prepareIncremental preserves track A's subgraph when track B changes",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func prepareIncrementalPreservesUnchangedTrack() async throws {
+        let fixture = try Self.makeTwoTrackFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // Get track A's player node before incremental update
+        let playerA = Self.playerNode(in: scheduler, containerID: fixture.containerAID)
+        let playerAConnected = playerA.engine != nil
+
+        // Modify track B by adding an effect
+        let effect = InsertEffect(component: Self.delayComponent, displayName: "AUDelay", orderIndex: 0)
+        var modifiedTrackB = fixture.song.tracks[1]
+        modifiedTrackB.insertEffects = [effect]
+        let modifiedSong = Song(
+            id: fixture.song.id,
+            name: fixture.song.name,
+            tracks: [fixture.song.tracks[0], modifiedTrackB]
+        )
+
+        _ = await scheduler.prepareIncremental(
+            song: modifiedSong,
+            sourceRecordings: fixture.recordings
+        )
+
+        // Track A's player node should be the SAME instance (not rebuilt)
+        let playerAAfter = Self.playerNode(in: scheduler, containerID: fixture.containerAID)
+        #expect(playerA === playerAAfter)
+        #expect(playerAConnected)
+
+        scheduler.cleanup()
+    }
+
+    @Test("prepareIncremental falls back to full prepare when no prior fingerprints",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func prepareIncrementalFallbackToFull() async throws {
+        let fixture = try Self.makeTwoTrackFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+
+        // Call prepareIncremental without a prior prepare — should fall back to full
+        let changed = await scheduler.prepareIncremental(
+            song: fixture.song,
+            sourceRecordings: fixture.recordings
+        )
+
+        // All non-master tracks should be reported as changed
+        #expect(changed.contains(fixture.trackAID))
+        #expect(changed.contains(fixture.trackBID))
+
+        scheduler.cleanup()
+    }
+
+    @Test("currentPlaybackBar returns nil when not playing",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func currentPlaybackBarWhenStopped() async throws {
+        let fixture = try Self.makeTestFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // Not playing — should return nil
+        #expect(scheduler.currentPlaybackBar() == nil)
+        #expect(!scheduler.isActive)
+
+        scheduler.cleanup()
+    }
+
+    @Test("currentPlaybackBar returns position near fromBar immediately after play",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func currentPlaybackBarAfterPlay() async throws {
+        let fixture = try Self.makeTestFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        scheduler.play(
+            song: fixture.song,
+            fromBar: 2.0,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+
+        #expect(scheduler.isActive)
+        // Immediately after play, position should be very close to 2.0
+        if let bar = scheduler.currentPlaybackBar() {
+            #expect(bar >= 2.0)
+            #expect(bar < 2.1)  // Less than 0.1 bar elapsed
+        } else {
+            Issue.record("Expected non-nil playback bar")
+        }
+
+        scheduler.stop()
+        scheduler.cleanup()
+    }
+
+    @Test("Rapid prepareIncremental cycles don't crash",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func rapidIncrementalCycles() async throws {
+        let fixture = try Self.makeTwoTrackFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = AVAudioEngine()
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+
+        // Initial prepare
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // Create two alternating song variants
+        let effect = InsertEffect(component: Self.delayComponent, displayName: "AUDelay", orderIndex: 0)
+        var trackBWithEffect = fixture.song.tracks[1]
+        trackBWithEffect.insertEffects = [effect]
+        let songWithEffect = Song(
+            id: fixture.song.id,
+            name: fixture.song.name,
+            tracks: [fixture.song.tracks[0], trackBWithEffect]
+        )
+
+        // Rapidly toggle effect on/off
+        for i in 0..<20 {
+            let song = (i % 2 == 0) ? songWithEffect : fixture.song
+            _ = await scheduler.prepareIncremental(
+                song: song,
+                sourceRecordings: fixture.recordings
+            )
+        }
+
+        scheduler.cleanup()
+    }
+
+    @Test("playChangedTracks schedules only specified tracks",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func playChangedTracksSchedulesSpecifiedOnly() async throws {
+        let fixture = try Self.makeTwoTrackFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // Play only track B containers
+        scheduler.playChangedTracks(
+            [fixture.trackBID],
+            song: fixture.song,
+            fromBar: 1.0,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+
+        // Track B's player should be playing, track A's should not
+        let playerA = Self.playerNode(in: scheduler, containerID: fixture.containerAID)
+        let playerB = Self.playerNode(in: scheduler, containerID: fixture.containerBID)
+        #expect(!playerA.isPlaying)
+        #expect(playerB.isPlaying)
+
+        scheduler.stop()
+        scheduler.cleanup()
+    }
 }

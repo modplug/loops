@@ -80,6 +80,78 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// MIDI notes currently sounding (for sending note-off on stop).
     private var activeMIDINotes: [(trackID: ID<Track>, note: UInt8, channel: UInt8)] = []
 
+    // MARK: - Graph Fingerprinting (for incremental updates)
+
+    /// Fingerprint of an effect slot — captures what determines the audio graph shape.
+    /// Preset data changes don't require graph rebuild (applied live), so not included.
+    private struct EffectShapeFingerprint: Equatable {
+        let component: AudioComponentInfo
+    }
+
+    /// Fingerprint of a container's graph shape — determines when the per-container
+    /// subgraph (player → instrument → effects → mixer) needs rebuilding.
+    private struct ContainerGraphFingerprint: Equatable {
+        let id: ID<Container>
+        let sourceRecordingID: ID<SourceRecording>?
+        let effects: [EffectShapeFingerprint]
+        let instrumentOverride: AudioComponentInfo?
+        let parentContainerID: ID<Container>?
+    }
+
+    /// Fingerprint of a track's graph shape — determines when the per-track
+    /// subgraph (track mixer → track effects → output target) needs rebuilding.
+    private struct TrackGraphFingerprint: Equatable {
+        let kind: TrackKind
+        let effects: [EffectShapeFingerprint]
+        let isEffectChainBypassed: Bool
+        let containers: [ContainerGraphFingerprint]
+        let instrumentComponent: AudioComponentInfo?
+
+        static func from(_ track: Track, allContainers: [Container]) -> TrackGraphFingerprint {
+            let effects: [EffectShapeFingerprint] = track.isEffectChainBypassed ? [] :
+                track.insertEffects
+                    .sorted(by: { $0.orderIndex < $1.orderIndex })
+                    .filter { !$0.isBypassed }
+                    .map { EffectShapeFingerprint(component: $0.component) }
+
+            let containers = track.containers.map { container -> ContainerGraphFingerprint in
+                let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
+                let cEffects: [EffectShapeFingerprint] = resolved.isEffectChainBypassed ? [] :
+                    resolved.insertEffects
+                        .sorted(by: { $0.orderIndex < $1.orderIndex })
+                        .filter { !$0.isBypassed }
+                        .map { EffectShapeFingerprint(component: $0.component) }
+                return ContainerGraphFingerprint(
+                    id: container.id,
+                    sourceRecordingID: resolved.sourceRecordingID,
+                    effects: cEffects,
+                    instrumentOverride: resolved.instrumentOverride,
+                    parentContainerID: container.parentContainerID
+                )
+            }
+
+            return TrackGraphFingerprint(
+                kind: track.kind,
+                effects: effects,
+                isEffectChainBypassed: track.isEffectChainBypassed,
+                containers: containers,
+                instrumentComponent: track.instrumentComponent
+            )
+        }
+    }
+
+    /// Stored graph fingerprints from the last prepare() — used to diff and
+    /// skip rebuilding unchanged tracks during incremental updates.
+    private var preparedTrackFingerprints: [ID<Track>: TrackGraphFingerprint] = [:]
+    private var preparedMasterFingerprint: TrackGraphFingerprint?
+
+    /// Whether playback is active (has been scheduled and not stopped).
+    public var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return playbackStartTime != nil
+    }
+
     public init(engine: AVAudioEngine, audioDirURL: URL) {
         self.engine = engine
         self.audioUnitHost = AudioUnitHost(engine: engine)
@@ -360,6 +432,434 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 lock.unlock()
             }
         }
+
+        // Store graph fingerprints for incremental comparison
+        var newFingerprints: [ID<Track>: TrackGraphFingerprint] = [:]
+        for track in song.tracks where track.kind != .master {
+            newFingerprints[track.id] = TrackGraphFingerprint.from(track, allContainers: allContainers)
+        }
+        let masterFP = song.masterTrack.map { TrackGraphFingerprint.from($0, allContainers: allContainers) }
+        lock.lock()
+        preparedTrackFingerprints = newFingerprints
+        preparedMasterFingerprint = masterFP
+        lock.unlock()
+    }
+
+    /// Incrementally updates the audio graph, rebuilding only tracks whose
+    /// effects, instruments, or containers have changed since the last prepare().
+    /// Unchanged tracks continue playing without interruption.
+    ///
+    /// Returns the set of track IDs whose subgraphs were rebuilt.
+    /// Empty set means nothing changed (no engine restart needed).
+    @MainActor
+    public func prepareIncremental(
+        song: Song,
+        sourceRecordings: [ID<SourceRecording>: SourceRecording]
+    ) async -> Set<ID<Track>> {
+        let allContainers = song.tracks.flatMap(\.containers)
+
+        // Compute new fingerprints
+        var newFingerprints: [ID<Track>: TrackGraphFingerprint] = [:]
+        for track in song.tracks where track.kind != .master {
+            newFingerprints[track.id] = TrackGraphFingerprint.from(track, allContainers: allContainers)
+        }
+        let newMasterFP = song.masterTrack.map { TrackGraphFingerprint.from($0, allContainers: allContainers) }
+
+        // Compare against stored fingerprints
+        lock.lock()
+        let oldFingerprints = preparedTrackFingerprints
+        let oldMasterFP = preparedMasterFingerprint
+        lock.unlock()
+
+        // If no previous fingerprints, fall back to full prepare
+        guard !oldFingerprints.isEmpty else {
+            await prepare(song: song, sourceRecordings: sourceRecordings)
+            return Set(song.tracks.filter { $0.kind != .master }.map(\.id))
+        }
+
+        // Identify changed, added, and removed tracks
+        var changedTrackIDs = Set<ID<Track>>()
+        for (trackID, newFP) in newFingerprints {
+            if oldFingerprints[trackID] != newFP {
+                changedTrackIDs.insert(trackID)
+            }
+        }
+        // Tracks in old but not in new = removed
+        let removedTrackIDs = Set(oldFingerprints.keys).subtracting(Set(newFingerprints.keys))
+        let masterChanged = newMasterFP != oldMasterFP
+
+        let hasGraphChanges = !changedTrackIDs.isEmpty || !removedTrackIDs.isEmpty || masterChanged
+        guard hasGraphChanges else {
+            // Nothing changed — just update files and recording URLs
+            var updatedURLs: [ID<SourceRecording>: URL] = [:]
+            var updatedFiles: [ID<SourceRecording>: AVAudioFile] = [:]
+            for (id, recording) in sourceRecordings {
+                let fileURL = audioDirURL.appendingPathComponent(recording.filename)
+                if let file = try? AVAudioFile(forReading: fileURL) {
+                    updatedFiles[id] = file
+                    updatedURLs[id] = fileURL
+                }
+            }
+            lock.lock()
+            audioFiles = updatedFiles
+            recordingFileURLs = updatedURLs
+            lock.unlock()
+            return []
+        }
+
+        // ── Phase 1: Pre-load AU units for changed tracks (async, engine keeps running) ──
+
+        var preloadedMasterEffects: [AVAudioUnit] = []
+        if masterChanged {
+            let masterTrack = song.masterTrack
+            if let master = masterTrack, !master.isEffectChainBypassed {
+                for effect in master.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                    guard !effect.isBypassed else { continue }
+                    guard !Task.isCancelled else { return [] }
+                    if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
+                        if let presetData = effect.presetData {
+                            try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
+                        }
+                        preloadedMasterEffects.append(unit)
+                    }
+                }
+            }
+        }
+
+        guard !Task.isCancelled else { return [] }
+
+        struct PreloadedContainer {
+            let container: Container
+            let instrument: AVAudioUnit?
+            let effects: [AVAudioUnit]
+            let audioFormat: AVAudioFormat?
+        }
+        struct PreloadedTrack {
+            let track: Track
+            let effects: [AVAudioUnit]
+            let containers: [PreloadedContainer]
+        }
+
+        // Load audio files
+        var loadedFiles: [ID<SourceRecording>: AVAudioFile] = [:]
+        var newRecordingFileURLs: [ID<SourceRecording>: URL] = [:]
+        for (id, recording) in sourceRecordings {
+            let fileURL = audioDirURL.appendingPathComponent(recording.filename)
+            if let file = try? AVAudioFile(forReading: fileURL) {
+                loadedFiles[id] = file
+                newRecordingFileURLs[id] = fileURL
+            }
+        }
+
+        guard !Task.isCancelled else { return [] }
+
+        var preloadedChangedTracks: [PreloadedTrack] = []
+        for track in song.tracks {
+            if track.kind == .master { continue }
+            guard changedTrackIDs.contains(track.id) else { continue }
+            guard !Task.isCancelled else { return [] }
+
+            var trackEffects: [AVAudioUnit] = []
+            if !track.isEffectChainBypassed {
+                for effect in track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                    guard !effect.isBypassed else { continue }
+                    if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
+                        if let presetData = effect.presetData {
+                            try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
+                        }
+                        trackEffects.append(unit)
+                    }
+                }
+            }
+
+            var preloadedContainers: [PreloadedContainer] = []
+            for container in track.containers {
+                guard !Task.isCancelled else { return [] }
+                let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
+                let hasAudio = resolved.sourceRecordingID != nil
+                let hasMIDI = resolved.midiSequence != nil
+                let isLinkedClone = container.parentContainerID != nil
+                guard hasAudio || hasMIDI || isLinkedClone else { continue }
+
+                let fileFormat: AVAudioFormat?
+                if let recID = resolved.sourceRecordingID {
+                    fileFormat = loadedFiles[recID]?.processingFormat
+                } else {
+                    fileFormat = nil
+                }
+
+                var instrumentUnit: AVAudioUnit?
+                if let override = resolved.instrumentOverride {
+                    instrumentUnit = try? await audioUnitHost.loadAudioUnit(component: override)
+                }
+
+                var effectUnits: [AVAudioUnit] = []
+                if !resolved.isEffectChainBypassed {
+                    for effect in resolved.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                        guard !effect.isBypassed else { continue }
+                        if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
+                            if let presetData = effect.presetData {
+                                try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
+                            }
+                            effectUnits.append(unit)
+                        }
+                    }
+                }
+
+                preloadedContainers.append(PreloadedContainer(
+                    container: resolved,
+                    instrument: instrumentUnit,
+                    effects: effectUnits,
+                    audioFormat: fileFormat
+                ))
+            }
+
+            preloadedChangedTracks.append(PreloadedTrack(
+                track: track,
+                effects: trackEffects,
+                containers: preloadedContainers
+            ))
+        }
+
+        guard !Task.isCancelled else { return [] }
+
+        // ── Phase 2: Stop engine, selectively rebuild graph, restart ──
+
+        print("[PLAY] prepareIncremental: \(changedTrackIDs.count) changed, \(removedTrackIDs.count) removed, master=\(masterChanged)")
+
+        let wasRunning = engine.isRunning
+        if wasRunning { engine.stop() }
+        defer { if wasRunning { try? engine.start() } }
+
+        // Clean up removed tracks
+        for trackID in removedTrackIDs {
+            cleanupTrackSubgraph(trackID: trackID)
+        }
+
+        // Clean up changed tracks
+        for trackID in changedTrackIDs {
+            cleanupTrackSubgraph(trackID: trackID)
+        }
+
+        // Update files
+        lock.lock()
+        audioFiles = loadedFiles
+        recordingFileURLs = newRecordingFileURLs
+        lock.unlock()
+
+        // Determine output target
+        let outputTarget: AVAudioNode
+        if masterChanged {
+            cleanupMasterChain()
+
+            if let master = song.masterTrack {
+                let masterMixer = AVAudioMixerNode()
+                engine.attach(masterMixer)
+                masterMixer.volume = master.volume
+                masterMixer.pan = master.pan
+
+                for unit in preloadedMasterEffects {
+                    engine.attach(unit)
+                }
+
+                lock.lock()
+                masterMixerNode = masterMixer
+                masterEffectUnits = preloadedMasterEffects
+                lock.unlock()
+
+                if preloadedMasterEffects.isEmpty {
+                    engine.connect(masterMixer, to: engine.mainMixerNode, format: nil)
+                } else {
+                    engine.connect(masterMixer, to: preloadedMasterEffects[0], format: nil)
+                    for i in 0..<(preloadedMasterEffects.count - 1) {
+                        engine.connect(preloadedMasterEffects[i], to: preloadedMasterEffects[i + 1], format: nil)
+                    }
+                    engine.connect(preloadedMasterEffects[preloadedMasterEffects.count - 1], to: engine.mainMixerNode, format: nil)
+                }
+
+                outputTarget = masterMixer
+
+                // Reconnect unchanged track mixers to new master output
+                lock.lock()
+                let unchangedMixers = trackMixers.filter { !changedTrackIDs.contains($0.key) && !removedTrackIDs.contains($0.key) }
+                let unchangedEffects = trackEffectUnits.filter { !changedTrackIDs.contains($0.key) && !removedTrackIDs.contains($0.key) }
+                lock.unlock()
+
+                for (trackID, mixer) in unchangedMixers {
+                    if let effects = unchangedEffects[trackID], !effects.isEmpty {
+                        // Reconnect last effect to new output target
+                        engine.disconnectNodeOutput(effects[effects.count - 1])
+                        engine.connect(effects[effects.count - 1], to: outputTarget, format: nil)
+                    } else {
+                        engine.disconnectNodeOutput(mixer)
+                        engine.connect(mixer, to: outputTarget, format: nil)
+                    }
+                }
+            } else {
+                outputTarget = engine.mainMixerNode
+            }
+        } else {
+            lock.lock()
+            outputTarget = masterMixerNode ?? engine.mainMixerNode
+            lock.unlock()
+        }
+
+        // Build changed track subgraphs
+        let hasSolo = song.tracks.contains { $0.isSoloed }
+        for preloaded in preloadedChangedTracks {
+            let trackMixer = AVAudioMixerNode()
+            engine.attach(trackMixer)
+            let effectivelyMuted = preloaded.track.isMuted
+                || (hasSolo && !preloaded.track.isSoloed)
+            trackMixer.volume = effectivelyMuted ? 0.0 : preloaded.track.volume
+            trackMixer.pan = preloaded.track.pan
+
+            for unit in preloaded.effects {
+                engine.attach(unit)
+            }
+
+            lock.lock()
+            trackMixers[preloaded.track.id] = trackMixer
+            trackEffectUnits[preloaded.track.id] = preloaded.effects
+            lock.unlock()
+
+            if preloaded.effects.isEmpty {
+                engine.connect(trackMixer, to: outputTarget, format: nil)
+            } else {
+                engine.connect(trackMixer, to: preloaded.effects[0], format: nil)
+                for i in 0..<(preloaded.effects.count - 1) {
+                    engine.connect(preloaded.effects[i], to: preloaded.effects[i + 1], format: nil)
+                }
+                engine.connect(preloaded.effects[preloaded.effects.count - 1], to: outputTarget, format: nil)
+            }
+
+            for pc in preloaded.containers {
+                let player = AVAudioPlayerNode()
+                engine.attach(player)
+
+                if let inst = pc.instrument {
+                    engine.attach(inst)
+                }
+                for unit in pc.effects {
+                    engine.attach(unit)
+                }
+
+                var chain: [AVAudioNode] = []
+                if let inst = pc.instrument { chain.append(inst) }
+                chain.append(contentsOf: pc.effects)
+
+                let playerFormat = pc.audioFormat
+                if chain.isEmpty {
+                    engine.connect(player, to: trackMixer, format: playerFormat)
+                } else {
+                    engine.connect(player, to: chain[0], format: playerFormat)
+                    for i in 0..<(chain.count - 1) {
+                        engine.connect(chain[i], to: chain[i + 1], format: nil)
+                    }
+                    engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
+                }
+
+                let containerAudioFile: AVAudioFile?
+                if let recID = pc.container.sourceRecordingID,
+                   let url = newRecordingFileURLs[recID] {
+                    containerAudioFile = try? AVAudioFile(forReading: url)
+                } else {
+                    containerAudioFile = nil
+                }
+
+                lock.lock()
+                containerSubgraphs[pc.container.id] = ContainerSubgraph(
+                    playerNode: player,
+                    instrumentUnit: pc.instrument,
+                    effectUnits: pc.effects,
+                    trackMixer: trackMixer,
+                    audioFile: containerAudioFile
+                )
+                lock.unlock()
+            }
+        }
+
+        // Store updated fingerprints
+        lock.lock()
+        preparedTrackFingerprints = newFingerprints
+        preparedMasterFingerprint = newMasterFP
+        lock.unlock()
+
+        return changedTrackIDs.union(removedTrackIDs)
+    }
+
+    /// Reschedules containers on specific tracks from the given bar position.
+    /// Used after prepareIncremental() to start audio on rebuilt tracks while
+    /// unchanged tracks continue playing uninterrupted.
+    public func playChangedTracks(
+        _ changedTrackIDs: Set<ID<Track>>,
+        song: Song,
+        fromBar: Double,
+        bpm: Double,
+        timeSignature: TimeSignature,
+        sampleRate: Double
+    ) {
+        let samplesPerBar = self.samplesPerBar(bpm: bpm, timeSignature: timeSignature, sampleRate: sampleRate)
+        let allContainers = song.tracks.flatMap(\.containers)
+
+        lock.lock()
+        currentSong = song
+        currentBPM = bpm
+        currentTimeSignature = timeSignature
+        currentSampleRate = sampleRate
+        // Rebuild container → track mapping for ALL tracks
+        containerToTrack.removeAll()
+        for track in song.tracks {
+            for container in track.containers {
+                containerToTrack[container.id] = track.id
+            }
+        }
+        lock.unlock()
+
+        // Schedule containers only on changed tracks
+        for track in song.tracks {
+            if track.kind == .master { continue }
+            guard changedTrackIDs.contains(track.id) else { continue }
+
+            for container in track.containers {
+                let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
+                if resolved.hasMIDI && resolved.sourceRecordingID == nil {
+                    let containerEndBar = Double(resolved.endBar)
+                    let containerStartBar = Double(resolved.startBar)
+                    if fromBar < containerEndBar && fromBar >= containerStartBar - 1 {
+                        lock.lock()
+                        activeContainers.append(resolved)
+                        tracksWithActiveContainers.insert(track.id)
+                        lock.unlock()
+                        actionDispatcher?.containerDidEnter(resolved)
+                    }
+                    continue
+                }
+                scheduleContainer(container: resolved, fromBar: fromBar, samplesPerBar: samplesPerBar)
+            }
+        }
+
+        // Restart automation timer with updated song data to pick up new track effects
+        restartAutomationTimer(song: song, fromBar: fromBar, bpm: bpm, timeSignature: timeSignature)
+    }
+
+    /// Returns the current playback position in bars, or nil if not playing.
+    /// Uses the automation timer's wall-clock reference for position calculation.
+    public func currentPlaybackBar() -> Double? {
+        lock.lock()
+        guard let startTime = playbackStartTime else {
+            lock.unlock()
+            return nil
+        }
+        let startBar = playbackStartBar
+        let bpm = currentBPM
+        let ts = currentTimeSignature
+        lock.unlock()
+
+        let elapsed = Date().timeIntervalSince(startTime)
+        let secondsPerBeat = 60.0 / bpm
+        let secondsPerBar = Double(ts.beatsPerBar) * secondsPerBeat
+        return startBar + elapsed / secondsPerBar
     }
 
     /// Schedules and starts playback from the given bar position.
@@ -374,11 +874,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let allContainers = song.tracks.flatMap(\.containers)
 
         lock.lock()
-        // Store playback state for trigger-based scheduling
+        // Store playback state for trigger-based scheduling and position tracking
         currentSong = song
         currentBPM = bpm
         currentTimeSignature = timeSignature
         currentSampleRate = sampleRate
+        playbackStartTime = Date()
+        playbackStartBar = fromBar
 
         // Build container → track mapping for monitoring suppression
         for track in song.tracks {
@@ -506,6 +1008,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         audioFiles.removeAll()
         recordingFileURLs.removeAll()
         currentSong = nil
+        preparedTrackFingerprints.removeAll()
+        preparedMasterFingerprint = nil
         lock.unlock()
 
         // Engine operations on local copies — no lock needed
@@ -537,6 +1041,75 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         // Cleanup master mixer and effects
         for unit in mEffectUnits {
+            engine.disconnectNodeOutput(unit)
+            engine.detach(unit)
+        }
+        if let masterMixer = mMixer {
+            engine.disconnectNodeOutput(masterMixer)
+            engine.detach(masterMixer)
+        }
+    }
+
+    /// Tears down a single track's subgraph (containers, effects, mixer) from the engine.
+    /// Must be called while the engine is stopped.
+    @MainActor
+    private func cleanupTrackSubgraph(trackID: ID<Track>) {
+        lock.lock()
+        // Find and remove container subgraphs belonging to this track
+        let trackMixer = trackMixers.removeValue(forKey: trackID)
+        let effects = trackEffectUnits.removeValue(forKey: trackID)
+        var removedSubgraphs: [ContainerSubgraph] = []
+        for (containerID, subgraph) in containerSubgraphs {
+            if subgraph.trackMixer === trackMixer {
+                removedSubgraphs.append(subgraph)
+                containerSubgraphs.removeValue(forKey: containerID)
+                containerToTrack.removeValue(forKey: containerID)
+                activeContainers.removeAll { $0.id == containerID }
+            }
+        }
+        tracksWithActiveContainers.remove(trackID)
+        lock.unlock()
+
+        // Detach nodes from engine
+        for subgraph in removedSubgraphs {
+            subgraph.playerNode.stop()
+            engine.disconnectNodeOutput(subgraph.playerNode)
+            engine.detach(subgraph.playerNode)
+            if let inst = subgraph.instrumentUnit {
+                engine.disconnectNodeOutput(inst)
+                engine.detach(inst)
+            }
+            for unit in subgraph.effectUnits {
+                engine.disconnectNodeOutput(unit)
+                engine.detach(unit)
+            }
+        }
+
+        if let effects {
+            for unit in effects {
+                engine.disconnectNodeOutput(unit)
+                engine.detach(unit)
+            }
+        }
+
+        if let mixer = trackMixer {
+            engine.disconnectNodeOutput(mixer)
+            engine.detach(mixer)
+        }
+    }
+
+    /// Tears down only the master mixer chain (master mixer node + master effects).
+    /// Must be called while the engine is stopped.
+    @MainActor
+    private func cleanupMasterChain() {
+        lock.lock()
+        let mEffects = masterEffectUnits
+        masterEffectUnits.removeAll()
+        let mMixer = masterMixerNode
+        masterMixerNode = nil
+        lock.unlock()
+
+        for unit in mEffects {
             engine.disconnectNodeOutput(unit)
             engine.detach(unit)
         }
@@ -1271,6 +1844,38 @@ public final class PlaybackScheduler: @unchecked Sendable {
         playbackStartTime = nil
         lock.unlock()
         timer?.cancel()
+    }
+
+    /// Restarts the automation timer with updated song data, preserving
+    /// the current playback position. Used after incremental graph updates
+    /// to pick up new track effects and automation lanes.
+    private func restartAutomationTimer(
+        song: Song,
+        fromBar: Double,
+        bpm: Double,
+        timeSignature: TimeSignature
+    ) {
+        // Capture the current playback position before stopping the old timer
+        lock.lock()
+        let oldStartTime = playbackStartTime
+        let oldStartBar = playbackStartBar
+        let oldBPM = currentBPM
+        let oldTS = currentTimeSignature
+        lock.unlock()
+
+        // Calculate where we are now in the playback
+        let currentBar: Double
+        if let startTime = oldStartTime {
+            let elapsed = Date().timeIntervalSince(startTime)
+            let secondsPerBeat = 60.0 / oldBPM
+            let secondsPerBar = Double(oldTS.beatsPerBar) * secondsPerBeat
+            currentBar = oldStartBar + elapsed / secondsPerBar
+        } else {
+            currentBar = fromBar
+        }
+
+        stopAutomationTimer()
+        startAutomationTimer(song: song, fromBar: currentBar, bpm: bpm, timeSignature: timeSignature)
     }
 }
 

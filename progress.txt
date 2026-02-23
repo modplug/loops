@@ -957,3 +957,32 @@
 - Cross-song copies are independent (new IDs, not linked clones); linked clone relationships preserved within copied tracks
 - 10 new tests: copy container to song by name match, copy container creates new track when no match, copy track with all containers, track matching logic (name/kind/none), undo cross-song paste, copy track preserves effects, cannot copy to same song, cannot copy master track, otherSongs excludes current, copy preserves MIDI sequence
 - All 953 tests pass
+
+### Iteration 5 — #115 Resizable tracks panel (header width)
+- `TimelineViewModel`: `trackHeaderWidth: CGFloat` (default 160) stored property for column width
+- `TimelineViewModel`: `defaultHeaderWidth = 160`, `minHeaderWidth = 100`, `maxHeaderWidth = 400` static constants
+- `TimelineViewModel`: `setTrackHeaderWidth(_:)` method with min/max clamping
+- `TrackHeaderView`: added `headerWidth: CGFloat` parameter (default 160), replaced hard-coded `width: 160` in outer frame and automation sub-lane labels
+- `MainContentView`: replaced all hard-coded `width: 160` for track headers (ruler spacer, sections label, track header column, master track header, both add-track buttons) with `timelineViewModel.trackHeaderWidth`
+- `MainContentView`: new `headerColumnResizeHandle` computed property — 4pt vertical bar with `NSCursor.resizeLeftRight` on hover, `DragGesture` that calls `setTrackHeaderWidth` with drag delta, placed between header column and timeline in all four layout areas (ruler, sections, track area, master track)
+- `MainContentView`: `headerDragStartWidth` `@State` tracks initial width at drag start for delta calculation
+- All track headers resize together (column-level, not per-track)
+- Width persists during the session via `TimelineViewModel` observable state
+- 6 new tests: default 160pt, set stores value, clamps to min (100pt), clamps to max (400pt), exact boundaries, persists during session
+- All 959 tests pass
+
+### Iteration 6 — #117 Incremental audio engine graph updates
+- Graph fingerprinting: `TrackGraphFingerprint`, `ContainerGraphFingerprint`, `EffectShapeFingerprint` structs capture the "shape" of the audio graph (effect components, container recordings, instruments) — preset data and mix params excluded since they don't require graph rebuild
+- `PlaybackScheduler.prepare()` now stores graph fingerprints after building, enabling incremental comparison on subsequent calls
+- `PlaybackScheduler.prepareIncremental()`: diffs new song against stored fingerprints, identifies changed/added/removed tracks, pre-loads AU units while engine runs (Phase 1), then briefly stops engine only for the synchronous attach/connect of changed tracks (Phase 2), unchanged tracks' player nodes resume automatically after engine restart
+- `PlaybackScheduler.cleanupTrackSubgraph()`: tears down a single track's container subgraphs, effects, and mixer node without touching other tracks
+- `PlaybackScheduler.cleanupMasterChain()`: tears down only the master mixer chain; reconnects unchanged track mixers to new master output
+- `PlaybackScheduler.playChangedTracks()`: reschedules containers only on rebuilt tracks from the current bar position, restarts automation timer with updated song data
+- `PlaybackScheduler.currentPlaybackBar()`: computes current position from wall-clock reference for mid-playback position capture
+- `PlaybackScheduler.isActive`: public property for checking if playback is in progress
+- `PlaybackScheduler.play()` now sets `playbackStartTime`/`playbackStartBar` immediately, ensuring position tracking works even without automation timer
+- `PlaybackScheduler.restartAutomationTimer()`: preserves playback position continuity when restarting the timer after incremental updates
+- `TransportViewModel.refreshPlaybackGraph()`: public API for mid-playback graph updates — calls `prepareIncremental()` + `playChangedTracks()` when playing, or invalidates cache for next play() when stopped
+- Master track changes handled: if master effects change, master chain is rebuilt and all track mixers are reconnected to the new output target
+- 8 new tests: prepareIncremental no changes (empty set), single track changed (only that track rebuilt), preserve unchanged track's player node (same instance), fallback to full prepare without prior fingerprints, currentPlaybackBar nil when stopped, currentPlaybackBar near fromBar after play, rapid incremental cycles (no crashes), playChangedTracks schedules only specified tracks
+- All 967 tests pass

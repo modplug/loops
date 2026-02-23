@@ -466,6 +466,52 @@ public final class TransportViewModel {
         }
     }
 
+    /// Incrementally updates the audio graph during playback when effects,
+    /// instruments, or containers change. Only rebuilds the affected tracks'
+    /// subgraphs — unchanged tracks continue playing without interruption.
+    ///
+    /// Call this after modifying a track's effects/instruments while playback
+    /// is active. If not currently playing, marks the graph as stale so the
+    /// next play() triggers a full prepare.
+    public func refreshPlaybackGraph() {
+        guard isPlaying, let scheduler = playbackScheduler,
+              let engine = engineManager, let context = songProvider?() else {
+            // Not playing — just invalidate the cache so next play() rebuilds
+            lastPreparedSong = nil
+            lastPreparedRecordingIDs = []
+            return
+        }
+
+        let gen = playbackGeneration
+        let previousTask = playbackTask
+        previousTask?.cancel()
+        playbackTask = Task {
+            _ = await previousTask?.value
+            guard self.playbackGeneration == gen else { return }
+
+            let currentBar = scheduler.currentPlaybackBar() ?? self.playheadBar
+            let changedTracks = await scheduler.prepareIncremental(
+                song: context.song,
+                sourceRecordings: context.recordings
+            )
+            guard self.playbackGeneration == gen else { return }
+
+            if !changedTracks.isEmpty {
+                scheduler.playChangedTracks(
+                    changedTracks,
+                    song: context.song,
+                    fromBar: currentBar,
+                    bpm: self.bpm,
+                    timeSignature: self.timeSignature,
+                    sampleRate: engine.currentSampleRate
+                )
+            }
+
+            self.lastPreparedSong = context.song
+            self.lastPreparedRecordingIDs = Set(context.recordings.keys)
+        }
+    }
+
     /// Serializes playback Tasks so only one prepare() runs at a time.
     /// Each new Task awaits the previous one before starting, preventing
     /// concurrent cleanup/prepare races on the audio graph.
