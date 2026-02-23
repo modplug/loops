@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CoreFoundation
 import LoopsCore
+import ObjCHelpers
 
 /// Schedules playback of recorded containers on AVAudioPlayerNodes,
 /// synchronized to the timeline's bar/beat grid.
@@ -154,6 +155,22 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private var preparedTrackFingerprints: [ID<Track>: TrackGraphFingerprint] = [:]
     private var preparedMasterFingerprint: TrackGraphFingerprint?
 
+    /// Container IDs whose effect chains failed to connect during the last prepare.
+    /// The UI uses this to show a red indicator on broken effects.
+    private var _failedContainerIDs: Set<ID<Container>> = []
+
+    /// Returns the set of container IDs whose effect chains failed to connect.
+    public var failedContainerIDs: Set<ID<Container>> {
+        lock.lock()
+        defer { lock.unlock() }
+        return _failedContainerIDs
+    }
+
+    /// Callback fired after `prepare`/`prepareIncremental` finishes, delivering
+    /// the set of container IDs whose effect chains failed to connect.
+    /// Called on the main actor.
+    public var onEffectChainStatusChanged: ((Set<ID<Container>>) -> Void)?
+
     /// Whether playback is active (has been scheduled and not stopped).
     public var isActive: Bool {
         lock.lock()
@@ -256,6 +273,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                     }
                     preloadedMasterEffects.append(unit)
+                } else {
+                    print("[WARN] Failed to load AU: \(effect.displayName)")
                 }
             }
         }
@@ -289,6 +308,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                             try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                         }
                         trackEffects.append(unit)
+                    } else {
+                        print("[WARN] Failed to load AU: \(effect.displayName)")
                     }
                 }
             }
@@ -300,11 +321,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 let hasAudio = resolved.sourceRecordingID != nil
                 let hasMIDI = resolved.midiSequence != nil
                 let isLinkedClone = container.parentContainerID != nil
+                let needsInstrument = track.instrumentComponent != nil || resolved.instrumentOverride != nil
 
                 // Skip containers without audio or MIDI unless they are linked clones
                 // (linked clones get pre-allocated subgraphs so audio can be
-                // registered mid-session when the parent finishes recording).
-                guard hasAudio || hasMIDI || isLinkedClone else { continue }
+                // registered mid-session when the parent finishes recording)
+                // or the track has an instrument (MIDI tracks that need subgraphs).
+                guard hasAudio || hasMIDI || isLinkedClone || needsInstrument else { continue }
 
                 let fileFormat: AVAudioFormat?
                 if let recID = resolved.sourceRecordingID {
@@ -316,6 +339,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 var instrumentUnit: AVAudioUnit?
                 if let override = resolved.instrumentOverride {
                     instrumentUnit = try? await audioUnitHost.loadAudioUnit(component: override)
+                } else if let trackInstrument = track.instrumentComponent {
+                    instrumentUnit = try? await audioUnitHost.loadAudioUnit(component: trackInstrument)
                 }
 
                 var effectUnits: [AVAudioUnit] = []
@@ -327,6 +352,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                                 try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                             }
                             effectUnits.append(unit)
+                        } else {
+                            print("[WARN] Failed to load AU: \(effect.displayName)")
                         }
                     }
                 }
@@ -372,6 +399,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         audioFiles = loadedFiles
         self.recordingFileURLs = recordingFileURLs
         lock.unlock()
+
+        var newFailedContainerIDs = Set<ID<Container>>()
 
         // Master mixer chain
         let outputTarget: AVAudioNode
@@ -450,15 +479,36 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 chain.append(contentsOf: pc.effects)
 
                 let playerFormat = pc.audioFormat
+                var chainConnected = true
                 if chain.isEmpty {
                     engine.connect(player, to: trackMixer, format: playerFormat)
                 } else {
-                    engine.connect(player, to: chain[0], format: playerFormat)
-                    for i in 0..<(chain.count - 1) {
-                        engine.connect(chain[i], to: chain[i + 1], format: nil)
+                    // Use nil format for effect chain connections to let AU
+                    // nodes auto-negotiate formats. Passing playerFormat here
+                    // crashes (-10868) when a plugin doesn't support that
+                    // format/channel-count. Wrap in ObjC try/catch since
+                    // engine.connect() raises NSExceptions on failure.
+                    var connectError: NSError?
+                    let success = ObjCTryCatch({
+                        self.engine.connect(player, to: chain[0], format: nil)
+                        for i in 0..<(chain.count - 1) {
+                            self.engine.connect(chain[i], to: chain[i + 1], format: nil)
+                        }
+                        self.engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
+                    }, &connectError)
+                    if !success {
+                        print("[WARN] Effect chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
+                        for node in chain { engine.detach(node) }
+                        engine.connect(player, to: trackMixer, format: playerFormat)
+                        chainConnected = false
+                        newFailedContainerIDs.insert(pc.container.id)
                     }
-                    engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
                 }
+
+                // When the fallback fired, chain nodes were detached from the engine.
+                // Store empty arrays so cleanup() doesn't try to disconnect them.
+                let actualEffects = chainConnected ? pc.effects : []
+                let actualInstrument = chainConnected ? pc.instrument : nil
 
                 // Create a per-container AVAudioFile handle so player nodes
                 // don't share a read cursor on the render thread.
@@ -473,14 +523,19 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 lock.lock()
                 containerSubgraphs[pc.container.id] = ContainerSubgraph(
                     playerNode: player,
-                    instrumentUnit: pc.instrument,
-                    effectUnits: pc.effects,
+                    instrumentUnit: actualInstrument,
+                    effectUnits: actualEffects,
                     trackMixer: trackMixer,
                     audioFile: containerAudioFile
                 )
                 lock.unlock()
             }
         }
+
+        lock.lock()
+        _failedContainerIDs = newFailedContainerIDs
+        lock.unlock()
+        onEffectChainStatusChanged?(newFailedContainerIDs)
 
         // Store graph fingerprints for incremental comparison
         var newFingerprints: [ID<Track>: TrackGraphFingerprint] = [:]
@@ -574,6 +629,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                             try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                         }
                         preloadedMasterEffects.append(unit)
+                    } else {
+                        print("[WARN] Failed to load AU: \(effect.displayName)")
                     }
                 }
             }
@@ -621,6 +678,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                             try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                         }
                         trackEffects.append(unit)
+                    } else {
+                        print("[WARN] Failed to load AU: \(effect.displayName)")
                     }
                 }
             }
@@ -632,7 +691,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 let hasAudio = resolved.sourceRecordingID != nil
                 let hasMIDI = resolved.midiSequence != nil
                 let isLinkedClone = container.parentContainerID != nil
-                guard hasAudio || hasMIDI || isLinkedClone else { continue }
+                let needsInstrument = track.instrumentComponent != nil || resolved.instrumentOverride != nil
+                guard hasAudio || hasMIDI || isLinkedClone || needsInstrument else { continue }
 
                 let fileFormat: AVAudioFormat?
                 if let recID = resolved.sourceRecordingID {
@@ -644,6 +704,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 var instrumentUnit: AVAudioUnit?
                 if let override = resolved.instrumentOverride {
                     instrumentUnit = try? await audioUnitHost.loadAudioUnit(component: override)
+                } else if let trackInstrument = track.instrumentComponent {
+                    instrumentUnit = try? await audioUnitHost.loadAudioUnit(component: trackInstrument)
                 }
 
                 var effectUnits: [AVAudioUnit] = []
@@ -655,6 +717,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                                 try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                             }
                             effectUnits.append(unit)
+                        } else {
+                            print("[WARN] Failed to load AU: \(effect.displayName)")
                         }
                     }
                 }
@@ -679,6 +743,44 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // ── Phase 2: Stop engine, selectively rebuild graph, restart ──
 
         print("[PLAY] prepareIncremental: \(changedTrackIDs.count) changed, \(removedTrackIDs.count) removed, master=\(masterChanged)")
+
+        // Capture current AU state from containers being rebuilt so preset
+        // changes made via the plugin UI are preserved across graph rebuilds.
+        // Keyed by component info so reordering matches the right plugin.
+        lock.lock()
+        var capturedAUStates: [ID<Container>: [(AudioComponentInfo, Data)]] = [:]
+        for trackID in changedTrackIDs {
+            for (containerID, subgraph) in containerSubgraphs where containerToTrack[containerID] == trackID {
+                var states: [(AudioComponentInfo, Data)] = []
+                for unit in subgraph.effectUnits {
+                    let d = unit.audioComponentDescription
+                    let info = AudioComponentInfo(
+                        componentType: d.componentType,
+                        componentSubType: d.componentSubType,
+                        componentManufacturer: d.componentManufacturer
+                    )
+                    if let state = unit.auAudioUnit.fullState,
+                       let data = try? PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0) {
+                        states.append((info, data))
+                    }
+                }
+                if !states.isEmpty {
+                    capturedAUStates[containerID] = states
+                }
+            }
+        }
+        lock.unlock()
+
+        // Keep failures from unchanged containers, clear for rebuilt ones
+        lock.lock()
+        var newFailedContainerIDs = _failedContainerIDs
+        let rebuildTrackIDs = changedTrackIDs.union(removedTrackIDs)
+        for (containerID, _) in containerSubgraphs {
+            if let trackID = containerToTrack[containerID], rebuildTrackIDs.contains(trackID) {
+                newFailedContainerIDs.remove(containerID)
+            }
+        }
+        lock.unlock()
 
         let wasRunning = engine.isRunning
         if wasRunning { engine.stop() }
@@ -802,14 +904,51 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 chain.append(contentsOf: pc.effects)
 
                 let playerFormat = pc.audioFormat
+                var chainConnected = true
                 if chain.isEmpty {
                     engine.connect(player, to: trackMixer, format: playerFormat)
                 } else {
-                    engine.connect(player, to: chain[0], format: playerFormat)
-                    for i in 0..<(chain.count - 1) {
-                        engine.connect(chain[i], to: chain[i + 1], format: nil)
+                    // Use nil format for effect chain connections (same as prepare())
+                    var connectError: NSError?
+                    let success = ObjCTryCatch({
+                        self.engine.connect(player, to: chain[0], format: nil)
+                        for i in 0..<(chain.count - 1) {
+                            self.engine.connect(chain[i], to: chain[i + 1], format: nil)
+                        }
+                        self.engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
+                    }, &connectError)
+                    if !success {
+                        print("[WARN] Effect chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
+                        for node in chain { engine.detach(node) }
+                        engine.connect(player, to: trackMixer, format: playerFormat)
+                        chainConnected = false
+                        newFailedContainerIDs.insert(pc.container.id)
                     }
-                    engine.connect(chain[chain.count - 1], to: trackMixer, format: nil)
+                }
+
+                let actualEffects = chainConnected ? pc.effects : []
+                let actualInstrument = chainConnected ? pc.instrument : nil
+
+                // Restore captured AU state from the previous graph, matching by
+                // AudioComponentInfo so reordering preserves the right preset on each
+                // plugin. This preserves preset changes made via the plugin UI that
+                // weren't saved to the model.
+                if chainConnected, var captured = capturedAUStates[pc.container.id] {
+                    for unit in actualEffects {
+                        let d = unit.audioComponentDescription
+                        let info = AudioComponentInfo(
+                            componentType: d.componentType,
+                            componentSubType: d.componentSubType,
+                            componentManufacturer: d.componentManufacturer
+                        )
+                        if let idx = captured.firstIndex(where: { $0.0 == info }) {
+                            let data = captured[idx].1
+                            if let state = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] {
+                                unit.auAudioUnit.fullState = state
+                            }
+                            captured.remove(at: idx)
+                        }
+                    }
                 }
 
                 let containerAudioFile: AVAudioFile?
@@ -823,14 +962,20 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 lock.lock()
                 containerSubgraphs[pc.container.id] = ContainerSubgraph(
                     playerNode: player,
-                    instrumentUnit: pc.instrument,
-                    effectUnits: pc.effects,
+                    instrumentUnit: actualInstrument,
+                    effectUnits: actualEffects,
                     trackMixer: trackMixer,
                     audioFile: containerAudioFile
                 )
+                containerToTrack[pc.container.id] = preloaded.track.id
                 lock.unlock()
             }
         }
+
+        lock.lock()
+        _failedContainerIDs = newFailedContainerIDs
+        lock.unlock()
+        onEffectChainStatusChanged?(newFailedContainerIDs)
 
         // Store updated fingerprints
         lock.lock()
@@ -1051,6 +1196,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
         print("[PERF] stop(skipDeclick=\(skipDeclick)): \(String(format: "%.1f", stopMs))ms — \(subgraphs.count) subgraphs, \(midiNotes.count) MIDI notes")
     }
 
+    /// Safely disconnects a node's output, catching NSExceptions from nodes
+    /// that were already detached (e.g. after a failed effect chain connection).
+    private func safeDisconnect(_ node: AVAudioNode) {
+        var error: NSError?
+        ObjCTryCatch({ self.engine.disconnectNodeOutput(node) }, &error)
+    }
+
     /// Cleans up all nodes and audio files.
     ///
     /// Must run on the main actor — AVAudioEngine topology operations (disconnect,
@@ -1088,37 +1240,37 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Engine operations on local copies — no lock needed
         for (_, subgraph) in subgraphs {
             subgraph.playerNode.stop()
-            engine.disconnectNodeOutput(subgraph.playerNode)
+            safeDisconnect(subgraph.playerNode)
             engine.detach(subgraph.playerNode)
             if let inst = subgraph.instrumentUnit {
-                engine.disconnectNodeOutput(inst)
+                safeDisconnect(inst)
                 engine.detach(inst)
             }
             for unit in subgraph.effectUnits {
-                engine.disconnectNodeOutput(unit)
+                safeDisconnect(unit)
                 engine.detach(unit)
             }
         }
 
         for (_, units) in tEffectUnits {
             for unit in units {
-                engine.disconnectNodeOutput(unit)
+                safeDisconnect(unit)
                 engine.detach(unit)
             }
         }
 
         for (_, mixer) in tMixers {
-            engine.disconnectNodeOutput(mixer)
+            safeDisconnect(mixer)
             engine.detach(mixer)
         }
 
         // Cleanup master mixer and effects
         for unit in mEffectUnits {
-            engine.disconnectNodeOutput(unit)
+            safeDisconnect(unit)
             engine.detach(unit)
         }
         if let masterMixer = mMixer {
-            engine.disconnectNodeOutput(masterMixer)
+            safeDisconnect(masterMixer)
             engine.detach(masterMixer)
         }
     }
@@ -1199,27 +1351,27 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Detach nodes from engine
         for subgraph in removedSubgraphs {
             subgraph.playerNode.stop()
-            engine.disconnectNodeOutput(subgraph.playerNode)
+            safeDisconnect(subgraph.playerNode)
             engine.detach(subgraph.playerNode)
             if let inst = subgraph.instrumentUnit {
-                engine.disconnectNodeOutput(inst)
+                safeDisconnect(inst)
                 engine.detach(inst)
             }
             for unit in subgraph.effectUnits {
-                engine.disconnectNodeOutput(unit)
+                safeDisconnect(unit)
                 engine.detach(unit)
             }
         }
 
         if let effects {
             for unit in effects {
-                engine.disconnectNodeOutput(unit)
+                safeDisconnect(unit)
                 engine.detach(unit)
             }
         }
 
         if let mixer = trackMixer {
-            engine.disconnectNodeOutput(mixer)
+            safeDisconnect(mixer)
             engine.detach(mixer)
         }
     }
@@ -1236,11 +1388,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
         lock.unlock()
 
         for unit in mEffects {
-            engine.disconnectNodeOutput(unit)
+            safeDisconnect(unit)
             engine.detach(unit)
         }
         if let masterMixer = mMixer {
-            engine.disconnectNodeOutput(masterMixer)
+            safeDisconnect(masterMixer)
             engine.detach(masterMixer)
         }
     }
@@ -2186,6 +2338,44 @@ extension PlaybackScheduler {
         guard let instrumentUnit else { return }
         let bytes = message.midiBytes
         instrumentUnit.auAudioUnit.scheduleMIDIEventBlock?(AUEventSampleTimeImmediate, 0, bytes.count, bytes)
+    }
+
+    /// Forwards raw MIDI input from external devices to matching instrument tracks.
+    /// Filters events by device ID and channel based on track routing settings.
+    /// Called from the MIDI input callback on an arbitrary thread.
+    public func forwardExternalMIDI(word: UInt32, deviceID: String?) {
+        let status = UInt8((word >> 16) & 0xF0)
+        let channel = UInt8((word >> 16) & 0x0F)
+        let data1 = UInt8((word >> 8) & 0xFF)
+        let data2 = UInt8(word & 0xFF)
+
+        // Only forward note on/off, CC, and pitch bend
+        guard status == 0x80 || status == 0x90 || status == 0xB0 || status == 0xE0 else { return }
+
+        lock.lock()
+        let song = currentSong
+        lock.unlock()
+        guard let song else { return }
+
+        for track in song.tracks where track.kind == .midi {
+            // Filter by device ID (nil = all devices)
+            if let trackDevice = track.midiInputDeviceID, trackDevice != deviceID {
+                continue
+            }
+            // Filter by channel (nil = omni)
+            if let trackChannel = track.midiInputChannel, trackChannel != channel + 1 {
+                continue
+            }
+
+            let message: MIDIActionMessage
+            switch status {
+            case 0x90: message = .noteOn(channel: channel, note: data1, velocity: data2)
+            case 0x80: message = .noteOff(channel: channel, note: data1, velocity: data2)
+            case 0xB0: message = .controlChange(channel: channel, controller: data1, value: data2)
+            default: continue
+            }
+            sendMIDINoteToTrack(track.id, message: message)
+        }
     }
 }
 
