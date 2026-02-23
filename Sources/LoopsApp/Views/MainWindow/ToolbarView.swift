@@ -4,7 +4,9 @@ import LoopsCore
 /// Transport bar with play, stop, record arm, BPM, time signature, metronome, and count-in controls.
 public struct ToolbarView: View {
     @Bindable var viewModel: TransportViewModel
-    @State private var bpmText: String = "120.0"
+
+    /// Callback for when the user changes BPM (persists to song model).
+    var onBPMChange: ((Double) -> Void)?
 
     /// Callback for when the user selects a new time signature.
     var onTimeSignatureChange: ((Int, Int) -> Void)?
@@ -39,6 +41,7 @@ public struct ToolbarView: View {
 
     public init(
         viewModel: TransportViewModel,
+        onBPMChange: ((Double) -> Void)? = nil,
         onTimeSignatureChange: ((Int, Int) -> Void)? = nil,
         onMetronomeConfigChange: ((MetronomeConfig) -> Void)? = nil,
         onUndo: (() -> Void)? = nil,
@@ -52,6 +55,7 @@ public struct ToolbarView: View {
         isVirtualKeyboardVisible: Binding<Bool> = .constant(false)
     ) {
         self.viewModel = viewModel
+        self.onBPMChange = onBPMChange
         self.onTimeSignatureChange = onTimeSignatureChange
         self.onMetronomeConfigChange = onMetronomeConfigChange
         self.onUndo = onUndo
@@ -63,7 +67,6 @@ public struct ToolbarView: View {
         self.undoState = undoState
         self.availableOutputPorts = availableOutputPorts
         self._isVirtualKeyboardVisible = isVirtualKeyboardVisible
-        _bpmText = State(initialValue: String(format: "%.1f", viewModel.bpm))
     }
 
     public var body: some View {
@@ -145,20 +148,16 @@ public struct ToolbarView: View {
             Divider().frame(height: 24)
 
             // BPM
-            HStack(spacing: 4) {
-                Text("BPM")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("BPM", text: $bpmText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 60)
-                    .onSubmit {
-                        if let value = Double(bpmText) {
-                            viewModel.updateBPM(value)
-                        }
-                        bpmText = String(format: "%.1f", viewModel.bpm)
-                    }
-            }
+            DraggableBPMView(
+                bpm: viewModel.bpm,
+                onBPMChange: { newBPM in
+                    viewModel.updateBPM(newBPM)
+                },
+                onBPMCommit: { newBPM in
+                    viewModel.updateBPM(newBPM)
+                    onBPMChange?(viewModel.bpm)
+                }
+            )
 
             // Time signature picker
             Menu {
@@ -322,6 +321,100 @@ public struct ToolbarView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+/// Draggable BPM control: displays BPM as text, drag up/down to adjust,
+/// shift+drag for fine control, double-click to enter manual edit mode.
+struct DraggableBPMView: View {
+    var bpm: Double
+    /// Called continuously during drag for live preview.
+    var onBPMChange: (Double) -> Void
+    /// Called on drag end or text field submit to persist.
+    var onBPMCommit: (Double) -> Void
+
+    @State private var isEditing = false
+    @State private var editText = ""
+    @State private var dragStartBPM: Double?
+    @FocusState private var textFieldFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("BPM")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if isEditing {
+                TextField("BPM", text: $editText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 60)
+                    .focused($textFieldFocused)
+                    .onSubmit {
+                        if let value = Double(editText) {
+                            onBPMCommit(value)
+                        }
+                        isEditing = false
+                    }
+                    .onExitCommand {
+                        isEditing = false
+                    }
+                    .onChange(of: textFieldFocused) { _, focused in
+                        if !focused {
+                            isEditing = false
+                        }
+                    }
+            } else {
+                Text(String(format: "%.1f", bpm))
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 60)
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                    )
+                    .onTapGesture(count: 2) {
+                        editText = String(format: "%.1f", bpm)
+                        isEditing = true
+                        // Delay focus to next run loop so the TextField is mounted
+                        DispatchQueue.main.async {
+                            textFieldFocused = true
+                        }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { value in
+                                let anchor = dragStartBPM ?? bpm
+                                if dragStartBPM == nil {
+                                    dragStartBPM = bpm
+                                }
+                                let shift = NSEvent.modifierFlags.contains(.shift)
+                                let sensitivity: Double = shift ? 0.05 : 1.0
+                                // Drag up = increase BPM (negative Y = up)
+                                let delta = -value.translation.height * sensitivity
+                                let newBPM = min(max(anchor + delta, 20.0), 300.0)
+                                onBPMChange(newBPM)
+                            }
+                            .onEnded { value in
+                                let anchor = dragStartBPM ?? bpm
+                                let shift = NSEvent.modifierFlags.contains(.shift)
+                                let sensitivity: Double = shift ? 0.05 : 1.0
+                                let delta = -value.translation.height * sensitivity
+                                let newBPM = min(max(anchor + delta, 20.0), 300.0)
+                                onBPMCommit(newBPM)
+                                dragStartBPM = nil
+                            }
+                    )
+                    .onHover { hovering in
+                        if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+                    }
+                    .help("Drag to adjust BPM. Shift+drag for fine control. Double-click to type.")
+            }
+        }
     }
 }
 

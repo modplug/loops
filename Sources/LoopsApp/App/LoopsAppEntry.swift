@@ -26,6 +26,11 @@ public struct LoopsRootView: View {
             VStack(spacing: 0) {
                 ToolbarView(
                     viewModel: transportViewModel,
+                    onBPMChange: { bpm in
+                        if let songID = viewModel.currentSongID {
+                            viewModel.setBPM(songID: songID, bpm: bpm)
+                        }
+                    },
                     onTimeSignatureChange: { beatsPerBar, beatUnit in
                         if let songID = viewModel.currentSongID {
                             viewModel.setTimeSignature(songID: songID, beatsPerBar: beatsPerBar, beatUnit: beatUnit)
@@ -88,6 +93,9 @@ public struct LoopsRootView: View {
         }
         // Note: playheadBar sync uses a direct callback (onPlayheadChanged)
         // rather than .onChange to avoid re-evaluating this view's body at 60fps.
+        .onChange(of: viewModel.currentSong?.tempo.bpm) { _, newValue in
+            transportViewModel.bpm = newValue ?? 120.0
+        }
         .onChange(of: viewModel.currentSong?.countInBars) { _, newValue in
             transportViewModel.countInBars = newValue ?? 0
         }
@@ -129,6 +137,8 @@ public struct LoopsRootView: View {
             viewModel.onSongChanged = { [weak transportViewModel] in
                 transportViewModel?.handleSongChanged()
             }
+            // Sync BPM from the current song
+            transportViewModel.bpm = viewModel.currentSong?.tempo.bpm ?? 120.0
             // Sync count-in bars from the current song
             transportViewModel.countInBars = viewModel.currentSong?.countInBars ?? 0
             // Sync time signature from the current song

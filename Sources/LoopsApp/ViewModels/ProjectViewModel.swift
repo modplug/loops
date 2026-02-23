@@ -398,6 +398,15 @@ public final class ProjectViewModel {
 
     /// Sets the time signature for a song.
     /// Validates beatsPerBar (1–12) and beatUnit (2, 4, 8, or 16).
+    public func setBPM(songID: ID<Song>, bpm: Double) {
+        guard let index = project.songs.firstIndex(where: { $0.id == songID }) else { return }
+        let clamped = min(max(bpm, 20.0), 300.0)
+        guard project.songs[index].tempo.bpm != clamped else { return }
+        registerUndo(actionName: "Set BPM")
+        project.songs[index].tempo = Tempo(bpm: clamped)
+        hasUnsavedChanges = true
+    }
+
     public func setTimeSignature(songID: ID<Song>, beatsPerBar: Int, beatUnit: Int) {
         guard let index = project.songs.firstIndex(where: { $0.id == songID }) else { return }
         guard (1...12).contains(beatsPerBar) else { return }
