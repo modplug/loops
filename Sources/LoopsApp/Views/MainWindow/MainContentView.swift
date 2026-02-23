@@ -1028,6 +1028,16 @@ public struct MainContentView: View {
                 Button("Duplicate Track") {
                     projectViewModel.duplicateTrack(trackID: track.id)
                 }
+                let songs = projectViewModel.otherSongs
+                if !songs.isEmpty {
+                    Menu("Copy Track to Song\u{2026}") {
+                        ForEach(songs, id: \.id) { song in
+                            Button(song.name) {
+                                projectViewModel.copyTrackToSong(trackID: track.id, targetSongID: song.id)
+                            }
+                        }
+                    }
+                }
                 Divider()
                 Button(track.isRecordArmed ? "Disarm Recording" : "Arm for Recording") {
                     projectViewModel.setTrackRecordArmed(trackID: track.id, armed: !track.isRecordArmed)

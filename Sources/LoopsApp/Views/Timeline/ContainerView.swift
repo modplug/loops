@@ -22,6 +22,8 @@ public struct ContainerView: View {
     var onDoubleClick: (() -> Void)?
     var onClone: ((_ newStartBar: Int) -> Void)?
     var onCopy: (() -> Void)?
+    var onCopyToSong: ((_ songID: ID<Song>) -> Void)?
+    var otherSongs: [(id: ID<Song>, name: String)]
     var onDuplicate: (() -> Void)?
     var onLinkClone: (() -> Void)?
     var onUnlink: (() -> Void)?
@@ -58,6 +60,8 @@ public struct ContainerView: View {
         onDoubleClick: (() -> Void)? = nil,
         onClone: ((_ newStartBar: Int) -> Void)? = nil,
         onCopy: (() -> Void)? = nil,
+        onCopyToSong: ((_ songID: ID<Song>) -> Void)? = nil,
+        otherSongs: [(id: ID<Song>, name: String)] = [],
         onDuplicate: (() -> Void)? = nil,
         onLinkClone: (() -> Void)? = nil,
         onUnlink: (() -> Void)? = nil,
@@ -81,6 +85,8 @@ public struct ContainerView: View {
         self.onDoubleClick = onDoubleClick
         self.onClone = onClone
         self.onCopy = onCopy
+        self.onCopyToSong = onCopyToSong
+        self.otherSongs = otherSongs
         self.onDuplicate = onDuplicate
         self.onLinkClone = onLinkClone
         self.onUnlink = onUnlink
@@ -235,6 +241,13 @@ public struct ContainerView: View {
             Button("Link (Create Clone)") { onLinkClone?() }
             if isClone {
                 Button("Unlink (Consolidate)") { onUnlink?() }
+            }
+            if !otherSongs.isEmpty {
+                Menu("Copy to Song\u{2026}") {
+                    ForEach(otherSongs, id: \.id) { song in
+                        Button(song.name) { onCopyToSong?(song.id) }
+                    }
+                }
             }
             Divider()
             Button("Edit...") { onDoubleClick?() }

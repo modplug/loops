@@ -23,6 +23,8 @@ public struct TrackLaneView: View {
     var onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)?
     var onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)?
     var onCopyContainer: ((_ containerID: ID<Container>) -> Void)?
+    var onCopyContainerToSong: ((_ containerID: ID<Container>, _ songID: ID<Song>) -> Void)?
+    var otherSongs: [(id: ID<Song>, name: String)]
     var onDuplicateContainer: ((_ containerID: ID<Container>) -> Void)?
     var onLinkCloneContainer: ((_ containerID: ID<Container>) -> Void)?
     var onUnlinkContainer: ((_ containerID: ID<Container>) -> Void)?
@@ -64,6 +66,8 @@ public struct TrackLaneView: View {
         onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)? = nil,
         onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)? = nil,
         onCopyContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onCopyContainerToSong: ((_ containerID: ID<Container>, _ songID: ID<Song>) -> Void)? = nil,
+        otherSongs: [(id: ID<Song>, name: String)] = [],
         onDuplicateContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
         onLinkCloneContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
         onUnlinkContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
@@ -100,6 +104,8 @@ public struct TrackLaneView: View {
         self.onContainerDoubleClick = onContainerDoubleClick
         self.onCloneContainer = onCloneContainer
         self.onCopyContainer = onCopyContainer
+        self.onCopyContainerToSong = onCopyContainerToSong
+        self.otherSongs = otherSongs
         self.onDuplicateContainer = onDuplicateContainer
         self.onLinkCloneContainer = onLinkCloneContainer
         self.onUnlinkContainer = onUnlinkContainer
@@ -175,6 +181,8 @@ public struct TrackLaneView: View {
                         onDoubleClick: { onContainerDoubleClick?(container.id) },
                         onClone: { newStart in onCloneContainer?(container.id, newStart) },
                         onCopy: { onCopyContainer?(container.id) },
+                        onCopyToSong: { songID in onCopyContainerToSong?(container.id, songID) },
+                        otherSongs: otherSongs,
                         onDuplicate: { onDuplicateContainer?(container.id) },
                         onLinkClone: { onLinkCloneContainer?(container.id) },
                         onUnlink: { onUnlinkContainer?(container.id) },

@@ -1657,6 +1657,158 @@ public final class ProjectViewModel {
         return pasted
     }
 
+    // MARK: - Cross-Song Copy
+
+    /// Finds a matching track in the target song by name first, then by kind.
+    /// Returns the track index if found, nil if no match.
+    public func findMatchingTrack(in songIndex: Int, name: String, kind: TrackKind) -> Int? {
+        let tracks = project.songs[songIndex].tracks
+        // Match by name first
+        if let index = tracks.firstIndex(where: { $0.name == name && $0.kind != .master }) {
+            return index
+        }
+        // Fall back to match by kind
+        if let index = tracks.firstIndex(where: { $0.kind == kind && $0.kind != .master }) {
+            return index
+        }
+        return nil
+    }
+
+    /// Copies a container to a different song. If a matching track exists (by name, then kind),
+    /// the container is placed there. Otherwise a new track is created.
+    /// Returns the ID of the new container, or nil on failure.
+    @discardableResult
+    public func copyContainerToSong(trackID: ID<Track>, containerID: ID<Container>, targetSongID: ID<Song>) -> ID<Container>? {
+        guard let sourceSongIndex = project.songs.firstIndex(where: { $0.id == currentSongID }),
+              let targetSongIndex = project.songs.firstIndex(where: { $0.id == targetSongID }) else { return nil }
+        guard sourceSongIndex != targetSongIndex else { return nil }
+        guard let track = project.songs[sourceSongIndex].tracks.first(where: { $0.id == trackID }) else { return nil }
+        guard let container = track.containers.first(where: { $0.id == containerID }) else { return nil }
+
+        registerUndo(actionName: "Copy Container to Song")
+
+        let newContainer = Container(
+            name: container.name,
+            startBar: container.startBar,
+            lengthBars: container.lengthBars,
+            sourceRecordingID: container.sourceRecordingID,
+            linkGroupID: container.linkGroupID,
+            loopSettings: container.loopSettings,
+            insertEffects: container.insertEffects,
+            isEffectChainBypassed: container.isEffectChainBypassed,
+            instrumentOverride: container.instrumentOverride,
+            enterFade: container.enterFade,
+            exitFade: container.exitFade,
+            onEnterActions: container.onEnterActions,
+            onExitActions: container.onExitActions,
+            automationLanes: container.automationLanes,
+            midiSequence: container.midiSequence
+        )
+
+        let trackIndex: Int
+        if let matchIndex = findMatchingTrack(in: targetSongIndex, name: track.name, kind: track.kind) {
+            trackIndex = matchIndex
+        } else {
+            // Create a new track in the target song
+            let newTrack = Track(
+                name: track.name,
+                kind: track.kind,
+                volume: track.volume,
+                pan: track.pan,
+                insertEffects: track.insertEffects,
+                sendLevels: track.sendLevels,
+                instrumentComponent: track.instrumentComponent,
+                inputPortID: track.inputPortID,
+                outputPortID: track.outputPortID,
+                midiInputDeviceID: track.midiInputDeviceID,
+                midiInputChannel: track.midiInputChannel,
+                orderIndex: project.songs[targetSongIndex].tracks.count
+            )
+            project.songs[targetSongIndex].tracks.append(newTrack)
+            project.songs[targetSongIndex].ensureMasterTrackLast()
+            trackIndex = project.songs[targetSongIndex].tracks.firstIndex(where: { $0.id == newTrack.id })!
+        }
+
+        if !hasOverlap(in: project.songs[targetSongIndex].tracks[trackIndex], with: newContainer) {
+            project.songs[targetSongIndex].tracks[trackIndex].containers.append(newContainer)
+            hasUnsavedChanges = true
+            return newContainer.id
+        }
+        return nil
+    }
+
+    /// Copies an entire track (with all containers) to a different song.
+    /// Creates a new track in the target song with matching configuration.
+    /// Returns the ID of the new track, or nil on failure.
+    @discardableResult
+    public func copyTrackToSong(trackID: ID<Track>, targetSongID: ID<Song>) -> ID<Track>? {
+        guard let sourceSongIndex = project.songs.firstIndex(where: { $0.id == currentSongID }),
+              let targetSongIndex = project.songs.firstIndex(where: { $0.id == targetSongID }) else { return nil }
+        guard sourceSongIndex != targetSongIndex else { return nil }
+        guard let track = project.songs[sourceSongIndex].tracks.first(where: { $0.id == trackID }) else { return nil }
+        guard track.kind != .master else { return nil }
+
+        registerUndo(actionName: "Copy Track to Song")
+
+        let copy = Track(
+            name: track.name,
+            kind: track.kind,
+            volume: track.volume,
+            pan: track.pan,
+            isMuted: track.isMuted,
+            isSoloed: track.isSoloed,
+            containers: track.containers.map { container in
+                Container(
+                    name: container.name,
+                    startBar: container.startBar,
+                    lengthBars: container.lengthBars,
+                    sourceRecordingID: container.sourceRecordingID,
+                    linkGroupID: container.linkGroupID,
+                    loopSettings: container.loopSettings,
+                    insertEffects: container.insertEffects,
+                    isEffectChainBypassed: container.isEffectChainBypassed,
+                    instrumentOverride: container.instrumentOverride,
+                    enterFade: container.enterFade,
+                    exitFade: container.exitFade,
+                    onEnterActions: container.onEnterActions,
+                    onExitActions: container.onExitActions,
+                    automationLanes: container.automationLanes,
+                    parentContainerID: container.parentContainerID,
+                    overriddenFields: container.overriddenFields,
+                    midiSequence: container.midiSequence
+                )
+            },
+            insertEffects: track.insertEffects,
+            sendLevels: track.sendLevels,
+            instrumentComponent: track.instrumentComponent,
+            inputPortID: track.inputPortID,
+            outputPortID: track.outputPortID,
+            midiInputDeviceID: track.midiInputDeviceID,
+            midiInputChannel: track.midiInputChannel,
+            isEffectChainBypassed: track.isEffectChainBypassed,
+            trackAutomationLanes: track.trackAutomationLanes,
+            expressionPedalCC: track.expressionPedalCC,
+            expressionPedalTarget: track.expressionPedalTarget,
+            orderIndex: project.songs[targetSongIndex].tracks.count
+        )
+
+        project.songs[targetSongIndex].tracks.append(copy)
+        project.songs[targetSongIndex].ensureMasterTrackLast()
+        // Reindex tracks in target song
+        for i in project.songs[targetSongIndex].tracks.indices {
+            project.songs[targetSongIndex].tracks[i].orderIndex = i
+        }
+        hasUnsavedChanges = true
+        return copy.id
+    }
+
+    /// Returns a list of songs other than the current song, for use in "Copy to Song…" menus.
+    public var otherSongs: [(id: ID<Song>, name: String)] {
+        project.songs.compactMap { song in
+            song.id == currentSongID ? nil : (id: song.id, name: song.name)
+        }
+    }
+
     /// Splits a section at a given bar into two sections.
     @discardableResult
     public func splitSection(sectionID: ID<SectionRegion>, atBar: Int) -> Bool {

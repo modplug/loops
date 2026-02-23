@@ -3489,4 +3489,249 @@ struct ProjectViewModelTests {
         #expect(containerA?.sourceRecordingID == recording.id)
         #expect(containerB?.sourceRecordingID == nil)
     }
+
+    // MARK: - Cross-Song Copy/Paste
+
+    @Test("Copy container to different song places it in matching track by name")
+    @MainActor
+    func copyContainerToSongMatchByName() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks.first(where: { $0.kind == .audio })!.id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks.first(where: { $0.id == trackID })!.containers[0].id
+        let song1ID = vm.project.songs[0].id
+
+        // Add second song with a matching-name track
+        vm.addSong()
+        let song2ID = vm.project.songs[1].id
+        vm.addTrack(kind: .audio)
+        // Rename to match source track
+        let song2TrackID = vm.project.songs[1].tracks.first(where: { $0.kind == .audio })!.id
+        vm.renameTrack(id: song2TrackID, newName: "Audio 1")
+
+        // Switch back to song 1 to copy from
+        vm.selectSong(id: song1ID)
+        let newContainerID = vm.copyContainerToSong(trackID: trackID, containerID: containerID, targetSongID: song2ID)
+        #expect(newContainerID != nil)
+
+        // Verify container was added to the matching track in song 2
+        let song2Track = vm.project.songs[1].tracks.first(where: { $0.name == "Audio 1" && $0.kind != .master })
+        #expect(song2Track != nil)
+        #expect(song2Track!.containers.contains(where: { $0.id == newContainerID }))
+    }
+
+    @Test("Copy container to different song creates new track when no match")
+    @MainActor
+    func copyContainerToSongCreatesTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks.first(where: { $0.kind == .midi })!.id
+        vm.renameTrack(id: trackID, newName: "Synth Lead")
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks.first(where: { $0.id == trackID })!.containers[0].id
+        let song1ID = vm.project.songs[0].id
+
+        // Add second song with no matching track
+        vm.addSong()
+        let song2ID = vm.project.songs[1].id
+        // Song 2 initially has only master track
+
+        vm.selectSong(id: song1ID)
+        let newContainerID = vm.copyContainerToSong(trackID: trackID, containerID: containerID, targetSongID: song2ID)
+        #expect(newContainerID != nil)
+
+        // A new track should have been created
+        let song2TracksNonMaster = vm.project.songs[1].tracks.filter { $0.kind != .master }
+        #expect(song2TracksNonMaster.count == 1)
+        #expect(song2TracksNonMaster[0].name == "Synth Lead")
+        #expect(song2TracksNonMaster[0].kind == .midi)
+        #expect(song2TracksNonMaster[0].containers.contains(where: { $0.id == newContainerID }))
+    }
+
+    @Test("Copy track to different song duplicates track with all containers")
+    @MainActor
+    func copyTrackToSong() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks.first(where: { $0.kind == .audio })!.id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
+        let song1ID = vm.project.songs[0].id
+
+        vm.addSong()
+        let song2ID = vm.project.songs[1].id
+
+        vm.selectSong(id: song1ID)
+        let newTrackID = vm.copyTrackToSong(trackID: trackID, targetSongID: song2ID)
+        #expect(newTrackID != nil)
+
+        let newTrack = vm.project.songs[1].tracks.first(where: { $0.id == newTrackID })
+        #expect(newTrack != nil)
+        #expect(newTrack!.name == "Audio 1")
+        #expect(newTrack!.kind == .audio)
+        #expect(newTrack!.containers.count == 2)
+        // New containers should have different IDs
+        let sourceContainerIDs = Set(vm.project.songs[0].tracks.first(where: { $0.id == trackID })!.containers.map(\.id))
+        let copiedContainerIDs = Set(newTrack!.containers.map(\.id))
+        #expect(sourceContainerIDs.isDisjoint(with: copiedContainerIDs))
+    }
+
+    @Test("Track matching finds by name first, then by kind")
+    @MainActor
+    func trackMatchingLogic() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+
+        // Create two audio tracks in song 1
+        vm.addTrack(kind: .audio) // "Audio 1"
+        vm.addTrack(kind: .audio) // "Audio 2"
+
+        // Add second song
+        vm.addSong()
+        let song2Index = 1
+        vm.addTrack(kind: .audio) // "Audio 1" in song 2
+
+        // Match by name: "Audio 1" should match the first audio track
+        let match1 = vm.findMatchingTrack(in: song2Index, name: "Audio 1", kind: .audio)
+        #expect(match1 != nil)
+        #expect(vm.project.songs[song2Index].tracks[match1!].name == "Audio 1")
+
+        // Match by kind: "Audio 2" has no name match, falls back to kind match
+        let match2 = vm.findMatchingTrack(in: song2Index, name: "Audio 2", kind: .audio)
+        #expect(match2 != nil)
+        #expect(vm.project.songs[song2Index].tracks[match2!].kind == .audio)
+
+        // No match: MIDI track not present
+        let match3 = vm.findMatchingTrack(in: song2Index, name: "MIDI 1", kind: .midi)
+        #expect(match3 == nil)
+    }
+
+    @Test("Undo cross-song container paste reverts changes in target song")
+    @MainActor
+    func undoCrossSongPaste() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks.first(where: { $0.kind == .audio })!.id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks.first(where: { $0.id == trackID })!.containers[0].id
+        let song1ID = vm.project.songs[0].id
+
+        vm.addSong()
+        let song2ID = vm.project.songs[1].id
+
+        vm.selectSong(id: song1ID)
+        let _ = vm.copyContainerToSong(trackID: trackID, containerID: containerID, targetSongID: song2ID)
+
+        // Song 2 should have a non-master track with a container
+        let song2NonMaster = vm.project.songs[1].tracks.filter { $0.kind != .master }
+        #expect(song2NonMaster.count == 1)
+        #expect(song2NonMaster[0].containers.count == 1)
+
+        // Undo should revert the change — use vm's own undoManager
+        vm.undoManager?.undo()
+        let song2NonMasterAfterUndo = vm.project.songs[1].tracks.filter { $0.kind != .master }
+        #expect(song2NonMasterAfterUndo.isEmpty)
+    }
+
+    @Test("Copy track to song includes effects and routing configuration")
+    @MainActor
+    func copyTrackToSongPreservesConfig() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks.first(where: { $0.kind == .audio })!.id
+
+        // Add an effect to the track
+        let component = AudioComponentInfo(componentType: 0x61756678, componentSubType: 0x74657374, componentManufacturer: 0x54657374)
+        let effect = InsertEffect(component: component, displayName: "TestEffect", orderIndex: 0)
+        vm.addTrackEffect(trackID: trackID, effect: effect)
+        let song1ID = vm.project.songs[0].id
+
+        vm.addSong()
+        let song2ID = vm.project.songs[1].id
+
+        vm.selectSong(id: song1ID)
+        let newTrackID = vm.copyTrackToSong(trackID: trackID, targetSongID: song2ID)
+        #expect(newTrackID != nil)
+
+        let newTrack = vm.project.songs[1].tracks.first(where: { $0.id == newTrackID })
+        #expect(newTrack != nil)
+        #expect(newTrack!.insertEffects.count == 1)
+        #expect(newTrack!.insertEffects[0].displayName == "TestEffect")
+    }
+
+    @Test("Cannot copy track to same song")
+    @MainActor
+    func copyTrackToSameSongFails() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks.first(where: { $0.kind == .audio })!.id
+        let song1ID = vm.project.songs[0].id
+
+        let result = vm.copyTrackToSong(trackID: trackID, targetSongID: song1ID)
+        #expect(result == nil)
+    }
+
+    @Test("Cannot copy master track to another song")
+    @MainActor
+    func copyMasterTrackFails() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let masterID = vm.project.songs[0].tracks.first(where: { $0.kind == .master })!.id
+
+        vm.addSong()
+        let song2ID = vm.project.songs[1].id
+
+        vm.selectSong(id: vm.project.songs[0].id)
+        let result = vm.copyTrackToSong(trackID: masterID, targetSongID: song2ID)
+        #expect(result == nil)
+    }
+
+    @Test("otherSongs returns songs excluding current")
+    @MainActor
+    func otherSongsExcludesCurrent() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        let song1ID = vm.project.songs[0].id
+        vm.addSong()
+        vm.addSong()
+
+        vm.selectSong(id: song1ID)
+        let others = vm.otherSongs
+        #expect(others.count == 2)
+        #expect(!others.contains(where: { $0.id == song1ID }))
+    }
+
+    @Test("Copy container to song preserves MIDI sequence")
+    @MainActor
+    func copyContainerToSongPreservesMIDI() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks.first(where: { $0.kind == .midi })!.id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks.first(where: { $0.id == trackID })!.containers[0].id
+        let note = MIDINoteEvent(pitch: 60, velocity: 100, startBeat: 0.0, duration: 1.0)
+        vm.addMIDINote(containerID: containerID, note: note)
+        let song1ID = vm.project.songs[0].id
+
+        vm.addSong()
+        let song2ID = vm.project.songs[1].id
+
+        vm.selectSong(id: song1ID)
+        let newContainerID = vm.copyContainerToSong(trackID: trackID, containerID: containerID, targetSongID: song2ID)
+        #expect(newContainerID != nil)
+
+        let song2Tracks = vm.project.songs[1].tracks.filter { $0.kind != .master }
+        let newContainer = song2Tracks.flatMap(\.containers).first(where: { $0.id == newContainerID })
+        #expect(newContainer?.midiSequence != nil)
+        #expect(newContainer?.midiSequence?.notes.count == 1)
+        #expect(newContainer?.midiSequence?.notes.first?.pitch == 60)
+    }
 }

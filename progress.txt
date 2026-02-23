@@ -862,3 +862,98 @@
 - Backend reorder methods (`reorderTrackEffects`, `reorderContainerEffects`) already existed with full undo/redo
 - 3 new tests: track effect reorder undo+redo cycle, track effect reorder middle-to-end, container effect reorder undo+redo cycle
 - All 848 tests pass
+
+### Iteration 6 — #110 Extended MIDI mapping targets
+- `MappableControl`: extended from 6 transport-only cases to 13 cases with associated values for mixer, navigation, and song targets
+- New cases: `.trackVolume(trackIndex:)`, `.trackPan(trackIndex:)`, `.trackMute(trackIndex:)`, `.trackSolo(trackIndex:)`, `.trackSend(trackIndex:sendIndex:)`, `.trackSelect(trackIndex:)`, `.songSelect(songIndex:)`
+- Custom Codable with backward-compatible decode: old plain-string format (`"playPause"`) and new keyed format (`{"type":"trackVolume","trackIndex":0}`) both supported
+- `isContinuous` property: true for volume/pan/send (CC value scaling); `valueRange` returns (min, max) per control type
+- `transportControls`, `mixerControls(trackCount:)`, `navigationControls(trackCount:songCount:)` static helpers for categorized enumeration
+- `MIDIDispatcher`: added `onContinuousControlTriggered: ((MappableControl, Float) -> Void)?` callback — continuous controls (volume/pan/send) scale CC 0-127 to their value range and fire continuous callback; toggle controls (mute/solo/select) fire existing `onControlTriggered`
+- `MIDIMappingView`: replaced single flat list with categorized sections (Transport, Mixer, Navigation, Foot Pedal Presets)
+- Mixer section: per-track disclosure groups showing volume/pan/mute/solo controls with learn/clear buttons
+- "Bank Assign..." menu: maps sequential CCs to sequential tracks for volume, pan, mute, or solo in a single action
+- Navigation section: track select and song select entries per track/song
+- `LoopsRootView.setupMIDIParameterDispatch()`: added control dispatcher alongside parameter dispatcher — handles all new control types:
+  - Toggle controls: mute/solo toggle by track index, track select sets `selectedTrackID`, song select calls `selectSong(id:)`, next/previous song support (setlist perform mode or index-based)
+  - Continuous controls: track volume (0-2), pan (-1 to +1), send level (0-1) applied via `ProjectViewModel` methods
+- `ProjectViewModel`: added `onMIDIMappingsChanged` callback (fired on mapping changes from MIDIMappingView), `setTrackSendLevel(trackID:sendIndex:level:)` method with clamping and undo
+- `MIDIMappingView`: fires `onMIDIMappingsChanged` on learn, clear, preset, and bank-assign operations for live dispatcher sync
+- 30 new tests: MappableControl Codable round-trip (all 7 new cases + all transport cases), backward-compat legacy string decode (all 6 original cases), MIDIMapping with new controls round-trip, isContinuous/valueRange properties, displayName for all cases, transportControls/mixerControls/navigationControls helpers, MIDILearnController for trackVolume, MIDIDispatcher continuous routing (volume CC→2.0, pan CC→-1.0..+1.0), toggle routing (mute/songSelect via CC with value), bank-style mapping dispatch, ProjectViewModel mute/solo toggle, song select, volume/pan clamping, send level guard, onMIDIMappingsChanged callback
+- All 878 tests pass
+
+# ============================================================
+# PRD #105: UX Polish, Keyboard Focus, Undo Workflow, MIDI Editing & Layout
+# ============================================================
+
+## Issue Dependency Graph
+# #111 Virtual MIDI keyboard — no blockers
+# #112 Resizable track row heights — no blockers
+# #113 MIDI editor / Piano roll — no blockers
+# #114 Copy containers and tracks between songs — no blockers
+# #115 Resizable tracks panel (header width) — no blockers
+# #116 Inline I/O controls on track headers — no blockers
+# #117 Incremental audio engine graph updates — no blockers
+# #118 Auto-open plugin window after adding effect — no blockers
+# #119 Clean up automation lanes and MIDI mappings on effect/instrument removal — no blockers
+# #120 Reset individual linked container field overrides to parent value — no blockers
+# #121 Resolve linked container fields in inspector display — no blockers
+
+## Completed
+### Iteration 1 — #111 Virtual MIDI keyboard
+- New `VirtualKeyboardView`: 2-octave piano layout (C3–B4 default) with white/black keys rendered via ZStack overlay
+- Mouse/trackpad click sends note-on with velocity determined by vertical position on key (top=soft 1, bottom=loud 127)
+- Release sends note-off, visual feedback (accent color highlight) on pressed keys
+- Octave shift buttons (chevron left/right) change displayed range, clamped to octaves 0–8
+- `PianoLayout` enum: `isBlackKey`, `whiteKeyIndex`, `blackKeyWhiteIndex`, `noteName`, `velocity` utility methods
+- `PlaybackScheduler.sendMIDINoteToTrack`: routes MIDI messages to the first instrument AU unit found for the given track (via subgraph lookup)
+- `TransportViewModel.sendVirtualNote`: public API forwarding to PlaybackScheduler
+- `ToolbarView`: piano keyboard toggle button (pianokeys SF Symbol) with accent color when active
+- `MainContentView`: virtual keyboard docked at bottom of center content (below timeline/mixer), conditionally shown via `isVirtualKeyboardVisible` binding
+- `MainContentView`: Cmd+Shift+K keyboard shortcut to toggle virtual keyboard visibility
+- `LoopsRootView`: `isVirtualKeyboardVisible` state wired to ToolbarView binding and MainContentView binding
+- Notes route to the selected track's instrument via `projectViewModel.selectedTrackID`
+- 19 new tests: PianoLayout (black/white key identification, velocity top/bottom/mid/clamp, note names, white key index, black key position), note ranges (C3-B4 default, octave shift up/down), MIDI message bytes (noteOn/noteOff/channel 1), key counts (14 white + 10 black per 2 octaves), PlaybackScheduler no-op without subgraphs, TransportViewModel no-op without scheduler
+- All 897 tests pass
+
+### Iteration 2 — #112 Resizable track row heights
+- `TimelineViewModel`: `trackHeights: [ID<Track>: CGFloat]` dictionary for per-track custom row heights
+- `TimelineViewModel`: `defaultTrackHeight = 80`, `minimumTrackHeight = 40` static constants
+- `TimelineViewModel`: `baseTrackHeight(for:)` returns custom height or default, `setTrackHeight(_:for:)` with minimum clamping, `resetTrackHeight(for:)` removes custom height
+- `TrackHeaderView`: added `onResizeTrack: ((CGFloat) -> Void)?` and `onResetTrackHeight: (() -> Void)?` callbacks
+- New `TrackResizeHandle` view: 6pt invisible hit area at bottom edge of track header, `NSCursor.resizeUpDown` on hover, `DragGesture` tracks delta from start height, double-tap resets to default
+- `MainContentView`: `trackHeaderWithActions` uses `baseTrackHeight(for:)` instead of hardcoded 80, wires resize/reset callbacks to `TimelineViewModel`
+- `MainContentView`: master track and `regularTrackListContentHeight` also use per-track base heights
+- `TimelineView`: `totalContentHeight` and `ForEach` track lanes use `baseTrackHeight(for:)` for per-track sizing
+- 7 new tests: default height 80pt, set/get custom height, minimum height enforcement (40pt), reset to default, independent heights across tracks, automation uses custom base, TimelineView totalContentHeight with custom heights
+- All 904 tests pass
+
+### Iteration 3 — #113 MIDI editor / Piano roll
+- `MIDISequence.swift`: new model file with `SnapResolution` enum (whole through 1/32), `MIDINoteEvent` struct (pitch, velocity, startBeat, duration, channel), `MIDISequence` struct with sorted/filtered queries
+- `Container.swift`: added `midiSequence: MIDISequence?` field with backward-compatible decoding, `hasMIDI` computed property
+- `ContainerField.swift`: added `.midiSequence` case for clone override tracking
+- `PlaybackScheduler.swift`: MIDI containers now get instrument subgraphs in `prepare()`, MIDI note scheduling via 60Hz timer (note-on/off with `scheduleMIDIEventBlock`), `activeMIDINotes` tracking with note-off on stop
+- `PianoRollView.swift`: full piano roll editor with Canvas grid, note rendering with velocity opacity, drag to move/resize, double-click to create, shift-click multi-select, snap-to-grid toolbar, `VelocityLaneView` for per-note velocity editing, `PianoRollLayout` coordinate mapping helpers
+- `MIDIFileImporter.swift`: standard MIDI file parser (format 0/1, variable-length quantities, running status, tempo meta events)
+- `MIDINoteMinimapView.swift`: compact Canvas preview of MIDI notes inside timeline container rectangles
+- `ProjectViewModel.swift`: added `setContainerMIDISequence`, `addMIDINote`, `removeMIDINote`, `updateMIDINote` (all with undo/redo and clone override marking), `importMIDIFile` for .mid file import
+- `MainContentView.swift`: `openContainerEditor()` routes MIDI containers to piano roll sheet, audio containers to detail editor
+- `TrackLaneView.swift`: extended `.onDrop` handler to detect .mid/.midi files and call `onDropMIDIFile`
+- `TimelineView.swift`: wired `onDropMIDIFile` callback to `ProjectViewModel.importMIDIFile`
+- `ContainerView.swift`: added `MIDINoteMinimapView` overlay for containers with MIDI sequences
+- 38 new tests across 3 suites: MIDISequence model/serialization/clone resolution (16), MIDI file parser (9), ProjectViewModel MIDI editing + PianoRollLayout mapping (13)
+- All 943 tests pass
+
+### Iteration 4 — #114 Copy containers and tracks between songs
+- `ProjectViewModel`: `findMatchingTrack(in:name:kind:)` — finds matching track in target song by name first, then by kind; excludes master tracks
+- `ProjectViewModel`: `copyContainerToSong(trackID:containerID:targetSongID:)` — copies a container to a different song, placing it in a matching track or creating a new track if none matches; preserves all container fields including MIDI sequences; supports undo
+- `ProjectViewModel`: `copyTrackToSong(trackID:targetSongID:)` — copies entire track with all containers, effects, routing, automation, and expression pedal config to a different song; creates new track in target song; reindexes tracks; supports undo
+- `ProjectViewModel`: `otherSongs` computed property — returns list of (id, name) tuples for all songs except the current one, used by context menus
+- `ContainerView`: added `onCopyToSong` callback and `otherSongs` parameter; context menu shows "Copy to Song…" submenu with list of other songs when multiple songs exist
+- `TrackLaneView`: added `onCopyContainerToSong` callback and `otherSongs` parameter, passes through to ContainerView
+- `TimelineView`: wires `onCopyContainerToSong` to `projectViewModel.copyContainerToSong` and passes `projectViewModel.otherSongs`
+- `MainContentView`: track header context menu adds "Copy Track to Song…" submenu (non-master tracks only) listing all other songs, wired to `projectViewModel.copyTrackToSong`
+- Track matching: name match first (exact match), kind match fallback, create new track if no match found
+- Cross-song copies are independent (new IDs, not linked clones); linked clone relationships preserved within copied tracks
+- 10 new tests: copy container to song by name match, copy container creates new track when no match, copy track with all containers, track matching logic (name/kind/none), undo cross-song paste, copy track preserves effects, cannot copy to same song, cannot copy master track, otherSongs excludes current, copy preserves MIDI sequence
+- All 953 tests pass

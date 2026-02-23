@@ -115,6 +115,10 @@ public struct TimelineView: View {
                         onCopyContainer: { containerID in
                             projectViewModel.copyContainer(trackID: track.id, containerID: containerID)
                         },
+                        onCopyContainerToSong: { containerID, songID in
+                            projectViewModel.copyContainerToSong(trackID: track.id, containerID: containerID, targetSongID: songID)
+                        },
+                        otherSongs: projectViewModel.otherSongs,
                         onDuplicateContainer: { containerID in
                             projectViewModel.duplicateContainer(trackID: track.id, containerID: containerID)
                         },
