@@ -1347,11 +1347,24 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         guard let audioFile, let subgraph else { return }
 
-        print("[PLAY] scheduleContainer '\(container.name)' id=\(container.id) bars=\(container.startBar)-\(container.endBar) fileLen=\(audioFile.length) parent=\(container.parentContainerID.map { "\($0)" } ?? "none")")
+        // scheduleSegment interprets startingFrame/frameCount in the audio file's
+        // native sample rate.  The caller computed samplesPerBar using the engine's
+        // output rate, so rescale when the file rate differs.
+        let fileRate = audioFile.fileFormat.sampleRate
+        let fileSPB: Double
+        if fileRate > 0, fileRate != currentSampleRate, currentSampleRate > 0 {
+            fileSPB = samplesPerBar * (fileRate / currentSampleRate)
+        } else {
+            fileSPB = samplesPerBar
+        }
 
-        let containerStartSample = Int64(Double(container.startBar - 1) * samplesPerBar)
-        let containerEndSample = Int64(Double(container.endBar - 1) * samplesPerBar)
-        let playheadSample = Int64((fromBar - 1.0) * samplesPerBar)
+        let audioOffsetSamples = Int64(container.audioStartOffset * fileSPB)
+
+        print("[PLAY] scheduleContainer '\(container.name)' id=\(container.id) bars=\(container.startBar)-\(container.endBar) fileLen=\(audioFile.length) audioOffset=\(audioOffsetSamples) fileRate=\(fileRate) engineRate=\(currentSampleRate) parent=\(container.parentContainerID.map { "\($0)" } ?? "none")")
+
+        let containerStartSample = Int64(Double(container.startBar - 1) * fileSPB)
+        let containerEndSample = Int64(Double(container.endBar - 1) * fileSPB)
+        let playheadSample = Int64((fromBar - 1.0) * fileSPB)
 
         // Skip containers that end before the playhead
         if containerEndSample <= playheadSample {
@@ -1367,17 +1380,18 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let futureDelayFrames: AVAudioFramePosition
         if playheadSample >= containerStartSample {
             // Playhead is inside this container
-            startOffset = AVAudioFramePosition(playheadSample - containerStartSample)
+            let positionInContainer = playheadSample - containerStartSample
+            startOffset = AVAudioFramePosition(positionInContainer + audioOffsetSamples)
             let remaining = containerEndSample - playheadSample
             let fileFrames = audioFile.length - startOffset
-            frameCount = AVAudioFrameCount(min(remaining, fileFrames))
+            frameCount = AVAudioFrameCount(min(remaining, max(fileFrames, 0)))
             futureDelayFrames = 0
         } else {
             // Container starts in the future — schedule with delay
-            startOffset = 0
+            startOffset = AVAudioFramePosition(audioOffsetSamples)
             let containerLength = containerEndSample - containerStartSample
-            let fileFrames = audioFile.length
-            frameCount = AVAudioFrameCount(min(containerLength, fileFrames))
+            let fileFrames = audioFile.length - audioOffsetSamples
+            frameCount = AVAudioFrameCount(min(containerLength, max(fileFrames, 0)))
             futureDelayFrames = AVAudioFramePosition(containerStartSample - playheadSample)
         }
 
@@ -1387,9 +1401,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         // Build AVAudioTime for future containers (nil = play immediately)
+        // futureDelayFrames is in file-rate frames, so the rate matches.
         let scheduleTime: AVAudioTime?
         if futureDelayFrames > 0 {
-            scheduleTime = AVAudioTime(sampleTime: futureDelayFrames, atRate: audioFile.processingFormat.sampleRate)
+            scheduleTime = AVAudioTime(sampleTime: futureDelayFrames, atRate: fileRate)
             print("[PLAY]   '\(container.name)' scheduling frameCount=\(frameCount) delay=\(futureDelayFrames) frames")
         } else {
             scheduleTime = nil
@@ -1407,7 +1422,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     containerStartSample: containerStartSample,
                     containerEndSample: containerEndSample,
                     playheadSample: playheadSample,
-                    samplesPerBar: samplesPerBar,
+                    samplesPerBar: fileSPB,
+                    audioOffsetSamples: audioOffsetSamples,
                     enterFade: container.enterFade,
                     exitFade: container.exitFade
                 )
@@ -1418,7 +1434,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     containerStartSample: containerStartSample,
                     containerEndSample: containerEndSample,
                     playheadSample: playheadSample,
-                    samplesPerBar: samplesPerBar
+                    samplesPerBar: fileSPB,
+                    audioOffsetSamples: audioOffsetSamples
                 )
             }
         } else {
@@ -1431,7 +1448,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     containerPosition: playheadSample >= containerStartSample
                         ? playheadSample - containerStartSample : Int64(0),
                     containerLengthSamples: containerEndSample - containerStartSample,
-                    samplesPerBar: samplesPerBar,
+                    samplesPerBar: fileSPB,
                     enterFade: container.enterFade,
                     exitFade: container.exitFade,
                     at: scheduleTime
@@ -1543,20 +1560,21 @@ public final class PlaybackScheduler: @unchecked Sendable {
         containerStartSample: Int64,
         containerEndSample: Int64,
         playheadSample: Int64,
-        samplesPerBar: Double
+        samplesPerBar: Double,
+        audioOffsetSamples: Int64 = 0
     ) {
         let containerLengthSamples = containerEndSample - containerStartSample
-        let fileLengthSamples = audioFile.length
+        let effectiveFileLength = audioFile.length - audioOffsetSamples
 
-        guard fileLengthSamples > 0, containerLengthSamples > 0 else { return }
+        guard effectiveFileLength > 0, containerLengthSamples > 0 else { return }
 
         var position = max(playheadSample, containerStartSample) - containerStartSample
         let endPosition = containerLengthSamples
         var isFirst = true
 
         while position < endPosition {
-            let positionInLoop = position % fileLengthSamples
-            let remainingInLoop = fileLengthSamples - positionInLoop
+            let positionInLoop = (position % effectiveFileLength) + audioOffsetSamples
+            let remainingInLoop = effectiveFileLength - (position % effectiveFileLength)
             let remainingInContainer = endPosition - position
             let framesToPlay = min(remainingInLoop, remainingInContainer)
 
@@ -1586,6 +1604,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
     // MARK: - Fade Scheduling
 
     /// Schedules a single (non-looping) segment with enter/exit fades applied.
+    /// For large containers, only reads the fade regions into buffers and uses
+    /// scheduleSegment (no file I/O) for the unfaded middle portion.
     private func scheduleFadingPlayback(
         player: AVAudioPlayerNode,
         audioFile: AVAudioFile,
@@ -1599,11 +1619,127 @@ public final class PlaybackScheduler: @unchecked Sendable {
         at when: AVAudioTime? = nil
     ) {
         let format = audioFile.processingFormat
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+        let enterFadeSamples = enterFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeSamples = exitFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeStart = containerLengthSamples - exitFadeSamples
 
+        // For short containers or containers entirely within fade regions,
+        // use the simple single-buffer approach (overhead of splitting not worthwhile)
+        let totalFadeSamples = enterFadeSamples + exitFadeSamples
+        if Int64(frameCount) <= totalFadeSamples || frameCount <= 88200 {
+            scheduleFadingPlaybackSimple(
+                player: player, audioFile: audioFile, format: format,
+                startOffset: startOffset, frameCount: frameCount,
+                containerPosition: containerPosition,
+                containerLengthSamples: containerLengthSamples,
+                samplesPerBar: samplesPerBar,
+                enterFade: enterFade, exitFade: exitFade,
+                enterFadeSamples: enterFadeSamples, at: when
+            )
+            return
+        }
+
+        // Split into up to 3 segments: enter fade buffer + unfaded segment + exit fade buffer
+        var pos = containerPosition
+        var fileOffset = startOffset
+        var remaining = Int64(frameCount)
+        var isFirst = true
+        let endPos = containerPosition + Int64(frameCount)
+
+        // Part 1: Enter fade region (buffer with fade applied)
+        if pos < enterFadeSamples, enterFade != nil {
+            let fadeEnd = min(enterFadeSamples, endPos)
+            let fadeFrames = AVAudioFrameCount(fadeEnd - pos)
+            if let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: fadeFrames) {
+                audioFile.framePosition = fileOffset
+                do { try audioFile.read(into: buf, frameCount: fadeFrames) } catch { return }
+                applyContainerFades(
+                    to: buf, containerPosition: pos,
+                    containerLengthSamples: containerLengthSamples,
+                    samplesPerBar: samplesPerBar,
+                    enterFade: enterFade,
+                    exitFade: (fadeEnd > exitFadeStart) ? exitFade : nil
+                )
+                player.scheduleBuffer(buf, at: when)
+                fileOffset += AVAudioFramePosition(fadeFrames)
+                pos += Int64(fadeFrames)
+                remaining -= Int64(fadeFrames)
+                isFirst = false
+            }
+        } else if when == nil, pos >= enterFadeSamples {
+            // Past the enter fade — apply declick ramp on first 256 frames
+            let declickFrames = min(Self.declickFrameCount, AVAudioFrameCount(remaining))
+            if let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: declickFrames) {
+                audioFile.framePosition = fileOffset
+                do { try audioFile.read(into: buf, frameCount: declickFrames) } catch { return }
+                Self.applyDeclickFadeIn(to: buf)
+                player.scheduleBuffer(buf, at: nil)
+                fileOffset += AVAudioFramePosition(declickFrames)
+                pos += Int64(declickFrames)
+                remaining -= Int64(declickFrames)
+                isFirst = false
+            }
+        }
+
+        // Part 2: Unfaded middle (scheduleSegment — no file I/O)
+        let middleEnd = min(exitFadeStart, endPos)
+        let middleFrames = max(Int64(0), middleEnd - pos)
+        if middleFrames > 0 {
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: fileOffset,
+                frameCount: AVAudioFrameCount(middleFrames),
+                at: isFirst ? when : nil
+            )
+            fileOffset += AVAudioFramePosition(middleFrames)
+            pos += middleFrames
+            remaining -= middleFrames
+            isFirst = false
+        }
+
+        // Part 3: Exit fade region (buffer with fade applied)
+        if remaining > 0, exitFade != nil, pos >= exitFadeStart {
+            let fadeFrames = AVAudioFrameCount(remaining)
+            if let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: fadeFrames) {
+                audioFile.framePosition = fileOffset
+                do { try audioFile.read(into: buf, frameCount: fadeFrames) } catch { return }
+                applyContainerFades(
+                    to: buf, containerPosition: pos,
+                    containerLengthSamples: containerLengthSamples,
+                    samplesPerBar: samplesPerBar,
+                    enterFade: nil, exitFade: exitFade
+                )
+                player.scheduleBuffer(buf)
+            }
+        } else if remaining > 0 {
+            // No exit fade for this tail — just schedule the segment
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: fileOffset,
+                frameCount: AVAudioFrameCount(remaining),
+                at: isFirst ? when : nil
+            )
+        }
+    }
+
+    /// Simple single-buffer fading path for short containers.
+    private func scheduleFadingPlaybackSimple(
+        player: AVAudioPlayerNode,
+        audioFile: AVAudioFile,
+        format: AVAudioFormat,
+        startOffset: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount,
+        containerPosition: Int64,
+        containerLengthSamples: Int64,
+        samplesPerBar: Double,
+        enterFade: FadeSettings?,
+        exitFade: FadeSettings?,
+        enterFadeSamples: Int64,
+        at when: AVAudioTime? = nil
+    ) {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
         audioFile.framePosition = startOffset
         do { try audioFile.read(into: buffer, frameCount: frameCount) } catch { return }
-
         applyContainerFades(
             to: buffer,
             containerPosition: containerPosition,
@@ -1612,13 +1748,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
             enterFade: enterFade,
             exitFade: exitFade
         )
-
-        // Apply declick when starting outside the container's enter fade region
-        let enterFadeSamples = enterFade.map { Int64($0.duration * samplesPerBar) } ?? 0
         if containerPosition >= enterFadeSamples {
             Self.applyDeclickFadeIn(to: buffer)
         }
-
         player.scheduleBuffer(buffer, at: when)
     }
 
@@ -1630,13 +1762,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
         containerEndSample: Int64,
         playheadSample: Int64,
         samplesPerBar: Double,
+        audioOffsetSamples: Int64 = 0,
         enterFade: FadeSettings?,
         exitFade: FadeSettings?
     ) {
         let containerLengthSamples = containerEndSample - containerStartSample
-        let fileLengthSamples = audioFile.length
+        let effectiveFileLength = audioFile.length - audioOffsetSamples
 
-        guard fileLengthSamples > 0, containerLengthSamples > 0 else { return }
+        guard effectiveFileLength > 0, containerLengthSamples > 0 else { return }
 
         let enterFadeSamples = enterFade.map { Int64($0.duration * samplesPerBar) } ?? 0
         let exitFadeSamples = exitFade.map { Int64($0.duration * samplesPerBar) } ?? 0
@@ -1648,8 +1781,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         var isFirst = true
 
         while position < endPosition {
-            let positionInLoop = position % fileLengthSamples
-            let remainingInLoop = fileLengthSamples - positionInLoop
+            let positionInLoop = (position % effectiveFileLength) + audioOffsetSamples
+            let remainingInLoop = effectiveFileLength - (position % effectiveFileLength)
             let remainingInContainer = endPosition - position
             let framesToPlay = min(remainingInLoop, remainingInContainer)
 
