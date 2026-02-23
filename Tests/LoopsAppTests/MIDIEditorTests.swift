@@ -170,7 +170,7 @@ struct MIDIEditorTests {
         let yHigh = PianoRollLayout.yPosition(forPitch: 96, lowPitch: lowPitch, highPitch: highPitch)
         let yLow = PianoRollLayout.yPosition(forPitch: 36, lowPitch: lowPitch, highPitch: highPitch)
         #expect(yHigh == 0)
-        #expect(yLow == CGFloat(96 - 36) * PianoRollLayout.rowHeight)
+        #expect(yLow == CGFloat(96 - 36) * PianoRollLayout.defaultRowHeight)
     }
 
     @Test("PianoRollLayout pitch round-trip from Y position")
@@ -196,7 +196,7 @@ struct MIDIEditorTests {
     @Test("PianoRollLayout totalHeight calculation")
     func totalHeight() {
         let h = PianoRollLayout.totalHeight(lowPitch: 36, highPitch: 96)
-        #expect(h == CGFloat(96 - 36 + 1) * PianoRollLayout.rowHeight)
+        #expect(h == CGFloat(96 - 36 + 1) * PianoRollLayout.defaultRowHeight)
     }
 
     @Test("PianoRollLayout negative X clamps to 0")
