@@ -31,6 +31,7 @@ public enum FocusedField: Hashable {
 public struct MainContentView: View {
     @Bindable var projectViewModel: ProjectViewModel
     @Bindable var timelineViewModel: TimelineViewModel
+    var selectionState: SelectionState
     var transportViewModel: TransportViewModel?
     var setlistViewModel: SetlistViewModel?
     var engineManager: AudioEngineManager?
@@ -63,9 +64,10 @@ public struct MainContentView: View {
         focusedField != .main
     }
 
-    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil, isVirtualKeyboardVisible: Binding<Bool> = .constant(false)) {
+    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, selectionState: SelectionState? = nil, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil, isVirtualKeyboardVisible: Binding<Bool> = .constant(false)) {
         self.projectViewModel = projectViewModel
         self.timelineViewModel = timelineViewModel
+        self.selectionState = selectionState ?? projectViewModel.selectionState
         self.transportViewModel = transportViewModel
         self.setlistViewModel = setlistViewModel
         self.engineManager = engineManager
@@ -313,7 +315,7 @@ public struct MainContentView: View {
         // R: toggle record arm on selected track
         .onKeyPress("r") {
             guard !isTextFieldFocused else { return .ignored }
-            guard let trackID = projectViewModel.selectedTrackID else { return .ignored }
+            guard let trackID = selectionState.selectedTrackID else { return .ignored }
             if let track = currentSong?.tracks.first(where: { $0.id == trackID }) {
                 projectViewModel.setTrackRecordArmed(trackID: trackID, armed: !track.isRecordArmed)
                 return .handled
@@ -381,7 +383,7 @@ public struct MainContentView: View {
                 focusedField = .main
                 return .handled
             }
-            projectViewModel.deselectAll()
+            selectionState.deselectAll()
             timelineViewModel.selectedTrackIDs = []
             timelineViewModel.clearSelectedRange()
             return .handled
@@ -483,7 +485,7 @@ public struct MainContentView: View {
                     Divider()
                     VirtualKeyboardView(
                         onNoteEvent: { message in
-                            guard let trackID = projectViewModel.selectedTrackID else { return }
+                            guard let trackID = selectionState.selectedTrackID else { return }
                             transportViewModel?.sendVirtualNote(trackID: trackID, message: message)
                         }
                     )
@@ -566,9 +568,9 @@ public struct MainContentView: View {
                     sections: song.sections,
                     pixelsPerBar: timelineViewModel.pixelsPerBar,
                     totalBars: timelineViewModel.totalBars,
-                    selectedSectionID: projectViewModel.selectedSectionID,
+                    selectedSectionID: selectionState.selectedSectionID,
                     onSectionSelect: { sectionID in
-                        projectViewModel.selectedSectionID = sectionID
+                        selectionState.selectedSectionID = sectionID
                     },
                     onSectionCreate: { startBar, lengthBars in
                         projectViewModel.addSection(startBar: startBar, lengthBars: lengthBars)
@@ -660,6 +662,7 @@ public struct MainContentView: View {
                         TimelineView(
                             viewModel: timelineViewModel,
                             projectViewModel: projectViewModel,
+                            selectionState: selectionState,
                             song: song,
                             tracks: regularTracks,
                             minHeight: geo.size.height,
@@ -701,6 +704,7 @@ public struct MainContentView: View {
                     TimelineView(
                         viewModel: timelineViewModel,
                         projectViewModel: projectViewModel,
+                        selectionState: selectionState,
                         song: song,
                         tracks: [master],
                         minHeight: 0,
@@ -734,7 +738,7 @@ public struct MainContentView: View {
         MixerView(
             tracks: song.tracks,
             mixerViewModel: mixerViewModel ?? MixerViewModel(),
-            selectedTrackID: projectViewModel.selectedTrackID,
+            selectedTrackID: selectionState.selectedTrackID,
             onVolumeChange: { trackID, volume in
                 projectViewModel.setTrackVolume(trackID: trackID, volume: volume)
             },
@@ -763,7 +767,7 @@ public struct MainContentView: View {
                 }
             },
             onTrackSelect: { trackID in
-                projectViewModel.selectedTrackID = trackID
+                selectionState.selectedTrackID = trackID
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -868,7 +872,7 @@ public struct MainContentView: View {
                 },
                 onNavigateToParent: container.parentContainerID != nil ? {
                     if let parentID = container.parentContainerID {
-                        projectViewModel.selectedContainerID = parentID
+                        selectionState.selectedContainerID = parentID
                     }
                 } : nil,
                 onResetField: container.isClone ? { field in
@@ -999,7 +1003,7 @@ public struct MainContentView: View {
         let laneLabels = automationLaneLabels(for: track)
         let baseHeight = timelineViewModel.baseTrackHeight(for: track.id)
         let perTrackHeight = timelineViewModel.trackHeight(for: track, baseHeight: baseHeight)
-        let isSelected = projectViewModel.selectedTrackID == track.id
+        let isSelected = selectionState.selectedTrackID == track.id
         return TrackHeaderView(
             track: track,
             height: perTrackHeight,
@@ -1062,7 +1066,7 @@ public struct MainContentView: View {
                     if NSEvent.modifierFlags.contains(.command) {
                         timelineViewModel.toggleTrackSelection(trackID: track.id)
                     } else {
-                        projectViewModel.selectedTrackID = track.id
+                        selectionState.selectedTrackID = track.id
                     }
                 }
         )
@@ -1317,7 +1321,7 @@ public struct MainContentView: View {
                 endBar: range.upperBound + 1,
                 trackFilter: timelineViewModel.selectedTrackIDs
             )
-        } else if let containerID = projectViewModel.selectedContainerID, let song = currentSong {
+        } else if let containerID = selectionState.selectedContainerID, let song = currentSong {
             for track in song.tracks {
                 if track.containers.contains(where: { $0.id == containerID }) {
                     projectViewModel.copyContainer(trackID: track.id, containerID: containerID)
@@ -1341,7 +1345,7 @@ public struct MainContentView: View {
 
     private func handleDuplicate() {
         // Prefer duplicating selected container first
-        if let containerID = projectViewModel.selectedContainerID, let song = currentSong {
+        if let containerID = selectionState.selectedContainerID, let song = currentSong {
             for track in song.tracks {
                 if track.containers.contains(where: { $0.id == containerID }) {
                     projectViewModel.duplicateContainer(trackID: track.id, containerID: containerID)
@@ -1350,7 +1354,7 @@ public struct MainContentView: View {
             }
         }
         // Fall back to duplicating selected track
-        if let trackID = projectViewModel.selectedTrackID {
+        if let trackID = selectionState.selectedTrackID {
             projectViewModel.duplicateTrack(trackID: trackID)
         }
     }

@@ -256,15 +256,15 @@ struct TimelineViewModelTests {
         let song = Song(tracks: [audio1, audio2, master])
 
         // All tracks: 3 × 80 = 240
-        let allView = TimelineView(viewModel: vm, projectViewModel: pvm, song: song)
+        let allView = TimelineView(viewModel: vm, projectViewModel: pvm, selectionState: pvm.selectionState, song: song)
         #expect(allView.totalContentHeight == 240.0)
 
         // Only regular tracks: 2 × 80 = 160
-        let regularView = TimelineView(viewModel: vm, projectViewModel: pvm, song: song, tracks: [audio1, audio2])
+        let regularView = TimelineView(viewModel: vm, projectViewModel: pvm, selectionState: pvm.selectionState, song: song, tracks: [audio1, audio2])
         #expect(regularView.totalContentHeight == 160.0)
 
         // Only master track: 1 × 80 = 80
-        let masterView = TimelineView(viewModel: vm, projectViewModel: pvm, song: song, tracks: [master])
+        let masterView = TimelineView(viewModel: vm, projectViewModel: pvm, selectionState: pvm.selectionState, song: song, tracks: [master])
         #expect(masterView.totalContentHeight == 80.0)
     }
 
@@ -294,7 +294,7 @@ struct TimelineViewModelTests {
         let master = Track(name: "Master", kind: .master)
         let song = Song(tracks: [audio, master])
 
-        let view = TimelineView(viewModel: vm, projectViewModel: pvm, song: song)
+        let view = TimelineView(viewModel: vm, projectViewModel: pvm, selectionState: pvm.selectionState, song: song)
         // Default: uses song.tracks (both tracks)
         #expect(view.totalContentHeight == 160.0)
     }
@@ -421,13 +421,13 @@ struct TimelineViewModelTests {
         let song = Song(tracks: [audio1, audio2])
 
         // Default: 2 * 80 = 160
-        let view1 = TimelineView(viewModel: vm, projectViewModel: pvm, song: song)
+        let view1 = TimelineView(viewModel: vm, projectViewModel: pvm, selectionState: pvm.selectionState, song: song)
         #expect(view1.totalContentHeight == 160.0)
 
         // Custom: 60 + 120 = 180
         vm.setTrackHeight(60, for: audio1.id)
         vm.setTrackHeight(120, for: audio2.id)
-        let view2 = TimelineView(viewModel: vm, projectViewModel: pvm, song: song)
+        let view2 = TimelineView(viewModel: vm, projectViewModel: pvm, selectionState: pvm.selectionState, song: song)
         #expect(view2.totalContentHeight == 180.0)
     }
 

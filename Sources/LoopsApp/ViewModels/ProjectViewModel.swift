@@ -736,41 +736,41 @@ public final class ProjectViewModel {
 
     // MARK: - Selection State
 
+    /// Dedicated selection state observable, extracted so selection changes don't
+    /// invalidate unrelated parts of the view tree.
+    public let selectionState = SelectionState()
+
     /// The currently selected single track ID (for keyboard operations like record arm).
     /// Setting this clears selectedContainerID for mutual exclusion.
     public var selectedTrackID: ID<Track>? {
-        didSet {
-            if selectedTrackID != nil {
-                selectedContainerID = nil
-                selectedContainerIDs = []
-            }
-        }
+        get { selectionState.selectedTrackID }
+        set { selectionState.selectedTrackID = newValue }
     }
 
     /// Set of all selected container IDs (populated by select-all; cleared on single-select or deselect).
-    public var selectedContainerIDs: Set<ID<Container>> = []
+    public var selectedContainerIDs: Set<ID<Container>> {
+        get { selectionState.selectedContainerIDs }
+        set { selectionState.selectedContainerIDs = newValue }
+    }
 
     /// Selects all containers in the current song.
     public func selectAllContainers() {
         guard let song = currentSong else { return }
         let allIDs = Set(song.tracks.flatMap(\.containers).map(\.id))
-        selectedContainerIDs = allIDs
+        selectionState.selectedContainerIDs = allIDs
         // Also set single selection to nil since multiple are selected
-        selectedContainerID = nil
+        selectionState.selectedContainerID = nil
     }
 
     /// Clears all selection state (container, track, section, multi-select).
     public func deselectAll() {
-        selectedContainerID = nil
-        selectedContainerIDs = []
-        selectedTrackID = nil
-        selectedSectionID = nil
+        selectionState.deselectAll()
     }
 
     /// Selects a track by 0-based index in the current song.
     public func selectTrackByIndex(_ index: Int) {
         guard let song = currentSong, song.tracks.indices.contains(index) else { return }
-        selectedTrackID = song.tracks[index].id
+        selectionState.selectedTrackID = song.tracks[index].id
     }
 
     /// The last bar with content (containers or sections) in the current song. Returns 1 if empty.
@@ -786,11 +786,8 @@ public final class ProjectViewModel {
     /// The currently selected container ID.
     /// Setting this clears selectedTrackID for mutual exclusion.
     public var selectedContainerID: ID<Container>? {
-        didSet {
-            if selectedContainerID != nil {
-                selectedTrackID = nil
-            }
-        }
+        get { selectionState.selectedContainerID }
+        set { selectionState.selectedContainerID = newValue }
     }
 
     /// Adds a container to a track. Returns false if it would overlap an existing container.
@@ -1982,7 +1979,10 @@ public final class ProjectViewModel {
     // MARK: - Section Management
 
     /// The currently selected section ID.
-    public var selectedSectionID: ID<SectionRegion>?
+    public var selectedSectionID: ID<SectionRegion>? {
+        get { selectionState.selectedSectionID }
+        set { selectionState.selectedSectionID = newValue }
+    }
 
     /// Adds a section region to the current song. Returns false if it would overlap.
     @discardableResult

@@ -50,17 +50,7 @@ public struct LoopsRootView: View {
                     isVirtualKeyboardVisible: $isVirtualKeyboardVisible
                 )
                 Divider()
-                MainContentView(
-                    projectViewModel: viewModel,
-                    timelineViewModel: timelineViewModel,
-                    transportViewModel: transportViewModel,
-                    setlistViewModel: setlistViewModel,
-                    engineManager: engineManager,
-                    settingsViewModel: settingsViewModel,
-                    mixerViewModel: mixerViewModel,
-                    midiActivityMonitor: midiActivityMonitor,
-                    isVirtualKeyboardVisible: $isVirtualKeyboardVisible
-                )
+                mainContentView
             }
 
             if let setlistVM = setlistViewModel, setlistVM.isPerformMode {
@@ -181,6 +171,21 @@ public struct LoopsRootView: View {
         }
     }
 
+    private var mainContentView: some View {
+        MainContentView(
+            projectViewModel: viewModel,
+            timelineViewModel: timelineViewModel,
+            selectionState: viewModel.selectionState,
+            transportViewModel: transportViewModel,
+            setlistViewModel: setlistViewModel,
+            engineManager: engineManager,
+            settingsViewModel: settingsViewModel,
+            mixerViewModel: mixerViewModel,
+            midiActivityMonitor: midiActivityMonitor,
+            isVirtualKeyboardVisible: $isVirtualKeyboardVisible
+        )
+    }
+
     /// Wires MIDI CC events to control mapping dispatch, parameter mapping dispatch, and learn flow.
     private func setupMIDIParameterDispatch() {
         guard let midiManager = engineManager?.midiManager else { return }
@@ -208,7 +213,7 @@ public struct LoopsRootView: View {
                 case .playPause: transportViewModel?.togglePlayPause()
                 case .stop: transportViewModel?.stop()
                 case .recordArm:
-                    if let trackID = vm.selectedTrackID {
+                    if let trackID = vm.selectionState.selectedTrackID {
                         let track = vm.currentSong?.tracks.first(where: { $0.id == trackID })
                         vm.setTrackRecordArmed(trackID: trackID, armed: !(track?.isRecordArmed ?? false))
                     }
@@ -241,7 +246,7 @@ public struct LoopsRootView: View {
                     }
                 case .trackSelect(let idx):
                     if idx < regularTracks.count {
-                        vm.selectedTrackID = regularTracks[idx].id
+                        vm.selectionState.selectedTrackID = regularTracks[idx].id
                     }
                 case .songSelect(let idx):
                     if idx < vm.project.songs.count {
