@@ -13,6 +13,7 @@ public enum ContainerField: String, Codable, Equatable, Sendable, CaseIterable, 
     case instrumentOverride
     case sourceRecording
     case midiSequence
+    case audioStartOffset
 
     public var displayName: String {
         switch self {
@@ -26,6 +27,7 @@ public enum ContainerField: String, Codable, Equatable, Sendable, CaseIterable, 
         case .instrumentOverride: return "Instrument"
         case .sourceRecording: return "Recording"
         case .midiSequence: return "MIDI Sequence"
+        case .audioStartOffset: return "Audio Offset"
         }
     }
 }

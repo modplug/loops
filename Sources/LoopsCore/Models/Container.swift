@@ -46,6 +46,10 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     /// Metronome settings for master track containers (defines click behavior for this bar range).
     public var metronomeSettings: MetronomeSettings?
 
+    /// Bars into the source recording where playback begins (0.0 = from start).
+    /// Used for non-destructive trim/crop of the left edge.
+    public var audioStartOffset: Double
+
     public var endBar: Int { startBar + lengthBars }
 
     /// Whether this container has MIDI content.
@@ -76,7 +80,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         parentContainerID: ID<Container>? = nil,
         overriddenFields: Set<ContainerField> = [],
         midiSequence: MIDISequence? = nil,
-        metronomeSettings: MetronomeSettings? = nil
+        metronomeSettings: MetronomeSettings? = nil,
+        audioStartOffset: Double = 0.0
     ) {
         self.id = id
         self.name = name
@@ -100,6 +105,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         self.overriddenFields = overriddenFields
         self.midiSequence = midiSequence
         self.metronomeSettings = metronomeSettings
+        self.audioStartOffset = audioStartOffset
     }
 
     // MARK: - Backward-compatible decoding
@@ -110,7 +116,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         case insertEffects, isEffectChainBypassed, instrumentOverride
         case enterFade, exitFade, onEnterActions, onExitActions
         case automationLanes, parentContainerID, overriddenFields
-        case midiSequence, metronomeSettings
+        case midiSequence, metronomeSettings, audioStartOffset
     }
 
     public init(from decoder: Decoder) throws {
@@ -137,6 +143,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         overriddenFields = try c.decodeIfPresent(Set<ContainerField>.self, forKey: .overriddenFields) ?? []
         midiSequence = try c.decodeIfPresent(MIDISequence.self, forKey: .midiSequence)
         metronomeSettings = try c.decodeIfPresent(MetronomeSettings.self, forKey: .metronomeSettings)
+        audioStartOffset = try c.decodeIfPresent(Double.self, forKey: .audioStartOffset) ?? 0.0
     }
 
     // MARK: - Per-field Operations
@@ -166,6 +173,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
             sourceRecordingID = source.sourceRecordingID
         case .midiSequence:
             midiSequence = source.midiSequence
+        case .audioStartOffset:
+            audioStartOffset = source.audioStartOffset
         }
     }
 
