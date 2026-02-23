@@ -403,7 +403,7 @@ struct TrackResizeHandle: View {
                 if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
             }
             .gesture(
-                DragGesture(minimumDistance: 1)
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { value in
                         if dragStartHeight == 0 {
                             dragStartHeight = currentHeight

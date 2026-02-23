@@ -180,7 +180,7 @@ private struct SectionBandView: View {
     // MARK: - Move Gesture
 
     private var moveDragGesture: some Gesture {
-        DragGesture(minimumDistance: 4)
+        DragGesture(minimumDistance: 4, coordinateSpace: .global)
             .onChanged { value in
                 isDragging = true
                 dragOffset = value.translation.width

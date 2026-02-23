@@ -9,7 +9,7 @@ public struct TrackLaneView: View {
     let pixelsPerBar: CGFloat
     let totalBars: Int
     let height: CGFloat
-    let selectedContainerID: ID<Container>?
+    var selectionState: SelectionState?
     /// Closure to look up waveform peaks for a container.
     var waveformPeaksForContainer: ((_ container: Container) -> [Float]?)?
     var onContainerSelect: ((_ containerID: ID<Container>) -> Void)?
@@ -53,7 +53,7 @@ public struct TrackLaneView: View {
         pixelsPerBar: CGFloat,
         totalBars: Int,
         height: CGFloat = 80,
-        selectedContainerID: ID<Container>? = nil,
+        selectionState: SelectionState? = nil,
         waveformPeaksForContainer: ((_ container: Container) -> [Float]?)? = nil,
         onContainerSelect: ((_ containerID: ID<Container>) -> Void)? = nil,
         onContainerDelete: ((_ containerID: ID<Container>) -> Void)? = nil,
@@ -91,7 +91,7 @@ public struct TrackLaneView: View {
         self.pixelsPerBar = pixelsPerBar
         self.totalBars = totalBars
         self.height = height
-        self.selectedContainerID = selectedContainerID
+        self.selectionState = selectionState
         self.waveformPeaksForContainer = waveformPeaksForContainer
         self.onContainerSelect = onContainerSelect
         self.onContainerDelete = onContainerDelete
@@ -168,7 +168,7 @@ public struct TrackLaneView: View {
                         container: container,
                         pixelsPerBar: pixelsPerBar,
                         height: baseHeight - 4,
-                        isSelected: container.id == selectedContainerID,
+                        selectionState: selectionState,
                         trackColor: trackColor,
                         waveformPeaks: waveformPeaksForContainer?(container),
                         isClone: container.parentContainerID != nil,
@@ -295,11 +295,12 @@ public struct TrackLaneView: View {
 
 extension TrackLaneView: Equatable {
     public static func == (lhs: TrackLaneView, rhs: TrackLaneView) -> Bool {
+        // selectionState is not compared — it's the same object reference.
+        // Selection is observed directly by ContainerView via @Observable.
         lhs.track == rhs.track &&
         lhs.pixelsPerBar == rhs.pixelsPerBar &&
         lhs.totalBars == rhs.totalBars &&
         lhs.height == rhs.height &&
-        lhs.selectedContainerID == rhs.selectedContainerID &&
         lhs.hasClipboard == rhs.hasClipboard &&
         lhs.isAutomationExpanded == rhs.isAutomationExpanded &&
         lhs.automationSubLanePaths == rhs.automationSubLanePaths &&

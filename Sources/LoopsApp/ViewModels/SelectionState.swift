@@ -10,11 +10,12 @@ public final class SelectionState {
 
     /// The currently selected single track ID (for keyboard operations like record arm).
     /// Setting this clears selectedContainerID for mutual exclusion.
+    /// Guards avoid unnecessary @Observable mutation notifications when values are already nil/empty.
     public var selectedTrackID: ID<Track>? {
         didSet {
             if selectedTrackID != nil {
-                selectedContainerID = nil
-                selectedContainerIDs = []
+                if selectedContainerID != nil { selectedContainerID = nil }
+                if !selectedContainerIDs.isEmpty { selectedContainerIDs = [] }
             }
         }
     }
@@ -24,10 +25,11 @@ public final class SelectionState {
 
     /// The currently selected container ID.
     /// Setting this clears selectedTrackID for mutual exclusion.
+    /// Guards avoid unnecessary @Observable mutation notifications when values are already nil.
     public var selectedContainerID: ID<Container>? {
         didSet {
             if selectedContainerID != nil {
-                selectedTrackID = nil
+                if selectedTrackID != nil { selectedTrackID = nil }
             }
         }
     }

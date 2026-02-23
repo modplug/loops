@@ -9,7 +9,7 @@ public struct ContainerView: View {
     let container: Container
     let pixelsPerBar: CGFloat
     let height: CGFloat
-    let isSelected: Bool
+    var selectionState: SelectionState?
     let trackColor: Color
     let waveformPeaks: [Float]?
     let isClone: Bool
@@ -47,7 +47,7 @@ public struct ContainerView: View {
         container: Container,
         pixelsPerBar: CGFloat,
         height: CGFloat = 76,
-        isSelected: Bool = false,
+        selectionState: SelectionState? = nil,
         trackColor: Color = .blue,
         waveformPeaks: [Float]? = nil,
         isClone: Bool = false,
@@ -72,7 +72,7 @@ public struct ContainerView: View {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
         self.height = height
-        self.isSelected = isSelected
+        self.selectionState = selectionState
         self.trackColor = trackColor
         self.waveformPeaks = waveformPeaks
         self.isClone = isClone
@@ -93,6 +93,12 @@ public struct ContainerView: View {
         self.onArmToggle = onArmToggle
         self.onSetEnterFade = onSetEnterFade
         self.onSetExitFade = onSetExitFade
+    }
+
+    /// Derived from SelectionState observable — only this ContainerView re-evaluates
+    /// when selection changes, not the parent TrackLaneView or TimelineView.
+    private var isSelected: Bool {
+        selectionState?.selectedContainerID == container.id
     }
 
     private var containerWidth: CGFloat {
@@ -262,6 +268,12 @@ public struct ContainerView: View {
                 .fill(trackColor.opacity(0.2))
                 .strokeBorder(trackColor.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [4, 2]))
                 .frame(width: containerWidth, height: height)
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.white, .green)
+                        .offset(x: 4, y: -4)
+                }
                 .offset(x: altDragOffset)
                 .allowsHitTesting(false)
         }
@@ -286,7 +298,7 @@ public struct ContainerView: View {
     }
 
     private var moveGesture: some Gesture {
-        DragGesture(minimumDistance: 5)
+        DragGesture(minimumDistance: 5, coordinateSpace: .global)
             .onChanged { value in
                 isDragging = true
                 // Snap to bar boundaries
@@ -303,7 +315,7 @@ public struct ContainerView: View {
     }
 
     private var leftResizeGesture: some Gesture {
-        DragGesture(minimumDistance: 3)
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
             .onChanged { value in
                 isResizingLeft = true
                 let barDelta = round(value.translation.width / pixelsPerBar)
@@ -322,7 +334,7 @@ public struct ContainerView: View {
     }
 
     private var rightResizeGesture: some Gesture {
-        DragGesture(minimumDistance: 3)
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
             .onChanged { value in
                 isResizingRight = true
                 let barDelta = round(value.translation.width / pixelsPerBar)
@@ -340,7 +352,7 @@ public struct ContainerView: View {
     }
 
     private var altCloneGesture: some Gesture {
-        DragGesture(minimumDistance: 5)
+        DragGesture(minimumDistance: 5, coordinateSpace: .global)
             .modifiers(.option)
             .onChanged { value in
                 isAltDragging = true
@@ -410,7 +422,7 @@ public struct ContainerView: View {
     }
 
     private var enterFadeDragGesture: some Gesture {
-        DragGesture(minimumDistance: 2)
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { value in
                 let currentWidth = CGFloat(container.enterFade?.duration ?? 0) * pixelsPerBar
                 let newWidth = max(0, min(currentWidth + value.translation.width, containerWidth))
@@ -432,7 +444,7 @@ public struct ContainerView: View {
     }
 
     private var exitFadeDragGesture: some Gesture {
-        DragGesture(minimumDistance: 2)
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { value in
                 let currentWidth = CGFloat(container.exitFade?.duration ?? 0) * pixelsPerBar
                 let newWidth = max(0, min(currentWidth - value.translation.width, containerWidth))
@@ -458,10 +470,11 @@ public struct ContainerView: View {
 
 extension ContainerView: Equatable {
     public static func == (lhs: ContainerView, rhs: ContainerView) -> Bool {
+        // selectionState is not compared — it's the same object reference.
+        // Selection changes are observed directly via @Observable in each ContainerView's body.
         lhs.container == rhs.container &&
         lhs.pixelsPerBar == rhs.pixelsPerBar &&
         lhs.height == rhs.height &&
-        lhs.isSelected == rhs.isSelected &&
         lhs.trackColor == rhs.trackColor &&
         lhs.waveformPeaks == rhs.waveformPeaks &&
         lhs.isClone == rhs.isClone &&

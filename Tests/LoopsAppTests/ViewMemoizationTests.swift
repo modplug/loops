@@ -15,7 +15,7 @@ struct ViewMemoizationTests {
             container: container,
             pixelsPerBar: 60,
             height: 76,
-            isSelected: false,
+            selectionState: nil,
             trackColor: .blue,
             waveformPeaks: [0.1, 0.5, 0.3],
             isClone: false,
@@ -27,7 +27,7 @@ struct ViewMemoizationTests {
             container: container,
             pixelsPerBar: 60,
             height: 76,
-            isSelected: false,
+            selectionState: nil,
             trackColor: .blue,
             waveformPeaks: [0.1, 0.5, 0.3],
             isClone: false,
@@ -42,14 +42,6 @@ struct ViewMemoizationTests {
         let c2 = Container(name: "B", startBar: 1, lengthBars: 4)
         let lhs = ContainerView(container: c1, pixelsPerBar: 60)
         let rhs = ContainerView(container: c2, pixelsPerBar: 60)
-        #expect(lhs != rhs)
-    }
-
-    @Test("ContainerView: different isSelected makes views unequal")
-    func containerViewUnequalSelection() {
-        let container = Container()
-        let lhs = ContainerView(container: container, pixelsPerBar: 60, isSelected: false)
-        let rhs = ContainerView(container: container, pixelsPerBar: 60, isSelected: true)
         #expect(lhs != rhs)
     }
 
@@ -104,7 +96,6 @@ struct ViewMemoizationTests {
             pixelsPerBar: 60,
             totalBars: 32,
             height: 80,
-            selectedContainerID: nil,
             onContainerSelect: { _ in },
             hasClipboard: false,
             isAutomationExpanded: false
@@ -114,7 +105,6 @@ struct ViewMemoizationTests {
             pixelsPerBar: 60,
             totalBars: 32,
             height: 80,
-            selectedContainerID: nil,
             onContainerDelete: { _ in },
             hasClipboard: false,
             isAutomationExpanded: false
@@ -128,15 +118,6 @@ struct ViewMemoizationTests {
         let t2 = Track(name: "Track 2", kind: .midi)
         let lhs = TrackLaneView(track: t1, pixelsPerBar: 60, totalBars: 32)
         let rhs = TrackLaneView(track: t2, pixelsPerBar: 60, totalBars: 32)
-        #expect(lhs != rhs)
-    }
-
-    @Test("TrackLaneView: different selectedContainerID makes views unequal")
-    func trackLaneViewUnequalSelection() {
-        let track = Track(name: "Track 1", kind: .audio)
-        let containerID = ID<Container>()
-        let lhs = TrackLaneView(track: track, pixelsPerBar: 60, totalBars: 32, selectedContainerID: nil)
-        let rhs = TrackLaneView(track: track, pixelsPerBar: 60, totalBars: 32, selectedContainerID: containerID)
         #expect(lhs != rhs)
     }
 

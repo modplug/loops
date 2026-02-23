@@ -69,7 +69,7 @@ public struct TimelineView: View {
                         pixelsPerBar: viewModel.pixelsPerBar,
                         totalBars: viewModel.totalBars,
                         height: perTrackHeight,
-                        selectedContainerID: selectionState.selectedContainerID,
+                        selectionState: selectionState,
                         waveformPeaksForContainer: { container in
                             projectViewModel.waveformPeaks(for: container)
                         },
