@@ -1128,3 +1128,23 @@
 - `LoopsAppEntry`: wires `transportViewModel.onTrackLevelUpdate` to `mixerViewModel.updateLevel(trackID:peak:)` via `@MainActor` dispatch
 - 9 new tests: MixerStripState defaults zero, updateLevel sets level, throttles rapid updates, stripState same instance, different instances per track, updateLevel isolation, removeStripState, master independent from tracks, scheduler callback wiring
 - All 1028 tests pass
+
+### Iteration 18 — #129 Add Equatable memoization to ContainerView and TrackLaneView
+- `ContainerView`: added `Equatable` extension comparing only data inputs (container, pixelsPerBar, height, isSelected, trackColor, waveformPeaks, isClone, overriddenFields, otherSongs) — closures are excluded from comparison
+- `TrackLaneView`: added `Equatable` extension comparing only data inputs (track, pixelsPerBar, totalBars, height, selectedContainerID, hasClipboard, isAutomationExpanded, automationSubLanePaths, selectedBreakpointID, otherSongs) — closures are excluded
+- `TrackLaneView`: wrapped `ContainerView` with `.equatable()` modifier so SwiftUI skips body re-evaluation when container data hasn't changed (adjacent container changes no longer trigger re-render)
+- `TimelineView`: wrapped `TrackLaneView` with `.equatable()` modifier so SwiftUI skips body re-evaluation when track data hasn't changed (different track changes no longer trigger re-render)
+- `otherSongs` tuple arrays compared element-wise (id + name) since tuples are not automatically Equatable
+- 14 new tests: ContainerView equal with same data/different closures, unequal on container/isSelected/waveformPeaks/pixelsPerBar/otherSongs/overriddenFields changes, nil vs non-nil peaks; TrackLaneView equal with same data/different closures, unequal on track/selectedContainerID/automationSubLanePaths/hasClipboard/container-count changes
+- All 1042 tests pass
+
+### Iteration 19 — #130 Lazy stacking for timeline tracks and mixer strips
+- `TimelineView`: replaced eager `VStack(spacing: 0)` with `LazyVStack(spacing: 0, pinnedViews: [])` for track lanes — off-screen tracks are no longer rendered
+- `MainContentView`: replaced eager `VStack(spacing: 0)` with `LazyVStack(spacing: 0, pinnedViews: [])` for track headers — stays in sync with lazy timeline tracks
+- `MixerView`: replaced eager `HStack(spacing: 4)` with `LazyHStack(spacing: 4)` for mixer strips — off-screen strips are no longer rendered
+- Master track remains pinned outside the lazy stacks (rendered separately at bottom)
+- Playhead overlay, grid overlay, and range selection overlay use pre-computed `displayHeight` — unaffected by lazy rendering
+- Drag-to-reorder (`onDrag`/`onDrop` on individual track headers) works unchanged with lazy stacking
+- Automation sub-lane expand/collapse unaffected — per-track height is computed independently via `viewModel.trackHeight(for:baseHeight:)`
+- `.equatable()` memoization on `TrackLaneView` (from #129) still applies within the lazy stack
+- All 1042 tests pass

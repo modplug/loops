@@ -57,8 +57,8 @@ public struct TimelineView: View {
                 onPlayheadPosition?(bar)
             }
 
-            // Track lanes stacked vertically
-            VStack(spacing: 0) {
+            // Track lanes stacked vertically (lazy — off-screen tracks are not rendered)
+            LazyVStack(spacing: 0, pinnedViews: []) {
                 ForEach(tracks) { track in
                     let base = viewModel.baseTrackHeight(for: track.id)
                     let perTrackHeight = viewModel.trackHeight(for: track, baseHeight: base)

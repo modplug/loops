@@ -622,8 +622,8 @@ public struct MainContentView: View {
         GeometryReader { geo in
             ScrollView(.vertical, showsIndicators: true) {
                 HStack(alignment: .top, spacing: 0) {
-                    // Track headers — fixed width, scroll vertically with tracks
-                    VStack(spacing: 0) {
+                    // Track headers — fixed width, scroll vertically with tracks (lazy)
+                    LazyVStack(spacing: 0, pinnedViews: []) {
                         ForEach(regularTracks) { track in
                             trackHeaderWithActions(track: track)
                                 .opacity(draggingTrackID == track.id ? 0.4 : 1.0)

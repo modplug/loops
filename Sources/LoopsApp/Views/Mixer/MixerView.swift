@@ -50,7 +50,7 @@ public struct MixerView: View {
         HStack(spacing: 0) {
             // Regular tracks in a horizontal scroll view
             ScrollView(.horizontal, showsIndicators: true) {
-                HStack(spacing: 4) {
+                LazyHStack(spacing: 4) {
                     ForEach(regularTracks) { track in
                         stripView(for: track)
                     }
