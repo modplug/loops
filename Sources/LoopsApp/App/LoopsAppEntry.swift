@@ -162,6 +162,13 @@ public struct LoopsRootView: View {
             }
             engineManager?.installMasterLevelTap()
 
+            // Set up per-track level metering
+            transportViewModel.onTrackLevelUpdate = { [weak mixerViewModel] trackID, peak in
+                Task { @MainActor in
+                    mixerViewModel?.updateLevel(trackID: trackID, peak: peak)
+                }
+            }
+
             // Wire MIDI parameter learn: when learning, intercept MIDI events
             setupMIDIParameterDispatch()
         }

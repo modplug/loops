@@ -1103,3 +1103,28 @@
 - `MainContentView`: passes `midiLearnState.isMIDIParameterLearning` to TrackInspectorView for observation isolation
 - All existing tests pass unchanged — proxy properties maintain backward compatibility
 - All 1019 tests pass
+
+### Iteration 16 — #127 Isolate playhead rendering from timeline view tree
+- `PlayheadOverlayView`: new child view in PlayheadView.swift that wraps `PlayheadView` and isolates `playheadBar` observation from `TimelineView.body`
+- With `@Observable`, only `PlayheadOverlayView.body` reads `viewModel.playheadX` (which accesses `playheadBar`), so 60fps playhead ticks no longer trigger re-evaluation of the entire `TimelineView` body
+- `TimelineView`: replaced direct `PlayheadView(xPosition: viewModel.playheadX, ...)` with `PlayheadOverlayView(viewModel:height:)` — TrackLaneView and ContainerView bodies are no longer re-evaluated on playhead tick
+- Playhead position, zoom, and scroll behavior unchanged
+- All 1019 tests pass
+
+### Iteration 17 — #128 Per-track meter isolation in MixerView
+- `MixerStripState`: new `@Observable @MainActor` class holding a single track's `level: Float` with ~30fps throttling via `CFAbsoluteTime` timestamp comparison (`throttleInterval = 1.0/30.0`)
+- `MixerStripState.updateLevel(_:)`: only accepts a new level if ≥33ms has elapsed since the last update
+- `MixerViewModel`: replaced `trackLevels: [ID<Track>: Float]` dictionary with `stripStates: [ID<Track>: MixerStripState]` — each track gets its own observable, isolating observation
+- `MixerViewModel`: replaced `masterLevel: Float` with `masterStripState: MixerStripState` for consistent master meter isolation
+- `MixerViewModel.stripState(for:)`: returns or creates the per-track `MixerStripState` on demand
+- `MixerViewModel.updateLevel(trackID:peak:)` and `updateMasterLevel(_:)`: delegate to the per-track/master `MixerStripState.updateLevel()`, inheriting throttling
+- `MixerViewModel.removeStripState(for:)`: removes per-track state when tracks are deleted
+- `MixerStripView`: replaced `level: Float` parameter with `stripState: MixerStripState` — each strip observes only its own state object, so level changes on track 1 don't re-evaluate track 2's strip
+- `MixerView.stripView(for:)`: passes `mixerViewModel.masterStripState` for master, `mixerViewModel.stripState(for:)` for regular tracks
+- `PlaybackScheduler`: added `onTrackLevelUpdate: ((ID<Track>, Float) -> Void)?` callback and `trackLevelTapIDs` set for tracking installed taps
+- `PlaybackScheduler.installTrackLevelTaps()`: installs `AVAudioNode` taps on each track mixer node, fires `onTrackLevelUpdate` with peak level via `AudioEngineManager.peakLevel(from:)`
+- `PlaybackScheduler.removeTrackLevelTaps()`: removes all per-track taps, called in `cleanup()` and `cleanupTrackSubgraph()`
+- `TransportViewModel`: added `onTrackLevelUpdate` callback, wires to scheduler on creation, installs taps after `prepare()` and `prepareIncremental()`
+- `LoopsAppEntry`: wires `transportViewModel.onTrackLevelUpdate` to `mixerViewModel.updateLevel(trackID:peak:)` via `@MainActor` dispatch
+- 9 new tests: MixerStripState defaults zero, updateLevel sets level, throttles rapid updates, stripState same instance, different instances per track, updateLevel isolation, removeStripState, master independent from tracks, scheduler callback wiring
+- All 1028 tests pass

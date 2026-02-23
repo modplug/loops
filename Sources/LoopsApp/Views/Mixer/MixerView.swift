@@ -76,7 +76,9 @@ public struct MixerView: View {
     private func stripView(for track: Track) -> some View {
         MixerStripView(
             track: track,
-            level: mixerViewModel.trackLevels[track.id] ?? 0.0,
+            stripState: track.kind == .master
+                ? mixerViewModel.masterStripState
+                : mixerViewModel.stripState(for: track.id),
             isTrackSelected: selectedTrackID == track.id,
             onVolumeChange: { newVolume in
                 onVolumeChange?(track.id, newVolume)

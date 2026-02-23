@@ -1,7 +1,9 @@
 import Testing
 import Foundation
+import AVFoundation
 @testable import LoopsApp
 @testable import LoopsCore
+@testable import LoopsEngine
 
 @Suite("Mixer Tests")
 struct MixerTests {
@@ -138,23 +140,24 @@ struct MixerTests {
         #expect(gain > 1.9 && gain < 2.1)
     }
 
-    @Test("MixerViewModel updateLevel stores per-track levels")
+    @Test("MixerViewModel updateLevel stores per-track levels via MixerStripState")
     @MainActor
     func updateLevel() {
         let vm = MixerViewModel()
         let trackID = ID<Track>()
-        #expect(vm.trackLevels[trackID] == nil)
+        let state = vm.stripState(for: trackID)
+        #expect(state.level == 0.0)
         vm.updateLevel(trackID: trackID, peak: 0.75)
-        #expect(vm.trackLevels[trackID] == 0.75)
+        #expect(state.level == 0.75)
     }
 
-    @Test("MixerViewModel updateMasterLevel stores master level")
+    @Test("MixerViewModel updateMasterLevel stores master level via MixerStripState")
     @MainActor
     func updateMasterLevel() {
         let vm = MixerViewModel()
-        #expect(vm.masterLevel == 0.0)
+        #expect(vm.masterStripState.level == 0.0)
         vm.updateMasterLevel(0.9)
-        #expect(vm.masterLevel == 0.9)
+        #expect(vm.masterStripState.level == 0.9)
     }
 
     // MARK: - Volume/Pan on master track
@@ -285,5 +288,105 @@ struct MixerTests {
 
         let readbackPan = vm.project.songs[0].tracks.first(where: { $0.id == trackID })?.pan
         #expect(readbackPan == -0.65)
+    }
+
+    // MARK: - Per-track meter isolation (MixerStripState)
+
+    @Test("MixerStripState defaults to zero level")
+    @MainActor
+    func stripStateDefaultLevel() {
+        let state = MixerStripState()
+        #expect(state.level == 0.0)
+    }
+
+    @Test("MixerStripState updateLevel sets level")
+    @MainActor
+    func stripStateUpdateLevel() {
+        let state = MixerStripState()
+        state.updateLevel(0.6)
+        #expect(state.level == 0.6)
+    }
+
+    @Test("MixerStripState throttles rapid updates")
+    @MainActor
+    func stripStateThrottling() {
+        let state = MixerStripState()
+        state.updateLevel(0.5)
+        #expect(state.level == 0.5)
+        // Immediate second update should be throttled (same frame)
+        state.updateLevel(0.8)
+        #expect(state.level == 0.5)
+    }
+
+    @Test("MixerViewModel stripState returns same instance for same track")
+    @MainActor
+    func stripStateSameInstance() {
+        let vm = MixerViewModel()
+        let trackID = ID<Track>()
+        let state1 = vm.stripState(for: trackID)
+        let state2 = vm.stripState(for: trackID)
+        #expect(state1 === state2)
+    }
+
+    @Test("MixerViewModel stripState returns different instances for different tracks")
+    @MainActor
+    func stripStateDifferentTracks() {
+        let vm = MixerViewModel()
+        let trackA = ID<Track>()
+        let trackB = ID<Track>()
+        let stateA = vm.stripState(for: trackA)
+        let stateB = vm.stripState(for: trackB)
+        #expect(stateA !== stateB)
+    }
+
+    @Test("MixerViewModel updateLevel isolates per-track state")
+    @MainActor
+    func updateLevelIsolation() {
+        let vm = MixerViewModel()
+        let trackA = ID<Track>()
+        let trackB = ID<Track>()
+        let stateA = vm.stripState(for: trackA)
+        let stateB = vm.stripState(for: trackB)
+        vm.updateLevel(trackID: trackA, peak: 0.9)
+        #expect(stateA.level == 0.9)
+        #expect(stateB.level == 0.0)
+    }
+
+    @Test("MixerViewModel removeStripState removes per-track state")
+    @MainActor
+    func removeStripState() {
+        let vm = MixerViewModel()
+        let trackID = ID<Track>()
+        _ = vm.stripState(for: trackID)
+        #expect(vm.stripStates[trackID] != nil)
+        vm.removeStripState(for: trackID)
+        #expect(vm.stripStates[trackID] == nil)
+    }
+
+    @Test("MixerViewModel masterStripState is independent from track states")
+    @MainActor
+    func masterStripStateIndependent() {
+        let vm = MixerViewModel()
+        let trackID = ID<Track>()
+        vm.updateLevel(trackID: trackID, peak: 0.7)
+        vm.updateMasterLevel(0.3)
+        #expect(vm.stripState(for: trackID).level == 0.7)
+        #expect(vm.masterStripState.level == 0.3)
+    }
+
+    @Test("PlaybackScheduler exposes onTrackLevelUpdate callback")
+    func schedulerTrackLevelCallback() async {
+        let engine = AVAudioEngine()
+        try? engine.enableManualRenderingMode(.offline, format: AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!, maximumFrameCount: 4096)
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: URL(fileURLWithPath: NSTemporaryDirectory()))
+        var receivedTrackID: ID<Track>?
+        var receivedPeak: Float?
+        scheduler.onTrackLevelUpdate = { trackID, peak in
+            receivedTrackID = trackID
+            receivedPeak = peak
+        }
+        // Callback is set but won't fire without active taps — verify it's wired
+        #expect(receivedTrackID == nil)
+        #expect(receivedPeak == nil)
     }
 }

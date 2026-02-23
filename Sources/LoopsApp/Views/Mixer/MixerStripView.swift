@@ -4,7 +4,7 @@ import LoopsCore
 /// A single mixer channel strip with fader, pan, mute, solo, record arm, monitor, and level meter.
 public struct MixerStripView: View {
     let track: Track
-    let level: Float
+    let stripState: MixerStripState
     var isTrackSelected: Bool
     var onVolumeChange: ((Float) -> Void)?
     var onPanChange: ((Float) -> Void)?
@@ -19,7 +19,7 @@ public struct MixerStripView: View {
 
     public init(
         track: Track,
-        level: Float = 0.0,
+        stripState: MixerStripState,
         isTrackSelected: Bool = false,
         onVolumeChange: ((Float) -> Void)? = nil,
         onPanChange: ((Float) -> Void)? = nil,
@@ -30,7 +30,7 @@ public struct MixerStripView: View {
         onTrackSelect: (() -> Void)? = nil
     ) {
         self.track = track
-        self.level = level
+        self.stripState = stripState
         self.isTrackSelected = isTrackSelected
         self.onVolumeChange = onVolumeChange
         self.onPanChange = onPanChange
@@ -71,7 +71,7 @@ public struct MixerStripView: View {
                     .onChange(of: volume) { _, newValue in
                         onVolumeChange?(newValue)
                     }
-                LevelMeterView(level: level, width: 4)
+                LevelMeterView(level: stripState.level, width: 4)
                     .frame(height: 100)
             }
 

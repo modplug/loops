@@ -32,6 +32,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// Optional input monitor for auto-suppressing monitoring during playback.
     public var inputMonitor: InputMonitor?
 
+    /// Callback for per-track level meter updates.
+    /// Called on the audio render thread; dispatch to main for UI updates.
+    /// Parameters: trackID, peak level (0.0-1.0).
+    public var onTrackLevelUpdate: ((ID<Track>, Float) -> Void)?
+
+    /// Track IDs that currently have level taps installed.
+    private var trackLevelTapIDs: Set<ID<Track>> = []
+
     /// Per-container audio subgraph.
     private struct ContainerSubgraph {
         let playerNode: AVAudioPlayerNode
@@ -989,6 +997,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
     public func cleanup() {
         stopAutomationTimer()
 
+        // Remove level taps before tearing down nodes
+        removeTrackLevelTaps()
+
         // Copy and clear shared state under lock — non-@MainActor methods
         // (stop, updateTrackMix, scheduleContainer, etc.) also read these.
         lock.lock()
@@ -1050,10 +1061,63 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
     }
 
+    // MARK: - Per-Track Level Metering
+
+    /// Installs audio taps on all track mixer nodes to read peak levels.
+    /// Safe to call multiple times — only installs on tracks that don't already have taps.
+    public func installTrackLevelTaps() {
+        lock.lock()
+        let mixers = trackMixers
+        lock.unlock()
+
+        for (trackID, mixer) in mixers {
+            lock.lock()
+            let alreadyInstalled = trackLevelTapIDs.contains(trackID)
+            lock.unlock()
+            guard !alreadyInstalled else { continue }
+
+            let format = mixer.outputFormat(forBus: 0)
+            guard format.channelCount > 0 else { continue }
+            let bufferSize: AVAudioFrameCount = 4096
+            let capturedTrackID = trackID
+            mixer.installTap(onBus: 0, bufferSize: bufferSize, format: format) { [weak self] buffer, _ in
+                guard let self else { return }
+                let peak = AudioEngineManager.peakLevel(from: buffer)
+                self.onTrackLevelUpdate?(capturedTrackID, peak)
+            }
+            lock.lock()
+            trackLevelTapIDs.insert(trackID)
+            lock.unlock()
+        }
+    }
+
+    /// Removes all per-track level taps.
+    public func removeTrackLevelTaps() {
+        lock.lock()
+        let tapIDs = trackLevelTapIDs
+        let mixers = trackMixers
+        trackLevelTapIDs.removeAll()
+        lock.unlock()
+
+        for trackID in tapIDs {
+            if let mixer = mixers[trackID] {
+                mixer.removeTap(onBus: 0)
+            }
+        }
+    }
+
     /// Tears down a single track's subgraph (containers, effects, mixer) from the engine.
     /// Must be called while the engine is stopped.
     @MainActor
     private func cleanupTrackSubgraph(trackID: ID<Track>) {
+        // Remove level tap for this track before tearing down
+        lock.lock()
+        let hadTap = trackLevelTapIDs.remove(trackID) != nil
+        lock.unlock()
+        if hadTap, let mixer = trackMixers[trackID] {
+            mixer.removeTap(onBus: 0)
+        }
+
         lock.lock()
         // Find and remove container subgraphs belonging to this track
         let trackMixer = trackMixers.removeValue(forKey: trackID)

@@ -56,6 +56,10 @@ public final class TransportViewModel {
     /// Parameters: trackID, containerID, SourceRecording.
     public var onRecordingComplete: ((ID<Track>, ID<Container>, SourceRecording) -> Void)?
 
+    /// Called when a per-track level update is available.
+    /// Dispatched from the audio render thread — callers should dispatch to main.
+    public var onTrackLevelUpdate: ((ID<Track>, Float) -> Void)?
+
     public init(transport: TransportManager, engineManager: AudioEngineManager? = nil) {
         self.transport = transport
         self.engineManager = engineManager
@@ -142,6 +146,7 @@ public final class TransportViewModel {
                         dispatcher.parameterResolver = scheduler
                         scheduler.actionDispatcher = dispatcher
                         scheduler.inputMonitor = engine.inputMonitor
+                        scheduler.onTrackLevelUpdate = onTrackLevelUpdate
                         playbackScheduler = scheduler
                     }
                     schedulePlayback(
@@ -169,6 +174,7 @@ public final class TransportViewModel {
                         dispatcher.parameterResolver = scheduler
                         scheduler.actionDispatcher = dispatcher
                         scheduler.inputMonitor = engine.inputMonitor
+                        scheduler.onTrackLevelUpdate = onTrackLevelUpdate
                         playbackScheduler = scheduler
                     }
                 }
@@ -495,6 +501,8 @@ public final class TransportViewModel {
                 sourceRecordings: context.recordings
             )
             guard self.playbackGeneration == gen else { return }
+            // Re-install taps on any newly created track mixers
+            scheduler.installTrackLevelTaps()
 
             if !changedTracks.isEmpty {
                 scheduler.playChangedTracks(
@@ -544,6 +552,8 @@ public final class TransportViewModel {
                 guard self.playbackGeneration == gen else { return }
                 self.lastPreparedSong = song
                 self.lastPreparedRecordingIDs = Set(recordings.keys)
+                // Install per-track level taps after graph is built
+                scheduler?.installTrackLevelTaps()
             } else {
                 print("[PLAY] skipping prepare, calling stop()")
                 scheduler?.stop()
