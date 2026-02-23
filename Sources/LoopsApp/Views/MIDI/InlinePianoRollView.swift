@@ -23,6 +23,7 @@ struct InlinePianoRollView: View {
     var onSelectContainer: ((ID<Container>) -> Void)?
 
     @State private var resizeDragStartHeight: CGFloat = 0
+    @State private var resizePreviewHeight: CGFloat?
 
     // MARK: - Computed Properties
 
@@ -87,8 +88,23 @@ struct InlinePianoRollView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            inlineToolbar
-            Divider()
+            VStack(spacing: 0) {
+                inlineToolbar
+                Divider()
+            }
+            .background(
+                GeometryReader { geo in
+                    Color.clear.onAppear {
+                        editorState.toolbarHeight = geo.size.height.rounded()
+                    }
+                    .onChange(of: geo.size.height) { _, newHeight in
+                        let rounded = newHeight.rounded()
+                        if abs(editorState.toolbarHeight - rounded) > 0.5 {
+                            editorState.toolbarHeight = rounded
+                        }
+                    }
+                }
+            )
             PianoRollContentView(
                 sequence: activeSequence,
                 lengthBars: totalTimelineBars,
@@ -116,6 +132,7 @@ struct InlinePianoRollView: View {
                     }
                 },
                 onFocusChanged: { editorState.isFocused = $0 },
+                onVerticalScrollChanged: { editorState.verticalScrollOffset = $0 },
                 onAddNote: activeIsLinkedInherited ? nil : { note in
                     onAddNote?(activeContainerID, note)
                 },
@@ -127,7 +144,7 @@ struct InlinePianoRollView: View {
                 },
                 onNotePreview: onNotePreview
             )
-            .frame(height: editorState.inlineHeight)
+            .frame(height: resizePreviewHeight ?? editorState.inlineHeight)
 
             // Bottom resize handle
             Rectangle()
@@ -143,9 +160,13 @@ struct InlinePianoRollView: View {
                             if resizeDragStartHeight == 0 {
                                 resizeDragStartHeight = editorState.inlineHeight
                             }
-                            editorState.inlineHeight = max(100, resizeDragStartHeight + value.translation.height)
+                            resizePreviewHeight = max(100, resizeDragStartHeight + value.translation.height)
                         }
                         .onEnded { _ in
+                            if let preview = resizePreviewHeight {
+                                editorState.inlineHeight = preview
+                            }
+                            resizePreviewHeight = nil
                             resizeDragStartHeight = 0
                         }
                 )

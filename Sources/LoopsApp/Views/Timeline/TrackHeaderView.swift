@@ -393,11 +393,13 @@ struct TrackResizeHandle: View {
     let onReset: () -> Void
 
     @State private var dragStartHeight: CGFloat = 0
+    @State private var previewDelta: CGFloat = 0
 
     var body: some View {
         Rectangle()
-            .fill(Color.clear)
+            .fill(previewDelta != 0 ? Color.accentColor.opacity(0.5) : Color.clear)
             .frame(height: 6)
+            .offset(y: previewDelta)
             .contentShape(Rectangle())
             .onHover { hovering in
                 if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
@@ -408,10 +410,13 @@ struct TrackResizeHandle: View {
                         if dragStartHeight == 0 {
                             dragStartHeight = currentHeight
                         }
-                        let newHeight = dragStartHeight + value.translation.height
-                        onResize(newHeight)
+                        let newHeight = max(TimelineViewModel.minimumTrackHeight, dragStartHeight + value.translation.height)
+                        previewDelta = newHeight - currentHeight
                     }
                     .onEnded { _ in
+                        let finalHeight = max(TimelineViewModel.minimumTrackHeight, dragStartHeight + previewDelta)
+                        onResize(finalHeight)
+                        previewDelta = 0
                         dragStartHeight = 0
                     }
             )
