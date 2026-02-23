@@ -47,6 +47,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let playerNode: AVAudioPlayerNode
         let instrumentUnit: AVAudioUnit?
         let effectUnits: [AVAudioUnit]
+        /// Maps full sorted effect index (including bypassed) to compact index in effectUnits.
+        let fullIndexToCompactIndex: [Int: Int]
         let trackMixer: AVAudioMixerNode
         /// Per-container audio file handle. Each container gets its own
         /// AVAudioFile instance even when sharing a recording, because
@@ -60,9 +62,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// Master track mixer node and effect chain.
     private var masterMixerNode: AVAudioMixerNode?
     private var masterEffectUnits: [AVAudioUnit] = []
+    /// Maps full sorted effect index → compact index for master effects.
+    private var masterEffectIndexMap: [Int: Int] = [:]
 
     /// Per-track effect chains (non-master tracks with insertEffects).
     private var trackEffectUnits: [ID<Track>: [AVAudioUnit]] = [:]
+    /// Maps full sorted effect index → compact index for each track's effects.
+    private var trackEffectIndexMaps: [ID<Track>: [Int: Int]] = [:]
 
     /// All active container subgraphs, keyed by container ID.
     private var containerSubgraphs: [ID<Container>: ContainerSubgraph] = [:]
@@ -86,6 +92,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private var automationTimer: DispatchSourceTimer?
     private var playbackStartTime: Date?
     private var playbackStartBar: Double = 1.0
+
+    /// Live automation data — updated without graph rebuild so edits during
+    /// playback are reflected immediately.
+    private var liveContainersWithAutomation: [Container] = []
+    private var liveTracksWithAutomation: [Track] = []
 
     /// MIDI notes currently sounding (for sending note-off on stop).
     private var activeMIDINotes: [(trackID: ID<Track>, containerID: ID<Container>, note: UInt8, channel: UInt8)] = []
@@ -264,14 +275,17 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Pre-load master effects
         let masterTrack = song.masterTrack
         var preloadedMasterEffects: [AVAudioUnit] = []
+        var preloadedMasterEffectIdxMap: [Int: Int] = [:]
         if let master = masterTrack, !master.isEffectChainBypassed {
-            for effect in master.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+            let sortedMasterEffects = master.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex })
+            for (fullIndex, effect) in sortedMasterEffects.enumerated() {
                 guard !effect.isBypassed else { continue }
                 guard !Task.isCancelled else { return }
                 if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
                     if let presetData = effect.presetData {
                         try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                     }
+                    preloadedMasterEffectIdxMap[fullIndex] = preloadedMasterEffects.count
                     preloadedMasterEffects.append(unit)
                 } else {
                     print("[WARN] Failed to load AU: \(effect.displayName)")
@@ -286,11 +300,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
             let container: Container
             let instrument: AVAudioUnit?
             let effects: [AVAudioUnit]
+            let effectIndexMap: [Int: Int]
             let audioFormat: AVAudioFormat?
         }
         struct PreloadedTrack {
             let track: Track
             let effects: [AVAudioUnit]
+            let effectIndexMap: [Int: Int]
             let containers: [PreloadedContainer]
         }
 
@@ -300,13 +316,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
             guard !Task.isCancelled else { return }
 
             var trackEffects: [AVAudioUnit] = []
+            var trackEffectIdxMap: [Int: Int] = [:]
             if !track.isEffectChainBypassed {
-                for effect in track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                let sortedTrackEffects = track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex })
+                for (fullIndex, effect) in sortedTrackEffects.enumerated() {
                     guard !effect.isBypassed else { continue }
                     if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
                         if let presetData = effect.presetData {
                             try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                         }
+                        trackEffectIdxMap[fullIndex] = trackEffects.count
                         trackEffects.append(unit)
                     } else {
                         print("[WARN] Failed to load AU: \(effect.displayName)")
@@ -344,13 +363,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 }
 
                 var effectUnits: [AVAudioUnit] = []
+                var containerEffectIdxMap: [Int: Int] = [:]
                 if !resolved.isEffectChainBypassed {
-                    for effect in resolved.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                    let sortedEffects = resolved.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex })
+                    for (fullIndex, effect) in sortedEffects.enumerated() {
                         guard !effect.isBypassed else { continue }
                         if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
                             if let presetData = effect.presetData {
                                 try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                             }
+                            containerEffectIdxMap[fullIndex] = effectUnits.count
                             effectUnits.append(unit)
                         } else {
                             print("[WARN] Failed to load AU: \(effect.displayName)")
@@ -362,6 +384,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     container: resolved,
                     instrument: instrumentUnit,
                     effects: effectUnits,
+                    effectIndexMap: containerEffectIdxMap,
                     audioFormat: fileFormat
                 ))
             }
@@ -369,6 +392,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             preloadedTracks.append(PreloadedTrack(
                 track: track,
                 effects: trackEffects,
+                effectIndexMap: trackEffectIdxMap,
                 containers: preloadedContainers
             ))
         }
@@ -430,6 +454,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             lock.lock()
             masterMixerNode = masterMixer
             masterEffectUnits = preloadedMasterEffects
+            masterEffectIndexMap = preloadedMasterEffectIdxMap
             lock.unlock()
 
             if preloadedMasterEffects.isEmpty {
@@ -464,6 +489,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             lock.lock()
             trackMixers[preloaded.track.id] = trackMixer
             trackEffectUnits[preloaded.track.id] = preloaded.effects
+            trackEffectIndexMaps[preloaded.track.id] = preloaded.effectIndexMap
             lock.unlock()
 
             if preloaded.effects.isEmpty {
@@ -501,41 +527,18 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 if hasInstrument {
                     let inst = pc.instrument!
                     // Connect instrument → effects → trackMixer
-                    var instChain: [AVAudioNode] = [inst] + effectChain
-                    var connectError: NSError?
-                    let success = ObjCTryCatch({
-                        for i in 0..<(instChain.count - 1) {
-                            self.engine.connect(instChain[i], to: instChain[i + 1], format: nil)
-                        }
-                        self.engine.connect(instChain[instChain.count - 1], to: trackMixer, format: nil)
-                    }, &connectError)
-                    if !success {
-                        print("[WARN] Instrument chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
-                        for node in effectChain { engine.detach(node) }
-                        // Connect instrument directly to trackMixer as fallback
-                        engine.connect(inst, to: trackMixer, format: nil)
+                    if !connectEffectChain(source: inst, chain: effectChain, destination: trackMixer, format: nil) {
+                        print("[WARN] Instrument chain connection failed for '\(pc.container.name)'")
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
                     }
                     // Player node is unused for MIDI containers but must be
                     // connected to satisfy engine graph validation.
                     engine.connect(player, to: trackMixer, format: playerFormat)
-                } else if effectChain.isEmpty {
-                    engine.connect(player, to: trackMixer, format: playerFormat)
                 } else {
                     // Audio container: player → effects → trackMixer
-                    var connectError: NSError?
-                    let success = ObjCTryCatch({
-                        self.engine.connect(player, to: effectChain[0], format: nil)
-                        for i in 0..<(effectChain.count - 1) {
-                            self.engine.connect(effectChain[i], to: effectChain[i + 1], format: nil)
-                        }
-                        self.engine.connect(effectChain[effectChain.count - 1], to: trackMixer, format: nil)
-                    }, &connectError)
-                    if !success {
-                        print("[WARN] Effect chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
-                        for node in effectChain { engine.detach(node) }
-                        engine.connect(player, to: trackMixer, format: playerFormat)
+                    if !connectEffectChain(source: player, chain: effectChain, destination: trackMixer, format: playerFormat) {
+                        print("[WARN] Effect chain connection failed for '\(pc.container.name)'")
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
                     }
@@ -556,11 +559,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     containerAudioFile = nil
                 }
 
+                let actualEffectIdxMap = chainConnected ? pc.effectIndexMap : [:]
+
                 lock.lock()
                 containerSubgraphs[pc.container.id] = ContainerSubgraph(
                     playerNode: player,
                     instrumentUnit: actualInstrument,
                     effectUnits: actualEffects,
+                    fullIndexToCompactIndex: actualEffectIdxMap,
                     trackMixer: trackMixer,
                     audioFile: containerAudioFile
                 )
@@ -654,16 +660,19 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // ── Phase 1: Pre-load AU units for changed tracks (async, engine keeps running) ──
 
         var preloadedMasterEffects: [AVAudioUnit] = []
+        var preloadedMasterEffectIdxMap: [Int: Int] = [:]
         if masterChanged {
             let masterTrack = song.masterTrack
             if let master = masterTrack, !master.isEffectChainBypassed {
-                for effect in master.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                let sortedMasterEffects = master.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex })
+                for (fullIndex, effect) in sortedMasterEffects.enumerated() {
                     guard !effect.isBypassed else { continue }
                     guard !Task.isCancelled else { return [] }
                     if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
                         if let presetData = effect.presetData {
                             try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                         }
+                        preloadedMasterEffectIdxMap[fullIndex] = preloadedMasterEffects.count
                         preloadedMasterEffects.append(unit)
                     } else {
                         print("[WARN] Failed to load AU: \(effect.displayName)")
@@ -678,11 +687,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
             let container: Container
             let instrument: AVAudioUnit?
             let effects: [AVAudioUnit]
+            let effectIndexMap: [Int: Int]
             let audioFormat: AVAudioFormat?
         }
         struct PreloadedTrack {
             let track: Track
             let effects: [AVAudioUnit]
+            let effectIndexMap: [Int: Int]
             let containers: [PreloadedContainer]
         }
 
@@ -706,13 +717,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
             guard !Task.isCancelled else { return [] }
 
             var trackEffects: [AVAudioUnit] = []
+            var trackEffectIdxMap: [Int: Int] = [:]
             if !track.isEffectChainBypassed {
-                for effect in track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                let sortedTrackEffects = track.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex })
+                for (fullIndex, effect) in sortedTrackEffects.enumerated() {
                     guard !effect.isBypassed else { continue }
                     if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
                         if let presetData = effect.presetData {
                             try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                         }
+                        trackEffectIdxMap[fullIndex] = trackEffects.count
                         trackEffects.append(unit)
                     } else {
                         print("[WARN] Failed to load AU: \(effect.displayName)")
@@ -745,13 +759,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 }
 
                 var effectUnits: [AVAudioUnit] = []
+                var containerEffectIdxMap: [Int: Int] = [:]
                 if !resolved.isEffectChainBypassed {
-                    for effect in resolved.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+                    let sortedEffects = resolved.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex })
+                    for (fullIndex, effect) in sortedEffects.enumerated() {
                         guard !effect.isBypassed else { continue }
                         if let unit = try? await audioUnitHost.loadAudioUnit(component: effect.component) {
                             if let presetData = effect.presetData {
                                 try? audioUnitHost.restoreState(audioUnit: unit, data: presetData)
                             }
+                            containerEffectIdxMap[fullIndex] = effectUnits.count
                             effectUnits.append(unit)
                         } else {
                             print("[WARN] Failed to load AU: \(effect.displayName)")
@@ -763,6 +780,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     container: resolved,
                     instrument: instrumentUnit,
                     effects: effectUnits,
+                    effectIndexMap: containerEffectIdxMap,
                     audioFormat: fileFormat
                 ))
             }
@@ -770,6 +788,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             preloadedChangedTracks.append(PreloadedTrack(
                 track: track,
                 effects: trackEffects,
+                effectIndexMap: trackEffectIdxMap,
                 containers: preloadedContainers
             ))
         }
@@ -868,6 +887,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 lock.lock()
                 masterMixerNode = masterMixer
                 masterEffectUnits = preloadedMasterEffects
+                masterEffectIndexMap = preloadedMasterEffectIdxMap
                 lock.unlock()
 
                 if preloadedMasterEffects.isEmpty {
@@ -924,6 +944,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             lock.lock()
             trackMixers[preloaded.track.id] = trackMixer
             trackEffectUnits[preloaded.track.id] = preloaded.effects
+            trackEffectIndexMaps[preloaded.track.id] = preloaded.effectIndexMap
             lock.unlock()
 
             if preloaded.effects.isEmpty {
@@ -957,37 +978,15 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
                 if hasInstrument {
                     let inst = pc.instrument!
-                    var instChain: [AVAudioNode] = [inst] + effectChain
-                    var connectError: NSError?
-                    let success = ObjCTryCatch({
-                        for i in 0..<(instChain.count - 1) {
-                            self.engine.connect(instChain[i], to: instChain[i + 1], format: nil)
-                        }
-                        self.engine.connect(instChain[instChain.count - 1], to: trackMixer, format: nil)
-                    }, &connectError)
-                    if !success {
-                        print("[WARN] Instrument chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
-                        for node in effectChain { engine.detach(node) }
-                        engine.connect(inst, to: trackMixer, format: nil)
+                    if !connectEffectChain(source: inst, chain: effectChain, destination: trackMixer, format: nil) {
+                        print("[WARN] Instrument chain connection failed for '\(pc.container.name)'")
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
                     }
                     engine.connect(player, to: trackMixer, format: playerFormat)
-                } else if effectChain.isEmpty {
-                    engine.connect(player, to: trackMixer, format: playerFormat)
                 } else {
-                    var connectError: NSError?
-                    let success = ObjCTryCatch({
-                        self.engine.connect(player, to: effectChain[0], format: nil)
-                        for i in 0..<(effectChain.count - 1) {
-                            self.engine.connect(effectChain[i], to: effectChain[i + 1], format: nil)
-                        }
-                        self.engine.connect(effectChain[effectChain.count - 1], to: trackMixer, format: nil)
-                    }, &connectError)
-                    if !success {
-                        print("[WARN] Effect chain connection failed for '\(pc.container.name)': \(connectError?.localizedDescription ?? "unknown")")
-                        for node in effectChain { engine.detach(node) }
-                        engine.connect(player, to: trackMixer, format: playerFormat)
+                    if !connectEffectChain(source: player, chain: effectChain, destination: trackMixer, format: playerFormat) {
+                        print("[WARN] Effect chain connection failed for '\(pc.container.name)'")
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
                     }
@@ -1026,11 +1025,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     containerAudioFile = nil
                 }
 
+                let actualEffectIdxMap = chainConnected ? pc.effectIndexMap : [:]
+
                 lock.lock()
                 containerSubgraphs[pc.container.id] = ContainerSubgraph(
                     playerNode: player,
                     instrumentUnit: actualInstrument,
                     effectUnits: actualEffects,
+                    fullIndexToCompactIndex: actualEffectIdxMap,
                     trackMixer: trackMixer,
                     audioFile: containerAudioFile
                 )
@@ -1089,8 +1091,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
             for container in track.containers {
                 let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
                 if resolved.hasMIDI && resolved.sourceRecordingID == nil {
-                    let containerEndBar = Double(resolved.endBar)
-                    let containerStartBar = Double(resolved.startBar)
+                    let containerEndBar = resolved.endBar
+                    let containerStartBar = resolved.startBar
                     if fromBar < containerEndBar && fromBar >= containerStartBar - 1 {
                         lock.lock()
                         activeContainers.append(resolved)
@@ -1201,8 +1203,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 // MIDI containers are scheduled via the automation/MIDI timer, not audio scheduling.
                 // Register them as active so they fire enter/exit actions and suppress monitoring.
                 if resolved.hasMIDI && resolved.sourceRecordingID == nil {
-                    let containerEndBar = Double(resolved.endBar)
-                    let containerStartBar = Double(resolved.startBar)
+                    let containerEndBar = resolved.endBar
+                    let containerStartBar = resolved.startBar
                     if fromBar < containerEndBar && fromBar >= containerStartBar - 1 {
                         lock.lock()
                         activeContainers.append(resolved)
@@ -1401,10 +1403,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
         containerToTrack.removeAll()
         let tEffectUnits = trackEffectUnits
         trackEffectUnits.removeAll()
+        trackEffectIndexMaps.removeAll()
         let tMixers = trackMixers
         trackMixers.removeAll()
         let mEffectUnits = masterEffectUnits
         masterEffectUnits.removeAll()
+        masterEffectIndexMap.removeAll()
         let mMixer = masterMixerNode
         masterMixerNode = nil
         audioFiles.removeAll()
@@ -1508,6 +1512,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Find and remove container subgraphs belonging to this track
         let trackMixer = trackMixers.removeValue(forKey: trackID)
         let effects = trackEffectUnits.removeValue(forKey: trackID)
+        trackEffectIndexMaps.removeValue(forKey: trackID)
         var removedSubgraphs: [ContainerSubgraph] = []
         for (containerID, subgraph) in containerSubgraphs {
             if subgraph.trackMixer === trackMixer {
@@ -1555,6 +1560,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         lock.lock()
         let mEffects = masterEffectUnits
         masterEffectUnits.removeAll()
+        masterEffectIndexMap.removeAll()
         let mMixer = masterMixerNode
         masterMixerNode = nil
         lock.unlock()
@@ -1638,7 +1644,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let spb = samplesPerBar(bpm: bpm, timeSignature: ts, sampleRate: sr)
         scheduleContainer(
             container: container,
-            fromBar: Double(container.startBar),
+            fromBar: container.startBar,
             samplesPerBar: spb
         )
     }
@@ -1686,8 +1692,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         print("[PLAY] scheduleContainer '\(container.name)' id=\(container.id) bars=\(container.startBar)-\(container.endBar) fileLen=\(audioFile.length) audioOffset=\(audioOffsetSamples) fileRate=\(fileRate) engineRate=\(currentSampleRate) parent=\(container.parentContainerID.map { "\($0)" } ?? "none")")
 
-        let containerStartSample = Int64(Double(container.startBar - 1) * fileSPB)
-        let containerEndSample = Int64(Double(container.endBar - 1) * fileSPB)
+        let containerStartSample = Int64((container.startBar - 1.0) * fileSPB)
+        let containerEndSample = Int64((container.endBar - 1.0) * fileSPB)
         let playheadSample = Int64((fromBar - 1.0) * fileSPB)
 
         // Skip containers that end before the playhead
@@ -1865,7 +1871,19 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         Self.applyDeclickFadeIn(to: buffer)
-        player.scheduleBuffer(buffer)
+
+        // Guard against channel mismatch between the audio file format and
+        // the player's negotiated output format (can happen when an effect
+        // chain changes the topology mid-playback).
+        var scheduleError: NSError?
+        let ok = ObjCTryCatch({
+            player.scheduleBuffer(buffer)
+        }, &scheduleError)
+        if !ok {
+            // Fall back to scheduling without declick
+            player.scheduleSegment(audioFile, startingFrame: startingFrame, frameCount: frameCount, at: nil)
+            return
+        }
 
         let remainingFrames = frameCount - declickFrames
         if remainingFrames > 0 {
@@ -2205,6 +2223,43 @@ public final class PlaybackScheduler: @unchecked Sendable {
             }
         }
     }
+    // MARK: - Effect Chain Connection
+
+    /// Connects a source node through a chain of effect nodes to a destination.
+    /// Empty chain connects source directly to destination.
+    /// On failure, detaches chain nodes and falls back to a direct connection.
+    /// Returns true if the chain connected successfully.
+    @discardableResult
+    private func connectEffectChain(
+        source: AVAudioNode,
+        chain: [AVAudioNode],
+        destination: AVAudioNode,
+        format: AVAudioFormat?
+    ) -> Bool {
+        guard !chain.isEmpty else {
+            engine.connect(source, to: destination, format: format)
+            return true
+        }
+
+        var connectError: NSError?
+        // Use nil for all chain connections (matching original behavior) to let
+        // the engine auto-negotiate format. The caller's format parameter is used
+        // only for the empty-chain direct path and the failure fallback.
+        let success = ObjCTryCatch({
+            self.engine.connect(source, to: chain[0], format: nil)
+            for i in 0..<(chain.count - 1) {
+                self.engine.connect(chain[i], to: chain[i + 1], format: nil)
+            }
+            self.engine.connect(chain[chain.count - 1], to: destination, format: nil)
+        }, &connectError)
+
+        if !success {
+            for node in chain { engine.detach(node) }
+            engine.connect(source, to: destination, format: format)
+        }
+        return success
+    }
+
     // MARK: - Automation
 
     /// Starts a timer that evaluates automation lanes at regular intervals.
@@ -2222,6 +2277,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         // Collect tracks with track-level automation
         let tracksWithAutomation = song.tracks.filter { !$0.trackAutomationLanes.isEmpty }
+
+        // Store in live properties so updateAutomationData can refresh them
+        lock.lock()
+        liveContainersWithAutomation = containersWithAutomation
+        liveTracksWithAutomation = tracksWithAutomation
+        lock.unlock()
 
         // Collect MIDI containers for note scheduling
         struct MIDIContainerInfo {
@@ -2263,6 +2324,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let capturedMasterMixer = self.masterMixerNode
         let capturedContainerSubgraphs = self.containerSubgraphs
         let capturedTrackEffectUnits = self.trackEffectUnits
+        let capturedTrackEffectIndexMaps = self.trackEffectIndexMaps
+        let capturedMasterEffectUnits = self.masterEffectUnits
+        let capturedMasterEffectIndexMap = self.masterEffectIndexMap
         // Build per-track instrument unit list from container subgraphs
         var trackInstrumentUnits: [ID<Track>: [AVAudioUnit]] = [:]
         for track in song.tracks where track.kind == .midi {
@@ -2300,8 +2364,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
             // ── MIDI note scheduling ──
             for midiInfo in midiContainers {
-                let containerStartBar = Double(midiInfo.container.startBar)
-                let containerEndBar = Double(midiInfo.container.endBar)
+                let containerStartBar = midiInfo.container.startBar
+                let containerEndBar = midiInfo.container.endBar
 
                 // Skip containers outside playback range
                 guard currentBar >= containerStartBar - 0.1 && currentBar < containerEndBar + 0.1 else {
@@ -2347,10 +2411,15 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 }
             }
 
-            // Evaluate container-level automation
-            for container in containersWithAutomation {
-                let containerStartBar = Double(container.startBar)
-                let containerEndBar = Double(container.endBar)
+            // Evaluate container-level automation (read live data for real-time edits)
+            weakSelf?.lock.lock()
+            let currentContainersWithAutomation = weakSelf?.liveContainersWithAutomation ?? []
+            let currentTracksWithAutomation = weakSelf?.liveTracksWithAutomation ?? []
+            weakSelf?.lock.unlock()
+
+            for container in currentContainersWithAutomation {
+                let containerStartBar = container.startBar
+                let containerEndBar = container.endBar
 
                 // Only evaluate if current playback is within this container
                 guard currentBar >= containerStartBar && currentBar < containerEndBar else { continue }
@@ -2362,22 +2431,27 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         if let containerID = lane.targetPath.containerID {
                             if let subgraph = capturedContainerSubgraphs[containerID] {
                                 let units = subgraph.effectUnits
-                                if lane.targetPath.effectIndex >= 0,
-                                   lane.targetPath.effectIndex < units.count {
-                                    let unit = units[lane.targetPath.effectIndex]
-                                    unit.auAudioUnit.parameterTree?.parameter(
+                                if let compactIdx = subgraph.fullIndexToCompactIndex[lane.targetPath.effectIndex],
+                                   compactIdx < units.count {
+                                    let unit = units[compactIdx]
+                                    if let param = unit.auAudioUnit.parameterTree?.parameter(
                                         withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
-                                    )?.value = value
+                                    ) {
+                                        param.value = param.minValue + value * (param.maxValue - param.minValue)
+                                    }
                                 }
                             }
                         } else {
-                            if let units = capturedTrackEffectUnits[lane.targetPath.trackID] {
-                                if lane.targetPath.effectIndex >= 0,
-                                   lane.targetPath.effectIndex < units.count {
-                                    let unit = units[lane.targetPath.effectIndex]
-                                    unit.auAudioUnit.parameterTree?.parameter(
+                            if let units = capturedTrackEffectUnits[lane.targetPath.trackID],
+                               let indexMap = capturedTrackEffectIndexMaps[lane.targetPath.trackID] {
+                                if let compactIdx = indexMap[lane.targetPath.effectIndex],
+                                   compactIdx < units.count {
+                                    let unit = units[compactIdx]
+                                    if let param = unit.auAudioUnit.parameterTree?.parameter(
                                         withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
-                                    )?.value = value
+                                    ) {
+                                        param.value = param.minValue + value * (param.maxValue - param.minValue)
+                                    }
                                 }
                             }
                         }
@@ -2387,7 +2461,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
             // Evaluate track-level automation (positions are 0-based from bar 1)
             let absoluteBarOffset = currentBar - 1.0
-            for track in tracksWithAutomation {
+            for track in currentTracksWithAutomation {
                 for lane in track.trackAutomationLanes {
                     guard let value = lane.interpolatedValue(atBar: absoluteBarOffset) else { continue }
                     if lane.targetPath.isTrackVolume {
@@ -2405,12 +2479,24 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         }
                     } else if lane.targetPath.isTrackEffectParameter {
                         // Track-level effect parameter automation
-                        if let units = capturedTrackEffectUnits[track.id] {
-                            let idx = lane.targetPath.effectIndex
-                            if idx >= 0 && idx < units.count {
-                                units[idx].auAudioUnit.parameterTree?.parameter(
+                        if track.kind == .master {
+                            if let compactIdx = capturedMasterEffectIndexMap[lane.targetPath.effectIndex],
+                               compactIdx < capturedMasterEffectUnits.count {
+                                if let param = capturedMasterEffectUnits[compactIdx].auAudioUnit.parameterTree?.parameter(
                                     withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
-                                )?.value = value
+                                ) {
+                                    param.value = param.minValue + value * (param.maxValue - param.minValue)
+                                }
+                            }
+                        } else if let units = capturedTrackEffectUnits[track.id],
+                                  let indexMap = capturedTrackEffectIndexMaps[track.id] {
+                            if let compactIdx = indexMap[lane.targetPath.effectIndex],
+                               compactIdx < units.count {
+                                if let param = units[compactIdx].auAudioUnit.parameterTree?.parameter(
+                                    withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
+                                ) {
+                                    param.value = param.minValue + value * (param.maxValue - param.minValue)
+                                }
                             }
                         }
                     } else if lane.targetPath.isTrackInstrumentParameter {
@@ -2418,7 +2504,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         if let units = trackInstrumentUnits[track.id] {
                             let addr = AUParameterAddress(lane.targetPath.parameterAddress)
                             for unit in units {
-                                unit.auAudioUnit.parameterTree?.parameter(withAddress: addr)?.value = value
+                                if let param = unit.auAudioUnit.parameterTree?.parameter(withAddress: addr) {
+                                    param.value = param.minValue + value * (param.maxValue - param.minValue)
+                                }
                             }
                         }
                     }
@@ -2438,6 +2526,22 @@ public final class PlaybackScheduler: @unchecked Sendable {
         playbackStartTime = nil
         lock.unlock()
         timer?.cancel()
+    }
+
+    /// Refreshes the live automation data without rebuilding the audio graph
+    /// or restarting the timer. Called when automation breakpoints are edited
+    /// during playback so changes are reflected in real-time.
+    public func updateAutomationData(song: Song) {
+        let allContainers = song.tracks.flatMap(\.containers)
+        let containersWithAutomation = allContainers
+            .map { $0.resolved { id in allContainers.first(where: { $0.id == id }) } }
+            .filter { !$0.automationLanes.isEmpty }
+        let tracksWithAutomation = song.tracks.filter { !$0.trackAutomationLanes.isEmpty }
+
+        lock.lock()
+        liveContainersWithAutomation = containersWithAutomation
+        liveTracksWithAutomation = tracksWithAutomation
+        lock.unlock()
     }
 
     /// Restarts the automation timer with updated song data, preserving
@@ -2477,29 +2581,35 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
 extension PlaybackScheduler {
     /// Returns the live AVAudioUnit for a container-level effect at the given index.
+    /// The effectIndex is the full sorted index (including bypassed effects).
     public func liveEffectUnit(containerID: ID<Container>, effectIndex: Int) -> AVAudioUnit? {
         lock.lock()
         defer { lock.unlock() }
         guard let subgraph = containerSubgraphs[containerID] else { return nil }
-        guard effectIndex >= 0, effectIndex < subgraph.effectUnits.count else { return nil }
-        return subgraph.effectUnits[effectIndex]
+        guard let compactIdx = subgraph.fullIndexToCompactIndex[effectIndex],
+              compactIdx < subgraph.effectUnits.count else { return nil }
+        return subgraph.effectUnits[compactIdx]
     }
 
     /// Returns the live AVAudioUnit for a track-level effect at the given index.
+    /// The effectIndex is the full sorted index (including bypassed effects).
     public func liveTrackEffectUnit(trackID: ID<Track>, effectIndex: Int) -> AVAudioUnit? {
         lock.lock()
         defer { lock.unlock() }
-        guard let units = trackEffectUnits[trackID] else { return nil }
-        guard effectIndex >= 0, effectIndex < units.count else { return nil }
-        return units[effectIndex]
+        guard let compactIdx = trackEffectIndexMaps[trackID]?[effectIndex],
+              let units = trackEffectUnits[trackID],
+              compactIdx < units.count else { return nil }
+        return units[compactIdx]
     }
 
     /// Returns the live AVAudioUnit for a master track effect at the given index.
+    /// The effectIndex is the full sorted index (including bypassed effects).
     public func liveMasterEffectUnit(effectIndex: Int) -> AVAudioUnit? {
         lock.lock()
         defer { lock.unlock() }
-        guard effectIndex >= 0, effectIndex < masterEffectUnits.count else { return nil }
-        return masterEffectUnits[effectIndex]
+        guard let compactIdx = masterEffectIndexMap[effectIndex],
+              compactIdx < masterEffectUnits.count else { return nil }
+        return masterEffectUnits[compactIdx]
     }
     /// Sends a MIDI message to the first instrument unit found on the given track.
     /// Used by the virtual keyboard to trigger notes on instrument tracks.
@@ -2643,7 +2753,7 @@ extension PlaybackScheduler: ContainerTriggerDelegate {
             let spb = samplesPerBar(bpm: bpm, timeSignature: ts, sampleRate: sr)
             scheduleContainer(
                 container: resolved,
-                fromBar: Double(resolved.startBar),
+                fromBar: resolved.startBar,
                 samplesPerBar: spb
             )
             return

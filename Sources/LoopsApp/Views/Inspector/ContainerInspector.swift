@@ -346,8 +346,14 @@ public struct ContainerInspector: View {
         .sheet(item: $pendingAutomationLane) { pending in
             ParameterPickerView(
                 pending: pending,
-                onPick: { path in
-                    onAddAutomationLane?(AutomationLane(targetPath: path))
+                onPick: { path, paramInfo in
+                    var lane = AutomationLane(targetPath: path)
+                    lane.effectName = pending.effectName
+                    lane.parameterName = paramInfo.displayName
+                    lane.parameterMin = paramInfo.minValue
+                    lane.parameterMax = paramInfo.maxValue
+                    lane.parameterUnit = paramInfo.unit
+                    onAddAutomationLane?(lane)
                     pendingAutomationLane = nil
                 },
                 onCancel: { pendingAutomationLane = nil }
@@ -356,7 +362,7 @@ public struct ContainerInspector: View {
         .sheet(item: $pendingParameterAction) { pending in
             ParameterPickerView(
                 pending: pending,
-                onPick: { path in
+                onPick: { path, _ in
                     pendingParameterActionCallback?(path)
                     pendingParameterAction = nil
                 },
@@ -603,7 +609,7 @@ public struct ContainerInspector: View {
     /// Shows MIDI badge when track has MIDI activity AND playhead is within this container's bar range.
     private var showMIDIBadge: Bool {
         guard trackKind == .midi, isMIDIActive else { return false }
-        let bar = Int(transportViewModel?.playheadBar ?? 1.0)
+        let bar = Double(transportViewModel?.playheadBar ?? 1.0)
         return bar >= container.startBar && bar < container.endBar
     }
 
@@ -636,7 +642,10 @@ public struct ContainerInspector: View {
         allContainers.first(where: { $0.id == targetID })?.name ?? "Unknown"
     }
 
-    private func parameterTargetDescription(_ path: EffectPath) -> String {
+    private func parameterTargetDescription(_ path: EffectPath, lane: AutomationLane? = nil) -> String {
+        if let effectName = lane?.effectName, let paramName = lane?.parameterName {
+            return "\(effectName) → \(paramName)"
+        }
         let trackName = allTracks.first(where: { $0.id == path.trackID })?.name ?? "Unknown Track"
         if let containerID = path.containerID {
             let cName = allContainers.first(where: { $0.id == containerID })?.name ?? "Unknown"
@@ -896,7 +905,7 @@ public struct ContainerInspector: View {
                     HStack {
                         Image(systemName: "waveform.path")
                             .foregroundStyle(.cyan)
-                        Text(parameterTargetDescription(lane.targetPath))
+                        Text(parameterTargetDescription(lane.targetPath, lane: lane))
                         Spacer()
                         Text("\(lane.breakpoints.count) pt\(lane.breakpoints.count == 1 ? "" : "s")")
                             .font(.caption)

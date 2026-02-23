@@ -18,7 +18,7 @@ struct PendingEffectSelection: Equatable, Identifiable {
 /// Sheet that loads and displays an AU's parameters for the user to pick one.
 struct ParameterPickerView: View {
     let pending: PendingEffectSelection
-    var onPick: ((EffectPath) -> Void)?
+    var onPick: ((EffectPath, AudioUnitParameterInfo) -> Void)?
     var onCancel: (() -> Void)?
 
     @State private var parameters: [AudioUnitParameterInfo] = []
@@ -75,7 +75,7 @@ struct ParameterPickerView: View {
                             effectIndex: pending.effectIndex,
                             parameterAddress: param.address
                         )
-                        onPick?(path)
+                        onPick?(path, param)
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {

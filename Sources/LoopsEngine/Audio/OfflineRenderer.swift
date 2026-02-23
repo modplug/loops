@@ -64,13 +64,14 @@ public final class OfflineRenderer {
 
     /// Calculates total song length in bars from the furthest container end.
     public static func songLengthBars(song: Song) -> Int {
-        var maxEnd = 0
+        var maxEnd: Double = 0
         for track in song.tracks where track.kind != .master {
             for container in track.containers {
                 maxEnd = max(maxEnd, container.endBar)
             }
         }
-        return maxEnd > 0 ? maxEnd - 1 : 0
+        let maxEndInt = Int(ceil(maxEnd))
+        return maxEndInt > 0 ? maxEndInt - 1 : 0
     }
 
     /// Calculates the number of samples in one bar.
@@ -178,7 +179,7 @@ public final class OfflineRenderer {
                 guard let recID = container.sourceRecordingID,
                       let sourceBuffer = bufferCache[recID] else { continue }
 
-                let containerLengthSamples = Int(Double(container.lengthBars) * spb)
+                let containerLengthSamples = Int(container.lengthBars * spb)
                 let containerBuffer = buildContainerBuffer(
                     sourceBuffer: sourceBuffer,
                     container: container,
@@ -450,14 +451,17 @@ public final class OfflineRenderer {
 
         // Load effects
         var effectUnits: [AVAudioUnit] = []
+        var fullIndexToCompactIndex: [Int: Int] = [:]
         if !container.isEffectChainBypassed {
-            for effect in container.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex }) {
+            let sortedEffects = container.insertEffects.sorted(by: { $0.orderIndex < $1.orderIndex })
+            for (fullIndex, effect) in sortedEffects.enumerated() {
                 guard !effect.isBypassed else { continue }
                 if let unit = try? await auHost.loadAudioUnit(component: effect.component) {
                     engine.attach(unit)
                     if let presetData = effect.presetData {
                         try? auHost.restoreState(audioUnit: unit, data: presetData)
                     }
+                    fullIndexToCompactIndex[fullIndex] = effectUnits.count
                     effectUnits.append(unit)
                 }
             }
@@ -496,27 +500,33 @@ public final class OfflineRenderer {
                 guard lane.targetPath.containerID == container.id else { continue }
                 if let value = lane.interpolatedValue(atBar: barOffsetInContainer) {
                     let idx = lane.targetPath.effectIndex
-                    if idx >= 0, idx < effectUnits.count {
-                        let param = effectUnits[idx].auAudioUnit.parameterTree?.parameter(
+                    if let compactIdx = fullIndexToCompactIndex[idx],
+                       compactIdx < effectUnits.count {
+                        if let param = effectUnits[compactIdx].auAudioUnit.parameterTree?.parameter(
                             withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
-                        )
-                        param?.value = value
+                        ) {
+                            param.value = param.minValue + value * (param.maxValue - param.minValue)
+                        }
                     } else if idx == EffectPath.instrumentParameterEffectIndex, let instUnit = instrumentUnit {
-                        instUnit.auAudioUnit.parameterTree?.parameter(
+                        if let param = instUnit.auAudioUnit.parameterTree?.parameter(
                             withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
-                        )?.value = value
+                        ) {
+                            param.value = param.minValue + value * (param.maxValue - param.minValue)
+                        }
                     }
                 }
             }
 
             // Evaluate track-level instrument automation (absolute bar positions)
             if let instUnit = instrumentUnit, !trackInstrumentLanes.isEmpty {
-                let absoluteBar = Double(container.startBar - 1) + barOffsetInContainer
+                let absoluteBar = (container.startBar - 1.0) + barOffsetInContainer
                 for lane in trackInstrumentLanes {
                     if let value = lane.interpolatedValue(atBar: absoluteBar) {
-                        instUnit.auAudioUnit.parameterTree?.parameter(
+                        if let param = instUnit.auAudioUnit.parameterTree?.parameter(
                             withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
-                        )?.value = value
+                        ) {
+                            param.value = param.minValue + value * (param.maxValue - param.minValue)
+                        }
                     }
                 }
             }
@@ -570,7 +580,7 @@ public final class OfflineRenderer {
             let cLeft = containerVolume * (containerPan <= 0 ? 1.0 : 1.0 - containerPan)
             let cRight = containerVolume * (containerPan >= 0 ? 1.0 : 1.0 + containerPan)
 
-            let startSample = Int(Double(container.startBar - 1) * samplesPerBar)
+            let startSample = Int((container.startBar - 1.0) * samplesPerBar)
             let endSample = min(startSample + srcFrames, Int(totalFrames))
 
             for frame in startSample..<endSample {
@@ -648,9 +658,11 @@ public final class OfflineRenderer {
                     guard let value = lane.interpolatedValue(atBar: barOffset) else { continue }
                     let idx = lane.targetPath.effectIndex
                     if let unit = allEffectUnits[idx] {
-                        unit.auAudioUnit.parameterTree?.parameter(
+                        if let param = unit.auAudioUnit.parameterTree?.parameter(
                             withAddress: AUParameterAddress(lane.targetPath.parameterAddress)
-                        )?.value = value
+                        ) {
+                            param.value = param.minValue + value * (param.maxValue - param.minValue)
+                        }
                     }
                 }
             }
@@ -708,7 +720,7 @@ public final class OfflineRenderer {
 
             let srcChannels = Int(buffer.format.channelCount)
             let srcFrames = Int(buffer.frameLength)
-            let containerStartSample = Int(Double(container.startBar - 1) * samplesPerBar)
+            let containerStartSample = Int((container.startBar - 1.0) * samplesPerBar)
             let containerEndSample = containerStartSample + srcFrames
 
             let chunkStart = Int(startFrame)

@@ -117,8 +117,14 @@ struct ContainerDetailEditor: View {
         .sheet(item: $pendingAutomationLane) { pending in
             ParameterPickerView(
                 pending: pending,
-                onPick: { path in
-                    onAddAutomationLane?(AutomationLane(targetPath: path))
+                onPick: { path, paramInfo in
+                    var lane = AutomationLane(targetPath: path)
+                    lane.effectName = pending.effectName
+                    lane.parameterName = paramInfo.displayName
+                    lane.parameterMin = paramInfo.minValue
+                    lane.parameterMax = paramInfo.maxValue
+                    lane.parameterUnit = paramInfo.unit
+                    onAddAutomationLane?(lane)
                     pendingAutomationLane = nil
                 },
                 onCancel: { pendingAutomationLane = nil }
@@ -127,7 +133,7 @@ struct ContainerDetailEditor: View {
         .sheet(item: $pendingParameterAction) { pending in
             ParameterPickerView(
                 pending: pending,
-                onPick: { path in
+                onPick: { path, _ in
                     pendingParameterActionCallback?(path)
                     pendingParameterAction = nil
                 },
@@ -431,7 +437,10 @@ struct ContainerDetailEditor: View {
         allContainers.first(where: { $0.id == targetID })?.name ?? "Unknown"
     }
 
-    private func parameterTargetDescription(_ path: EffectPath) -> String {
+    private func parameterTargetDescription(_ path: EffectPath, lane: AutomationLane? = nil) -> String {
+        if let effectName = lane?.effectName, let paramName = lane?.parameterName {
+            return "\(effectName) → \(paramName)"
+        }
         let trackName = allTracks.first(where: { $0.id == path.trackID })?.name ?? "Unknown Track"
         if let containerID = path.containerID {
             let cName = allContainers.first(where: { $0.id == containerID })?.name ?? "Unknown"
@@ -692,7 +701,7 @@ struct ContainerDetailEditor: View {
                     HStack {
                         Image(systemName: "waveform.path")
                             .foregroundStyle(.cyan)
-                        Text(parameterTargetDescription(lane.targetPath))
+                        Text(parameterTargetDescription(lane.targetPath, lane: lane))
                         Spacer()
                         Text("\(lane.breakpoints.count) pt\(lane.breakpoints.count == 1 ? "" : "s")")
                             .font(.caption)

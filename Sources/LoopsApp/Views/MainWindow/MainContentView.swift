@@ -237,8 +237,13 @@ public struct MainContentView: View {
         .sheet(item: $pendingTrackAutomationLane) { pending in
             ParameterPickerView(
                 pending: pending,
-                onPick: { path in
-                    let lane = AutomationLane(targetPath: path)
+                onPick: { path, paramInfo in
+                    var lane = AutomationLane(targetPath: path)
+                    lane.effectName = pending.effectName
+                    lane.parameterName = paramInfo.displayName
+                    lane.parameterMin = paramInfo.minValue
+                    lane.parameterMax = paramInfo.maxValue
+                    lane.parameterUnit = paramInfo.unit
                     projectViewModel.addTrackAutomationLane(trackID: path.trackID, lane: lane)
                     timelineViewModel.automationExpanded.insert(path.trackID)
                     pendingTrackAutomationLane = nil
@@ -1246,8 +1251,8 @@ public struct MainContentView: View {
     private func handleCopy() {
         if let range = timelineViewModel.selectedRange {
             projectViewModel.copyContainersInRange(
-                startBar: range.lowerBound,
-                endBar: range.upperBound + 1,
+                startBar: Double(range.lowerBound),
+                endBar: Double(range.upperBound + 1),
                 trackFilter: timelineViewModel.selectedTrackIDs
             )
         } else if let containerID = selectionState.selectedContainerID, let song = currentSong {
@@ -1262,7 +1267,7 @@ public struct MainContentView: View {
 
     private func handlePaste() {
         guard clipboardState.hasContent else { return }
-        let playheadBar = Int(timelineViewModel.playheadBar)
+        let playheadBar = timelineViewModel.playheadBar
         projectViewModel.pasteContainersToOriginalTracks(atBar: playheadBar)
     }
 
@@ -1280,7 +1285,7 @@ public struct MainContentView: View {
         }
         guard let containerID = selectionState.selectedContainerID,
               let song = currentSong else { return }
-        let splitBar = Int(timelineViewModel.playheadBar.rounded())
+        let splitBar = timelineViewModel.playheadBar
         for track in song.tracks {
             if track.containers.contains(where: { $0.id == containerID }) {
                 projectViewModel.splitContainer(trackID: track.id, containerID: containerID, atBar: splitBar)
@@ -1483,11 +1488,19 @@ public struct MainContentView: View {
                 return "\(sorted[path.effectIndex].displayName) P\(path.parameterAddress)"
             }
         }
-        let trackName = currentSong?.tracks.first(where: { $0.id == path.trackID })?.name ?? "?"
         if let containerID = path.containerID {
+            let containers = currentSong?.tracks.flatMap(\.containers) ?? []
+            if let container = containers.first(where: { $0.id == containerID }) {
+                let sorted = container.insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+                if path.effectIndex >= 0, path.effectIndex < sorted.count {
+                    return "\(sorted[path.effectIndex].displayName) P\(path.parameterAddress)"
+                }
+            }
+            let trackName = currentSong?.tracks.first(where: { $0.id == path.trackID })?.name ?? "?"
             let cName = currentSong?.tracks.flatMap(\.containers).first(where: { $0.id == containerID })?.name ?? "?"
             return "\(trackName)/\(cName) FX\(path.effectIndex)"
         }
+        let trackName = currentSong?.tracks.first(where: { $0.id == path.trackID })?.name ?? "?"
         return "\(trackName) FX\(path.effectIndex)"
     }
 

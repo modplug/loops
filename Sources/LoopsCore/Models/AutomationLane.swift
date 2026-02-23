@@ -31,6 +31,13 @@ public struct AutomationLane: Codable, Equatable, Sendable, Identifiable {
     /// Ordered breakpoints defining the envelope.
     public var breakpoints: [AutomationBreakpoint]
 
+    /// Display metadata (populated at creation time, purely cosmetic)
+    public var effectName: String?
+    public var parameterName: String?
+    public var parameterMin: Float?
+    public var parameterMax: Float?
+    public var parameterUnit: String?
+
     public init(
         id: ID<AutomationLane> = ID(),
         targetPath: EffectPath,

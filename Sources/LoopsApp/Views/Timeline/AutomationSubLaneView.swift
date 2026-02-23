@@ -134,7 +134,15 @@ private struct AutomationSubLaneContainerView: View {
             if let tooltipBP = tooltipBreakpoint {
                 let x = AutomationCoordinateMapping.xForPosition(tooltipBP.position, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
                 let y = AutomationCoordinateMapping.yForValue(tooltipBP.value, height: height)
-                Text(String(format: "%.2f", tooltipBP.value))
+                Group {
+                    if let min = lane.parameterMin, let max = lane.parameterMax {
+                        let displayValue = min + tooltipBP.value * (max - min)
+                        let unit = lane.parameterUnit ?? ""
+                        Text(String(format: "%.1f %@", displayValue, unit).trimmingCharacters(in: .whitespaces))
+                    } else {
+                        Text(String(format: "%.2f", tooltipBP.value))
+                    }
+                }
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .padding(.horizontal, 3)
                     .padding(.vertical, 1)
@@ -313,7 +321,7 @@ private struct TrackAutomationSubLaneView: View {
 
             // Tooltip overlay for hovered/dragged breakpoint
             if let tooltipBP = tooltipBreakpoint {
-                let x = AutomationCoordinateMapping.xForPosition(tooltipBP.position, containerLengthBars: totalBars, pixelsPerBar: pixelsPerBar)
+                let x = AutomationCoordinateMapping.xForPosition(tooltipBP.position, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
                 let y = AutomationCoordinateMapping.yForValue(tooltipBP.value, height: height)
                 Text(String(format: "%.2f", tooltipBP.value))
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
@@ -339,7 +347,7 @@ private struct TrackAutomationSubLaneView: View {
     private var tooltipBreakpoint: AutomationBreakpoint? {
         if let dragID = draggedBreakpointID, let pos = dragPosition {
             let value = AutomationCoordinateMapping.valueForY(pos.y, height: height)
-            let position = AutomationCoordinateMapping.positionForX(pos.x, containerLengthBars: totalBars, pixelsPerBar: pixelsPerBar)
+            let position = AutomationCoordinateMapping.positionForX(pos.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
             return AutomationBreakpoint(id: dragID, position: position, value: value)
         }
         if let hoverID = hoveredBreakpointID {
@@ -371,7 +379,7 @@ private struct TrackAutomationSubLaneView: View {
 
     private func drawBreakpoints(in context: GraphicsContext, size: CGSize) {
         for bp in lane.breakpoints {
-            let x = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: totalBars, pixelsPerBar: pixelsPerBar)
+            let x = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
             let y = AutomationCoordinateMapping.yForValue(bp.value, height: size.height)
             let isSelected = bp.id == selectedBreakpointID
             let isDragged = bp.id == draggedBreakpointID
@@ -389,7 +397,7 @@ private struct TrackAutomationSubLaneView: View {
     private var clickGesture: some Gesture {
         SpatialTapGesture()
             .onEnded { value in
-                let position = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: totalBars, pixelsPerBar: pixelsPerBar)
+                let position = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
                 let val = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
 
                 if let nearBP = nearestBreakpoint(to: value.location, threshold: 8) {
@@ -404,7 +412,7 @@ private struct TrackAutomationSubLaneView: View {
 
     private var breakpointDragOverlay: some View {
         ForEach(lane.breakpoints) { bp in
-            let x = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: totalBars, pixelsPerBar: pixelsPerBar)
+            let x = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
             let y = AutomationCoordinateMapping.yForValue(bp.value, height: height)
             Circle()
                 .fill(Color.clear)
@@ -421,7 +429,7 @@ private struct TrackAutomationSubLaneView: View {
                             dragPosition = value.location
                         }
                         .onEnded { value in
-                            let newPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: totalBars, pixelsPerBar: pixelsPerBar)
+                            let newPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
                             let newValue = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
                             var updated = bp
                             updated.position = newPosition
@@ -439,7 +447,7 @@ private struct TrackAutomationSubLaneView: View {
         var closest: AutomationBreakpoint?
         var closestDist = threshold
         for bp in lane.breakpoints {
-            let bpX = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: totalBars, pixelsPerBar: pixelsPerBar)
+            let bpX = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
             let bpY = AutomationCoordinateMapping.yForValue(bp.value, height: height)
             let dist = hypot(point.x - bpX, point.y - bpY)
             if dist < closestDist {

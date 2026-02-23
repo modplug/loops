@@ -1996,10 +1996,13 @@ struct PlaybackSchedulerTests {
         let recordingID = ID<SourceRecording>()
         let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
 
+        // Use a truly invalid component type that won't match any AU.
+        // Zero sub/manufacturer acts as a wildcard with 'aufx', so we need
+        // a non-existent type to guarantee load failure.
         let bogusComponent = AudioComponentInfo(
-            componentType: 0x61756678,
-            componentSubType: 0x00000000,
-            componentManufacturer: 0x00000000
+            componentType: 0x7A7A7A7A,   // 'zzzz' — not a real AU type
+            componentSubType: 0x7A7A7A7A,
+            componentManufacturer: 0x7A7A7A7A
         )
         let bogusEffect = InsertEffect(component: bogusComponent, displayName: "Bogus", orderIndex: 0)
 
@@ -2083,6 +2086,790 @@ struct PlaybackSchedulerTests {
         #expect(unit1 != nil, "Active effect C should be at scheduler index 1")
         #expect(unit2 == nil, "No effect at scheduler index 2 (only 2 active)")
 
+        scheduler.cleanup()
+    }
+
+    // MARK: - Effect Chain Connection Tests
+
+    @Test("Single effect connects between player and mixer",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func singleEffectChainConnection() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // Effect unit should be connected and accessible
+        let unit = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0)
+        #expect(unit != nil)
+
+        // Player node should be connected (has output)
+        let player = Self.playerNode(in: scheduler, containerID: fixture.containerID)
+        let connections = engine.outputConnectionPoints(for: player, outputBus: 0)
+        #expect(!connections.isEmpty, "Player node must be connected through effect chain")
+
+        scheduler.cleanup()
+    }
+
+    @Test("Multiple effects form a chain in correct order",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func multipleEffectsChainOrder() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let containerID = ID<Container>()
+        let effect1 = InsertEffect(component: Self.delayComponent, displayName: "Delay 1", orderIndex: 0)
+        let effect2 = InsertEffect(component: Self.delayComponent, displayName: "Delay 2", orderIndex: 1)
+        let container = Container(
+            id: containerID, name: "Two Effects", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID, insertEffects: [effect1, effect2]
+        )
+        let song = Song(name: "Test", tracks: [Track(name: "T", kind: .audio, containers: [container])])
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        await scheduler.prepare(song: song, sourceRecordings: [recordingID: recording])
+
+        let unit0 = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 0)
+        let unit1 = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 1)
+        #expect(unit0 != nil, "First effect should be connected")
+        #expect(unit1 != nil, "Second effect should be connected")
+        // They should be different instances
+        #expect(unit0 !== unit1)
+
+        scheduler.cleanup()
+    }
+
+    @Test("Empty effect chain connects player directly to mixer",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func emptyEffectChainDirectConnection() async throws {
+        let fixture = try Self.makeTestFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // No effects — player should be directly connected
+        let containerID = fixture.song.tracks[0].containers[0].id
+        let player = Self.playerNode(in: scheduler, containerID: containerID)
+        let connections = engine.outputConnectionPoints(for: player, outputBus: 0)
+        #expect(!connections.isEmpty, "Player should connect directly to mixer when no effects")
+
+        // No effect unit should exist
+        let unit = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 0)
+        #expect(unit == nil)
+
+        scheduler.cleanup()
+    }
+
+    @Test("Effect chain survives play/stop cycle and renders without crash",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func effectChainPlayStopRender() async throws {
+        // Use stereo fixture — effects auto-negotiate stereo in manual rendering
+        // mode, and the player's buffer channel count must match.
+        let fixture = try Self.makeStereoFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        scheduler.play(
+            song: fixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        Self.renderFrames(engine: engine, count: 10)
+
+        // Effect should still be live during playback
+        let unit = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0)
+        #expect(unit != nil)
+
+        scheduler.stop()
+
+        // After stop, effect unit should still be queryable (graph not torn down until cleanup)
+        let unitAfterStop = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0)
+        #expect(unitAfterStop != nil)
+
+        scheduler.cleanup()
+    }
+
+    @Test("Track-level effect chain connects correctly",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func trackEffectChainConnects() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        let trackUnit = scheduler.liveTrackEffectUnit(trackID: fixture.trackID, effectIndex: 0)
+        #expect(trackUnit != nil, "Track-level effect should be connected")
+
+        scheduler.cleanup()
+    }
+
+    // MARK: - Automation Value Scaling Tests
+
+    @Test("AUParameter receives scaled value from automation, not raw 0-1",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func automationValueScaling() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let containerID = ID<Container>()
+        let trackID = ID<Track>()
+        let effect = InsertEffect(component: Self.delayComponent, displayName: "AUDelay", orderIndex: 0)
+
+        // Create automation lane at constant 1.0 — should map to param.maxValue
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 0),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 1.0),
+                AutomationBreakpoint(position: 4, value: 1.0)
+            ]
+        )
+
+        let container = Container(
+            id: containerID, name: "Automated", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID, insertEffects: [effect], automationLanes: [lane]
+        )
+        let track = Track(id: trackID, name: "T", kind: .audio, containers: [container])
+        let song = Song(name: "Test", tracks: [track])
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        await scheduler.prepare(song: song, sourceRecordings: [recordingID: recording])
+
+        // Get the live AU instance and read its first parameter's range
+        let unit = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 0)!
+        let paramTree = unit.auAudioUnit.parameterTree
+        let param = paramTree?.parameter(withAddress: 0)
+
+        // Start playback so the automation timer fires
+        scheduler.play(
+            song: song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        // Render + wait for at least one automation tick
+        Self.renderFrames(engine: engine, count: 5)
+        try await Task.sleep(for: .milliseconds(50))
+
+        if let param {
+            // With value=1.0 and scaling, param should be at maxValue (not 1.0 unless max IS 1.0)
+            let expectedMax = param.maxValue
+            let tolerance: AUValue = max(0.01 * abs(expectedMax), 0.001)
+            #expect(abs(param.value - expectedMax) < tolerance,
+                    "Param value \(param.value) should be near maxValue \(expectedMax)")
+        }
+
+        scheduler.stop()
+        scheduler.cleanup()
+    }
+
+    @Test("Automation at 0.0 maps to parameter minimum value",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func automationMinValueScaling() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let containerID = ID<Container>()
+        let trackID = ID<Track>()
+        let effect = InsertEffect(component: Self.delayComponent, displayName: "AUDelay", orderIndex: 0)
+
+        // Automation at constant 0.0 — should map to param.minValue
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 0),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 0.0),
+                AutomationBreakpoint(position: 4, value: 0.0)
+            ]
+        )
+
+        let container = Container(
+            id: containerID, name: "Automated", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID, insertEffects: [effect], automationLanes: [lane]
+        )
+        let track = Track(id: trackID, name: "T", kind: .audio, containers: [container])
+        let song = Song(name: "Test", tracks: [track])
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        await scheduler.prepare(song: song, sourceRecordings: [recordingID: recording])
+
+        let unit = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 0)!
+        let param = unit.auAudioUnit.parameterTree?.parameter(withAddress: 0)
+
+        scheduler.play(
+            song: song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        Self.renderFrames(engine: engine, count: 5)
+        try await Task.sleep(for: .milliseconds(50))
+
+        if let param {
+            let expectedMin = param.minValue
+            let tolerance: AUValue = max(0.01 * abs(param.maxValue - expectedMin), 0.001)
+            #expect(abs(param.value - expectedMin) < tolerance,
+                    "Param value \(param.value) should be near minValue \(expectedMin)")
+        }
+
+        scheduler.stop()
+        scheduler.cleanup()
+    }
+
+    // MARK: - Live Automation Data Update
+
+    @Test("updateAutomationData refreshes automation without graph rebuild",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func updateAutomationDataLive() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let containerID = ID<Container>()
+        let trackID = ID<Track>()
+        let effect = InsertEffect(component: Self.delayComponent, displayName: "AUDelay", orderIndex: 0)
+
+        // Start with automation at 0.0
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 0),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 0.0),
+                AutomationBreakpoint(position: 4, value: 0.0)
+            ]
+        )
+
+        let container = Container(
+            id: containerID, name: "Automated", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID, insertEffects: [effect], automationLanes: [lane]
+        )
+        let track = Track(id: trackID, name: "T", kind: .audio, containers: [container])
+        let song = Song(name: "Test", tracks: [track])
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        await scheduler.prepare(song: song, sourceRecordings: [recordingID: recording])
+
+        let unit = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 0)!
+        let param = unit.auAudioUnit.parameterTree?.parameter(withAddress: 0)
+
+        scheduler.play(
+            song: song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        Self.renderFrames(engine: engine, count: 5)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Now update automation to 1.0 mid-playback
+        let updatedLane = AutomationLane(
+            id: lane.id,
+            targetPath: lane.targetPath,
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 1.0),
+                AutomationBreakpoint(position: 4, value: 1.0)
+            ]
+        )
+        let updatedContainer = Container(
+            id: containerID, name: "Automated", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID, insertEffects: [effect], automationLanes: [updatedLane]
+        )
+        let updatedTrack = Track(id: trackID, name: "T", kind: .audio, containers: [updatedContainer])
+        let updatedSong = Song(id: song.id, name: "Test", tracks: [updatedTrack])
+
+        // Push new automation data without graph rebuild
+        scheduler.updateAutomationData(song: updatedSong)
+        Self.renderFrames(engine: engine, count: 5)
+        try await Task.sleep(for: .milliseconds(50))
+
+        if let param {
+            let expectedMax = param.maxValue
+            let tolerance: AUValue = max(0.01 * abs(expectedMax), 0.001)
+            #expect(abs(param.value - expectedMax) < tolerance,
+                    "After updateAutomationData, param \(param.value) should be near maxValue \(expectedMax)")
+        }
+
+        scheduler.stop()
+        scheduler.cleanup()
+    }
+
+    // MARK: - Clone Effect Chain with Automation
+
+    @Test("Clone container's effects get own subgraph with remapped automation",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func cloneEffectChainWithAutomation() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let parentID = ID<Container>()
+        let trackID = ID<Track>()
+        let effect = InsertEffect(component: Self.delayComponent, displayName: "AUDelay", orderIndex: 0)
+
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: parentID, effectIndex: 0, parameterAddress: 0),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 0.5),
+                AutomationBreakpoint(position: 4, value: 0.5)
+            ]
+        )
+
+        let parent = Container(
+            id: parentID, name: "Parent", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID, insertEffects: [effect], automationLanes: [lane]
+        )
+
+        // Clone inherits effects and automation
+        let clone = Container(
+            name: "Clone", startBar: 5, lengthBars: 4,
+            sourceRecordingID: recordingID, parentContainerID: parentID
+        )
+
+        let track = Track(id: trackID, name: "T", kind: .audio, containers: [parent, clone])
+        let song = Song(name: "Test", tracks: [track])
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        await scheduler.prepare(song: song, sourceRecordings: [recordingID: recording])
+
+        // Both parent and clone should have their own effect instances
+        let parentUnit = scheduler.liveEffectUnit(containerID: parentID, effectIndex: 0)
+        let cloneUnit = scheduler.liveEffectUnit(containerID: clone.id, effectIndex: 0)
+        #expect(parentUnit != nil, "Parent should have its own effect unit")
+        #expect(cloneUnit != nil, "Clone should have its own effect unit")
+        // They should be separate instances
+        if let parentUnit, let cloneUnit {
+            #expect(parentUnit !== cloneUnit, "Parent and clone must have distinct effect instances")
+        }
+
+        scheduler.cleanup()
+    }
+
+    // MARK: - Incremental Rebuild Effect Chain
+
+    @Test("Effect chain reconnects correctly after incremental rebuild",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"))
+    func effectChainIncrementalRebuild() async throws {
+        let fixture = try Self.makeTestFixtureWithEffects()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        // Verify initial effect
+        let unit1 = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0)
+        #expect(unit1 != nil)
+
+        // Add a second effect and do incremental rebuild
+        let effect2 = InsertEffect(component: Self.delayComponent, displayName: "Delay 2", orderIndex: 1)
+        var modifiedContainer = fixture.song.tracks[0].containers[0]
+        modifiedContainer.insertEffects.append(effect2)
+        let modifiedTrack = Track(
+            id: fixture.trackID, name: "Test Track", kind: .audio,
+            containers: [modifiedContainer],
+            insertEffects: fixture.song.tracks[0].insertEffects
+        )
+        let modifiedSong = Song(id: fixture.song.id, name: fixture.song.name, tracks: [modifiedTrack])
+
+        let changedTracks = await scheduler.prepareIncremental(
+            song: modifiedSong, sourceRecordings: fixture.recordings
+        )
+
+        #expect(!changedTracks.isEmpty, "Track should be marked as changed")
+
+        // Both effects should now be present
+        let newUnit0 = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 0)
+        let newUnit1 = scheduler.liveEffectUnit(containerID: fixture.containerID, effectIndex: 1)
+        #expect(newUnit0 != nil, "First effect should still exist after rebuild")
+        #expect(newUnit1 != nil, "Second effect should exist after rebuild")
+
+        scheduler.cleanup()
+    }
+
+    // MARK: - Bypassed Effect Index Mapping Tests
+
+    @Test("Automation targets correct effect when a preceding effect is bypassed",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func automationWithBypassedPrecedingEffect() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let containerID = ID<Container>()
+        let trackID = ID<Track>()
+
+        // 3 effects: A is bypassed (orderIndex 0), B is active (orderIndex 1), C is active (orderIndex 2)
+        let effectA = InsertEffect(component: Self.delayComponent, displayName: "A-Bypassed", isBypassed: true, orderIndex: 0)
+        let effectB = InsertEffect(component: Self.delayComponent, displayName: "B-Active", orderIndex: 1)
+        let effectC = InsertEffect(component: Self.delayComponent, displayName: "C-Active", orderIndex: 2)
+
+        // Automation targets effectIndex=1 (B in the full sorted array, compact index 0)
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 1, parameterAddress: 0),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 1.0),
+                AutomationBreakpoint(position: 4, value: 1.0)
+            ]
+        )
+
+        let container = Container(
+            id: containerID, name: "Test", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID,
+            insertEffects: [effectA, effectB, effectC],
+            automationLanes: [lane]
+        )
+        let track = Track(id: trackID, name: "T", kind: .audio, containers: [container])
+        let song = Song(name: "Test", tracks: [track])
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        await scheduler.prepare(song: song, sourceRecordings: [recordingID: recording])
+
+        // effectIndex=1 should resolve to the first loaded unit (B, compact index 0)
+        let unitB = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 1)
+        #expect(unitB != nil, "effectIndex=1 should resolve to B (compact index 0)")
+
+        // effectIndex=0 should be nil since A is bypassed
+        let unitA = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 0)
+        #expect(unitA == nil, "effectIndex=0 (bypassed A) should return nil")
+
+        // effectIndex=2 should resolve to C (compact index 1)
+        let unitC = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 2)
+        #expect(unitC != nil, "effectIndex=2 should resolve to C (compact index 1)")
+
+        // Start playback to fire automation
+        scheduler.play(
+            song: song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        Self.renderFrames(engine: engine, count: 5)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Verify automation hit B's parameter (should be at maxValue since automation=1.0)
+        if let unit = unitB,
+           let param = unit.auAudioUnit.parameterTree?.parameter(withAddress: 0) {
+            let tolerance: AUValue = max(0.01 * abs(param.maxValue), 0.001)
+            #expect(abs(param.value - param.maxValue) < tolerance,
+                    "B's param should be at maxValue, got \(param.value)")
+        }
+
+        scheduler.stop()
+        scheduler.cleanup()
+    }
+
+    @Test("Automation on bypassed effect is safely ignored",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func automationOnBypassedEffectIsInert() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let containerID = ID<Container>()
+        let trackID = ID<Track>()
+
+        // A is bypassed, B is active
+        let effectA = InsertEffect(component: Self.delayComponent, displayName: "A-Bypassed", isBypassed: true, orderIndex: 0)
+        let effectB = InsertEffect(component: Self.delayComponent, displayName: "B-Active", orderIndex: 1)
+
+        // Automation targets effectIndex=0 (the bypassed A)
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 0),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 1.0),
+                AutomationBreakpoint(position: 4, value: 1.0)
+            ]
+        )
+
+        let container = Container(
+            id: containerID, name: "Test", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID,
+            insertEffects: [effectA, effectB],
+            automationLanes: [lane]
+        )
+        let track = Track(id: trackID, name: "T", kind: .audio, containers: [container])
+        let song = Song(name: "Test", tracks: [track])
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        await scheduler.prepare(song: song, sourceRecordings: [recordingID: recording])
+
+        // effectIndex=0 should return nil (bypassed)
+        let unit = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 0)
+        #expect(unit == nil, "Bypassed effect should return nil from liveEffectUnit")
+
+        // Play — should not crash even though automation targets a bypassed effect
+        scheduler.play(
+            song: song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        Self.renderFrames(engine: engine, count: 5)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // If we get here without crashing, the test passes
+        scheduler.stop()
+        scheduler.cleanup()
+    }
+
+    @Test("All effects bypassed with automation does not crash",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func allEffectsBypassedAutomationSafe() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let containerID = ID<Container>()
+        let trackID = ID<Track>()
+
+        // Both effects bypassed
+        let effectA = InsertEffect(component: Self.delayComponent, displayName: "A-Bypassed", isBypassed: true, orderIndex: 0)
+        let effectB = InsertEffect(component: Self.delayComponent, displayName: "B-Bypassed", isBypassed: true, orderIndex: 1)
+
+        // Automation targets effectIndex=0
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 0),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 0.5),
+                AutomationBreakpoint(position: 4, value: 0.5)
+            ]
+        )
+
+        let container = Container(
+            id: containerID, name: "Test", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID,
+            insertEffects: [effectA, effectB],
+            automationLanes: [lane]
+        )
+        let track = Track(id: trackID, name: "T", kind: .audio, containers: [container])
+        let song = Song(name: "Test", tracks: [track])
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        await scheduler.prepare(song: song, sourceRecordings: [recordingID: recording])
+
+        // No live units should be available
+        #expect(scheduler.liveEffectUnit(containerID: containerID, effectIndex: 0) == nil)
+        #expect(scheduler.liveEffectUnit(containerID: containerID, effectIndex: 1) == nil)
+
+        // Play — should not crash
+        scheduler.play(
+            song: song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        Self.renderFrames(engine: engine, count: 5)
+        try await Task.sleep(for: .milliseconds(50))
+
+        scheduler.stop()
+        scheduler.cleanup()
+    }
+
+    @Test("Automation skips bypassed effect and targets correct compact index",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func automationSkipsBypassedEffect() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sampleCount: AVAudioFrameCount = 352800
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        let fileURL = tempDir.appendingPathComponent("test.caf")
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(filename: "test.caf", sampleRate: 44100, sampleCount: Int64(sampleCount))
+
+        let containerID = ID<Container>()
+        let trackID = ID<Track>()
+
+        // A is bypassed, B is active
+        let effectA = InsertEffect(component: Self.delayComponent, displayName: "A-Bypassed", isBypassed: true, orderIndex: 0)
+        let effectB = InsertEffect(component: Self.delayComponent, displayName: "B-Active", orderIndex: 1)
+
+        // Automation targets effectIndex=1 (B), which maps to compact index 0
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 1, parameterAddress: 0),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 1.0),
+                AutomationBreakpoint(position: 4, value: 1.0)
+            ]
+        )
+
+        let container = Container(
+            id: containerID, name: "Test", startBar: 1, lengthBars: 4,
+            sourceRecordingID: recordingID,
+            insertEffects: [effectA, effectB],
+            automationLanes: [lane]
+        )
+        let track = Track(id: trackID, name: "T", kind: .audio, containers: [container])
+        let song = Song(name: "Test", tracks: [track])
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
+        await scheduler.prepare(song: song, sourceRecordings: [recordingID: recording])
+
+        // effectIndex=1 (B) should resolve to compact index 0
+        let unitB = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 1)
+        #expect(unitB != nil, "effectIndex=1 should resolve to B at compact index 0")
+
+        let paramB = unitB?.auAudioUnit.parameterTree?.parameter(withAddress: 0)
+
+        scheduler.play(
+            song: song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        Self.renderFrames(engine: engine, count: 5)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // After automation, B's param should be at maxValue
+        if let param = paramB {
+            let tolerance: AUValue = max(0.01 * abs(param.maxValue), 0.001)
+            #expect(abs(param.value - param.maxValue) < tolerance,
+                    "B's param should be at maxValue after automation, got \(param.value)")
+        }
+
+        scheduler.stop()
         scheduler.cleanup()
     }
 }
