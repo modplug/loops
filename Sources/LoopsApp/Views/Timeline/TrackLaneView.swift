@@ -33,6 +33,8 @@ public struct TrackLaneView: View {
     var onContainerArmToggle: ((_ containerID: ID<Container>) -> Void)?
     var onPasteAtBar: ((_ bar: Int) -> Void)?
     var hasClipboard: Bool
+    /// Returns the resolved MIDI sequence for a container (inheriting from parent for clones).
+    var resolvedMIDISequenceForContainer: ((_ container: Container) -> MIDISequence?)?
     var isAutomationExpanded: Bool
     var automationSubLanePaths: [EffectPath]
     var selectedBreakpointID: ID<AutomationBreakpoint>?
@@ -89,6 +91,7 @@ public struct TrackLaneView: View {
         onContainerArmToggle: ((_ containerID: ID<Container>) -> Void)? = nil,
         onPasteAtBar: ((_ bar: Int) -> Void)? = nil,
         hasClipboard: Bool = false,
+        resolvedMIDISequenceForContainer: ((_ container: Container) -> MIDISequence?)? = nil,
         isAutomationExpanded: Bool = false,
         automationSubLanePaths: [EffectPath] = [],
         selectedBreakpointID: ID<AutomationBreakpoint>? = nil,
@@ -135,6 +138,7 @@ public struct TrackLaneView: View {
         self.onContainerArmToggle = onContainerArmToggle
         self.onPasteAtBar = onPasteAtBar
         self.hasClipboard = hasClipboard
+        self.resolvedMIDISequenceForContainer = resolvedMIDISequenceForContainer
         self.isAutomationExpanded = isAutomationExpanded
         self.automationSubLanePaths = automationSubLanePaths
         self.selectedBreakpointID = selectedBreakpointID
@@ -211,40 +215,9 @@ public struct TrackLaneView: View {
 
                 // Existing containers
                 ForEach(track.containers) { container in
-                    ContainerView(
-                        container: container,
-                        pixelsPerBar: pixelsPerBar,
-                        height: baseHeight - 4,
-                        selectionState: selectionState,
-                        trackColor: trackColor,
-                        waveformPeaks: waveformPeaksForContainer?(container),
-                        isClone: container.parentContainerID != nil,
-                        overriddenFields: container.overriddenFields,
-                        recordingDurationBars: recordingDurationBarsForContainer?(container),
-                        onSelect: { onContainerSelect?(container.id) },
-                        onPlayheadTap: onPlayheadTap,
-                        onDelete: { onContainerDelete?(container.id) },
-                        onMove: { newStart in onContainerMove?(container.id, newStart) ?? false },
-                        onResizeLeft: { start, len in onContainerResizeLeft?(container.id, start, len) ?? false },
-                        onResizeRight: { len in onContainerResizeRight?(container.id, len) ?? false },
-                        onTrimLeft: { offset, start, len in onContainerTrimLeft?(container.id, offset, start, len) ?? false },
-                        onTrimRight: { len in onContainerTrimRight?(container.id, len) ?? false },
-                        onDoubleClick: { onContainerDoubleClick?(container.id) },
-                        onClone: { newStart in onCloneContainer?(container.id, newStart) },
-                        onCopy: { onCopyContainer?(container.id) },
-                        onCopyToSong: { songID in onCopyContainerToSong?(container.id, songID) },
-                        otherSongs: otherSongs,
-                        onDuplicate: { onDuplicateContainer?(container.id) },
-                        onLinkClone: { onLinkCloneContainer?(container.id) },
-                        onUnlink: { onUnlinkContainer?(container.id) },
-                        onArmToggle: { onContainerArmToggle?(container.id) },
-                        onSetEnterFade: { fade in onSetEnterFade?(container.id, fade) },
-                        onSetExitFade: { fade in onSetExitFade?(container.id, fade) },
-                        onSplit: { onContainerSplit?(container.id) },
-                        onRangeSelect: { startBar, endBar in onRangeSelect?(container.id, startBar, endBar) }
-                    )
-                    .equatable()
-                    .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
+                    containerView(for: container)
+                        .equatable()
+                        .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
                 }
             }
             .coordinateSpace(name: "trackLane")
@@ -289,6 +262,42 @@ public struct TrackLaneView: View {
             onDropAudioFile: onDropAudioFile,
             onDropMIDIFile: onDropMIDIFile
         ))
+    }
+
+    private func containerView(for container: Container) -> ContainerView {
+        ContainerView(
+            container: container,
+            pixelsPerBar: pixelsPerBar,
+            height: baseHeight - 4,
+            selectionState: selectionState,
+            trackColor: trackColor,
+            waveformPeaks: waveformPeaksForContainer?(container),
+            isClone: container.parentContainerID != nil,
+            overriddenFields: container.overriddenFields,
+            resolvedMIDISequence: resolvedMIDISequenceForContainer?(container),
+            recordingDurationBars: recordingDurationBarsForContainer?(container),
+            onSelect: { onContainerSelect?(container.id) },
+            onPlayheadTap: onPlayheadTap,
+            onDelete: { onContainerDelete?(container.id) },
+            onMove: { newStart in onContainerMove?(container.id, newStart) ?? false },
+            onResizeLeft: { start, len in onContainerResizeLeft?(container.id, start, len) ?? false },
+            onResizeRight: { len in onContainerResizeRight?(container.id, len) ?? false },
+            onTrimLeft: { offset, start, len in onContainerTrimLeft?(container.id, offset, start, len) ?? false },
+            onTrimRight: { len in onContainerTrimRight?(container.id, len) ?? false },
+            onDoubleClick: { onContainerDoubleClick?(container.id) },
+            onClone: { newStart in onCloneContainer?(container.id, newStart) },
+            onCopy: { onCopyContainer?(container.id) },
+            onCopyToSong: { songID in onCopyContainerToSong?(container.id, songID) },
+            otherSongs: otherSongs,
+            onDuplicate: { onDuplicateContainer?(container.id) },
+            onLinkClone: { onLinkCloneContainer?(container.id) },
+            onUnlink: { onUnlinkContainer?(container.id) },
+            onArmToggle: { onContainerArmToggle?(container.id) },
+            onSetEnterFade: { fade in onSetEnterFade?(container.id, fade) },
+            onSetExitFade: { fade in onSetExitFade?(container.id, fade) },
+            onSplit: { onContainerSplit?(container.id) },
+            onRangeSelect: { startBar, endBar in onRangeSelect?(container.id, startBar, endBar) }
+        )
     }
 
     private var createContainerGesture: some Gesture {

@@ -26,6 +26,8 @@ public struct ContainerView: View {
     let waveformPeaks: [Float]?
     let isClone: Bool
     let overriddenFields: Set<ContainerField>
+    /// Resolved MIDI sequence for minimap display (inherits from parent for clones).
+    var resolvedMIDISequence: MIDISequence?
     /// Total duration of the source recording in bars (nil if unknown or no recording).
     /// Used to compute waveform start/length fractions for cropped display.
     let recordingDurationBars: Double?
@@ -85,6 +87,7 @@ public struct ContainerView: View {
         waveformPeaks: [Float]? = nil,
         isClone: Bool = false,
         overriddenFields: Set<ContainerField> = [],
+        resolvedMIDISequence: MIDISequence? = nil,
         recordingDurationBars: Double? = nil,
         onSelect: (() -> Void)? = nil,
         onPlayheadTap: ((_ timelineX: CGFloat) -> Void)? = nil,
@@ -116,6 +119,7 @@ public struct ContainerView: View {
         self.waveformPeaks = waveformPeaks
         self.isClone = isClone
         self.overriddenFields = overriddenFields
+        self.resolvedMIDISequence = resolvedMIDISequence
         self.recordingDurationBars = recordingDurationBars
         self.onSelect = onSelect
         self.onPlayheadTap = onPlayheadTap
@@ -287,13 +291,14 @@ public struct ContainerView: View {
                 .allowsHitTesting(false)
             }
 
-            // MIDI note minimap (MIDI containers)
-            if let sequence = container.midiSequence, !sequence.notes.isEmpty {
+            // MIDI note minimap (MIDI containers) — uses resolved sequence for clone inheritance
+            if let sequence = resolvedMIDISequence ?? container.midiSequence, !sequence.notes.isEmpty {
+                let isInheritedMIDI = isClone && !overriddenFields.contains(.midiSequence)
                 MIDINoteMinimapView(
                     notes: sequence.notes,
                     containerLengthBars: container.lengthBars,
                     beatsPerBar: 4,
-                    color: trackColor
+                    color: trackColor.opacity(isInheritedMIDI ? 0.4 : 1.0)
                 )
                 .padding(.horizontal, 2)
                 .padding(.vertical, 16)
@@ -893,6 +898,7 @@ extension ContainerView: Equatable {
         lhs.waveformPeaks == rhs.waveformPeaks &&
         lhs.isClone == rhs.isClone &&
         lhs.overriddenFields == rhs.overriddenFields &&
+        lhs.resolvedMIDISequence == rhs.resolvedMIDISequence &&
         lhs.recordingDurationBars == rhs.recordingDurationBars &&
         lhs.otherSongs.count == rhs.otherSongs.count &&
         zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name }

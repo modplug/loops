@@ -442,6 +442,40 @@ public final class TransportViewModel {
         playbackScheduler?.sendMIDINoteToTrack(trackID, message: message)
     }
 
+    /// Ensures the audio engine and scheduler are ready to play preview sounds
+    /// (e.g. note previews in the piano roll) without starting transport playback.
+    /// Serializes via playbackGeneration so that if play() is called while
+    /// the preview prepare is in-flight, the preview prepare bails out.
+    public func ensureEngineReadyForPreview() {
+        guard let engine = engineManager else { return }
+        if !engine.isRunning {
+            try? engine.start()
+        }
+        guard playbackScheduler == nil else { return }
+        guard let context = songProvider?() else { return }
+        let scheduler = PlaybackScheduler(engine: engine.engine, audioDirURL: context.audioDir)
+        let dispatcher = ActionDispatcher(midiOutput: CoreMIDIOutput())
+        dispatcher.triggerDelegate = scheduler
+        dispatcher.parameterResolver = scheduler
+        scheduler.actionDispatcher = dispatcher
+        scheduler.inputMonitor = engine.inputMonitor
+        scheduler.onTrackLevelUpdate = onTrackLevelUpdate
+        scheduler.onEffectChainStatusChanged = { [weak self] failedIDs in
+            Task { @MainActor [weak self] in
+                self?.failedContainerIDs = failedIDs
+            }
+        }
+        playbackScheduler = scheduler
+
+        // Store in playbackTask so schedulePlayback() serializes via generation check
+        playbackGeneration += 1
+        let gen = playbackGeneration
+        playbackTask = Task {
+            guard self.playbackGeneration == gen else { return }
+            await scheduler.prepare(song: context.song, sourceRecordings: context.recordings)
+        }
+    }
+
     /// Returns the active subdivision for a given bar position.
     /// Checks master track containers for MetronomeSettings overrides;
     /// falls back to the default metronome subdivision.
@@ -568,7 +602,8 @@ public final class TransportViewModel {
         sampleRate: Double
     ) {
         let gen = playbackGeneration
-        playbackTask?.cancel()
+        let previousTask = playbackTask
+        previousTask?.cancel()
         // Use graph-shape fingerprints so cosmetic changes (rename, volume,
         // pan, container move) don't trigger a full audio-graph rebuild.
         let needsPrepare = scheduler?.needsPrepare(
@@ -580,6 +615,9 @@ public final class TransportViewModel {
         print("[PLAY] schedulePlayback: needsPrepare=\(needsPrepare) containers=\(containerCount) recordings=\(recCount)")
         let scheduleEnqueueTime = CFAbsoluteTimeGetCurrent()
         playbackTask = Task {
+            // Wait for any in-flight prepare (e.g. from ensureEngineReadyForPreview)
+            // to finish before starting ours — prevents concurrent engine graph mutations.
+            _ = await previousTask?.value
             let taskStart = CFAbsoluteTimeGetCurrent()
             let waitMs = (taskStart - scheduleEnqueueTime) * 1000
             guard self.playbackGeneration == gen else {

@@ -47,7 +47,6 @@ public struct MainContentView: View {
     @State private var isSidebarVisible: Bool = true
     @State private var sidebarTab: SidebarTab = .songs
     @State private var showContainerDetailEditor: Bool = false
-    @State private var showPianoRollEditor: Bool = false
     @State private var pianoRollSnapResolution: SnapResolution = .sixteenth
     @State private var editingSectionID: ID<SectionRegion>?
     @State private var editingSectionName: String = ""
@@ -55,6 +54,7 @@ public struct MainContentView: View {
     @State private var draggingTrackID: ID<Track>?
     @State private var headerDragStartWidth: CGFloat = 0
     @State private var pendingTrackAutomationLane: PendingEffectSelection?
+    @State private var pianoRollEditorState = PianoRollEditorState()
     @State private var scrollSynchronizer = HorizontalScrollSynchronizer()
     @FocusState private var focusedField: FocusedField?
     @Namespace private var inspectorNamespace
@@ -64,6 +64,10 @@ public struct MainContentView: View {
     /// (e.g. to a text field in the inspector panel).
     private var isTextFieldFocused: Bool {
         focusedField != .main
+    }
+
+    private var isPianoRollFocused: Bool {
+        pianoRollEditorState.isFocused
     }
 
     public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, selectionState: SelectionState? = nil, clipboardState: ClipboardState? = nil, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil, isVirtualKeyboardVisible: Binding<Bool> = .constant(false)) {
@@ -170,56 +174,65 @@ public struct MainContentView: View {
     }
 
     /// Opens the appropriate editor for the selected container.
-    /// MIDI containers on MIDI tracks open the piano roll; others open the detail editor.
+    /// MIDI containers on MIDI tracks toggle inline piano roll; others open the detail editor.
     private func openContainerEditor() {
         guard let container = projectViewModel.selectedContainer,
               let track = projectViewModel.selectedContainerTrack else { return }
         if track.kind == .midi {
-            // Ensure the container has a MIDI sequence; create one if needed
-            if container.midiSequence == nil {
+            // Resolve clone inheritance before checking for MIDI data
+            let resolved = projectViewModel.resolveContainer(container)
+            if resolved.midiSequence == nil {
                 projectViewModel.setContainerMIDISequence(
                     containerID: container.id,
                     sequence: MIDISequence()
                 )
             }
-            showPianoRollEditor = true
+            // Toggle inline piano roll
+            pianoRollEditorState.toggle(containerID: container.id, trackID: track.id)
+            // Ensure engine is ready for note preview
+            transportViewModel?.ensureEngineReadyForPreview()
         } else {
             showContainerDetailEditor = true
         }
     }
 
-    @ViewBuilder
-    private var pianoRollEditorSheet: some View {
-        if let container = projectViewModel.selectedContainer,
-           let song = projectViewModel.currentSong {
-            let sequence = container.midiSequence ?? MIDISequence()
-            PianoRollView(
+    /// Opens the piano roll in a pop-out NSWindow.
+    private func openPianoRollSheet() {
+        guard let container = projectViewModel.selectedContainer,
+              let track = projectViewModel.selectedContainerTrack,
+              let song = projectViewModel.currentSong,
+              track.kind == .midi else { return }
+        // Resolve clone inheritance before checking for MIDI data
+        let resolved = projectViewModel.resolveContainer(container)
+        if resolved.midiSequence == nil {
+            projectViewModel.setContainerMIDISequence(
                 containerID: container.id,
-                sequence: sequence,
-                lengthBars: container.lengthBars,
-                timeSignature: song.timeSignature,
-                snapResolution: pianoRollSnapResolution,
-                onAddNote: { note in
-                    projectViewModel.addMIDINote(containerID: container.id, note: note)
-                },
-                onUpdateNote: { note in
-                    projectViewModel.updateMIDINote(containerID: container.id, note: note)
-                },
-                onRemoveNote: { noteID in
-                    projectViewModel.removeMIDINote(containerID: container.id, noteID: noteID)
-                }
+                sequence: MIDISequence()
             )
-            .frame(minWidth: 600, minHeight: 400)
         }
+        transportViewModel?.ensureEngineReadyForPreview()
+        let content = LivePianoRollWindowContent(
+            projectViewModel: projectViewModel,
+            containerID: container.id,
+            trackID: track.id,
+            timeSignature: song.timeSignature,
+            snapResolution: pianoRollSnapResolution,
+            transportViewModel: transportViewModel,
+            onDismiss: {
+                PianoRollWindowManager.shared.close()
+            }
+        )
+        PianoRollWindowManager.shared.open(
+            content: content,
+            title: "Piano Roll — \(container.name)",
+            trackID: track.id
+        )
     }
 
     public var body: some View {
         mainSplitView
         .sheet(isPresented: $showContainerDetailEditor) {
             containerDetailEditorSheet
-        }
-        .sheet(isPresented: $showPianoRollEditor) {
-            pianoRollEditorSheet
         }
         .sheet(item: $pendingTrackAutomationLane) { pending in
             ParameterPickerView(
@@ -306,6 +319,13 @@ public struct MainContentView: View {
             }
             return .ignored
         }
+        // Cmd+Return: open piano roll in pop-out sheet window
+        .onKeyPress(.return, phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) else { return .ignored }
+            guard !isTextFieldFocused else { return .ignored }
+            openPianoRollSheet()
+            return .handled
+        }
         .onKeyPress("c", phases: .down) { keyPress in
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             handleCopy()
@@ -332,16 +352,16 @@ public struct MainContentView: View {
             transportViewModel?.toggleMetronome()
             return .handled
         }
-        // Left arrow: nudge playhead -1 bar
+        // Left arrow: nudge playhead -1 bar (defers to piano roll when focused)
         .onKeyPress(.leftArrow) {
-            guard !isTextFieldFocused else { return .ignored }
+            guard !isTextFieldFocused, !isPianoRollFocused else { return .ignored }
             guard let tv = transportViewModel else { return .ignored }
             tv.setPlayheadPosition(max(tv.playheadBar - 1.0, 1.0))
             return .handled
         }
-        // Right arrow: nudge playhead +1 bar
+        // Right arrow: nudge playhead +1 bar (defers to piano roll when focused)
         .onKeyPress(.rightArrow) {
-            guard !isTextFieldFocused else { return .ignored }
+            guard !isTextFieldFocused, !isPianoRollFocused else { return .ignored }
             guard let tv = transportViewModel else { return .ignored }
             tv.setPlayheadPosition(tv.playheadBar + 1.0)
             return .handled
@@ -394,10 +414,14 @@ public struct MainContentView: View {
             projectViewModel.selectAllContainers()
             return .handled
         }
-        // Escape: deselect all + restore focus to main area
+        // Escape: unfocus piano roll → deselect all + restore focus to main area
         .onKeyPress(.escape) {
             if isTextFieldFocused {
                 focusedField = .main
+                return .handled
+            }
+            if isPianoRollFocused {
+                pianoRollEditorState.isFocused = false
                 return .handled
             }
             selectionState.deselectAll()
@@ -699,11 +723,23 @@ public struct MainContentView: View {
                             song: song,
                             tracks: regularTracks,
                             minHeight: geo.size.height,
+                            pianoRollState: pianoRollEditorState,
                             onContainerDoubleClick: {
                                 openContainerEditor()
                             },
                             onPlayheadPosition: { bar in
+                                pianoRollEditorState.isFocused = false
                                 transportViewModel?.seek(toBar: bar)
+                            },
+                            onNotePreview: { pitch, isNoteOn in
+                                guard let trackID = pianoRollEditorState.trackID else { return }
+                                let message: MIDIActionMessage = isNoteOn
+                                    ? .noteOn(channel: 0, note: pitch, velocity: 100)
+                                    : .noteOff(channel: 0, note: pitch, velocity: 0)
+                                transportViewModel?.sendVirtualNote(trackID: trackID, message: message)
+                            },
+                            onOpenPianoRollSheet: {
+                                openPianoRollSheet()
                             }
                         )
                     }
@@ -764,6 +800,7 @@ public struct MainContentView: View {
                             openContainerEditor()
                         },
                         onPlayheadPosition: { bar in
+                            pianoRollEditorState.isFocused = false
                             transportViewModel?.seek(toBar: bar)
                         }
                     )
