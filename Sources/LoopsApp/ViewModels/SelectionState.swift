@@ -37,12 +37,23 @@ public final class SelectionState {
     /// The currently selected section ID.
     public var selectedSectionID: ID<SectionRegion>?
 
+    /// Range selection within a container (selector tool drag).
+    /// Bar values are absolute timeline positions.
+    public var rangeSelection: RangeSelection?
+
     /// Clears all selection state (container, track, section, multi-select).
     public func deselectAll() {
         selectedContainerID = nil
         selectedContainerIDs = []
         selectedTrackID = nil
         selectedSectionID = nil
+        rangeSelection = nil
+    }
+
+    public struct RangeSelection: Equatable {
+        public let containerID: ID<Container>
+        public let startBar: Int
+        public let endBar: Int
     }
 
     public init() {}

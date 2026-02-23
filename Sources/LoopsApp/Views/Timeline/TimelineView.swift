@@ -1,5 +1,6 @@
 import SwiftUI
 import LoopsCore
+import LoopsEngine
 
 /// The main timeline view combining grid, track lanes, and playhead.
 /// Scrolling is managed by the parent view (MainContentView).
@@ -44,7 +45,7 @@ public struct TimelineView: View {
 
     public var body: some View {
         ZStack(alignment: .topLeading) {
-            // Grid overlay — fills available space, with click-to-position gesture
+            // Grid overlay — fills available space, with click-to-position gesture and cursor tracking
             GridOverlayView(
                 totalBars: viewModel.totalBars,
                 pixelsPerBar: viewModel.pixelsPerBar,
@@ -72,6 +73,9 @@ public struct TimelineView: View {
                         selectionState: selectionState,
                         waveformPeaksForContainer: { container in
                             projectViewModel.waveformPeaks(for: container)
+                        },
+                        recordingDurationBarsForContainer: { container in
+                            projectViewModel.recordingDurationBars(for: container)
                         },
                         onContainerSelect: { containerID in
                             selectionState.selectedContainerID = containerID
@@ -175,6 +179,39 @@ public struct TimelineView: View {
                         },
                         onSetExitFade: { containerID, fade in
                             projectViewModel.setContainerExitFade(containerID: containerID, fade: fade)
+                        },
+                        onContainerTrimLeft: { containerID, offset, startBar, length in
+                            projectViewModel.trimContainerLeft(trackID: track.id, containerID: containerID, newStartBar: startBar, newLength: length, newAudioStartOffset: offset)
+                        },
+                        onContainerTrimRight: { containerID, newLength in
+                            projectViewModel.trimContainerRight(trackID: track.id, containerID: containerID, newLength: newLength)
+                        },
+                        onContainerSplit: { containerID in
+                            let splitBar = Int(viewModel.playheadBar.rounded())
+                            projectViewModel.splitContainer(trackID: track.id, containerID: containerID, atBar: splitBar)
+                        },
+                        onPlayheadTap: { timelineX in
+                            let bar = viewModel.snappedBar(forXPosition: timelineX, timeSignature: song.timeSignature)
+                            onPlayheadPosition?(bar)
+                        },
+                        onTapBackground: { xPosition in
+                            let bar = viewModel.snappedBar(forXPosition: xPosition, timeSignature: song.timeSignature)
+                            onPlayheadPosition?(bar)
+                        },
+                        onRangeSelect: { containerID, startBar, endBar in
+                            selectionState.rangeSelection = SelectionState.RangeSelection(
+                                containerID: containerID,
+                                startBar: startBar,
+                                endBar: endBar
+                            )
+                        },
+                        onResolveAudioFileBars: { url in
+                            guard let metadata = try? AudioImporter.readMetadata(from: url) else { return nil }
+                            return AudioImporter.barsForDuration(
+                                metadata.durationSeconds,
+                                tempo: song.tempo,
+                                timeSignature: song.timeSignature
+                            )
                         }
                     )
                     .equatable()
@@ -192,11 +229,24 @@ public struct TimelineView: View {
                     .allowsHitTesting(false)
             }
 
+            // Cursor line — isolated so mouse movement doesn't re-evaluate track lanes
+            CursorOverlayView(
+                viewModel: viewModel,
+                height: displayHeight
+            )
+
             // Playhead — isolated so 60fps updates don't re-evaluate track lanes
             PlayheadOverlayView(
                 viewModel: viewModel,
                 height: displayHeight
             )
+
+            // Pointer tracking — uses NSTrackingArea so cursor position updates
+            // even when hovering over containers or other interactive elements
+            PointerTrackingOverlay { x in
+                viewModel.cursorX = x
+            }
+            .allowsHitTesting(false)
         }
         .frame(
             width: viewModel.totalWidth,

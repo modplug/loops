@@ -2,9 +2,21 @@ import SwiftUI
 import AppKit
 import LoopsCore
 
+/// Smart Tool zone: determines behavior based on where in the container the user interacts.
+private enum SmartZone {
+    case fadeLeft        // top-left corner: enter fade drag
+    case fadeRight       // top-right corner: exit fade drag
+    case selector        // top center: ibeam / selection (future)
+    case resizeLeft      // middle left edge: resize
+    case resizeRight     // middle right edge: resize
+    case move            // middle center: grab & move
+    case trimLeft        // bottom left edge: trim (adjusts audioStartOffset + startBar)
+    case trimRight       // bottom right edge: trim (adjusts lengthBars)
+    case trimMove        // bottom center: falls through to move
+}
+
 /// Renders a single container as a colored rectangle on the track lane.
-/// Supports selection highlight, context menu for deletion, and displays
-/// the container name and length.
+/// Uses a Pro Tools Smart Tool-inspired zone-based gesture system.
 public struct ContainerView: View {
     let container: Container
     let pixelsPerBar: CGFloat
@@ -14,11 +26,17 @@ public struct ContainerView: View {
     let waveformPeaks: [Float]?
     let isClone: Bool
     let overriddenFields: Set<ContainerField>
+    /// Total duration of the source recording in bars (nil if unknown or no recording).
+    /// Used to compute waveform start/length fractions for cropped display.
+    let recordingDurationBars: Double?
     var onSelect: (() -> Void)?
+    var onPlayheadTap: ((_ timelineX: CGFloat) -> Void)?
     var onDelete: (() -> Void)?
     var onMove: ((_ newStartBar: Int) -> Bool)?
     var onResizeLeft: ((_ newStartBar: Int, _ newLength: Int) -> Bool)?
     var onResizeRight: ((_ newLength: Int) -> Bool)?
+    var onTrimLeft: ((_ newAudioStartOffset: Double, _ newStartBar: Int, _ newLength: Int) -> Bool)?
+    var onTrimRight: ((_ newLength: Int) -> Bool)?
     var onDoubleClick: (() -> Void)?
     var onClone: ((_ newStartBar: Int) -> Void)?
     var onCopy: (() -> Void)?
@@ -30,6 +48,8 @@ public struct ContainerView: View {
     var onArmToggle: (() -> Void)?
     var onSetEnterFade: ((FadeSettings?) -> Void)?
     var onSetExitFade: ((FadeSettings?) -> Void)?
+    var onSplit: (() -> Void)?
+    var onRangeSelect: ((_ startBar: Int, _ endBar: Int) -> Void)?
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -37,11 +57,24 @@ public struct ContainerView: View {
     @State private var resizeRightDelta: CGFloat = 0
     @State private var isResizingLeft = false
     @State private var isResizingRight = false
+    @State private var isTrimming = false
+    @State private var trimLeftDelta: CGFloat = 0
+    @State private var trimRightDelta: CGFloat = 0
+    @State private var isTrimmingLeft = false
+    @State private var isTrimmingRight = false
     @State private var isAltDragging = false
     @State private var altDragOffset: CGFloat = 0
     @State private var isHovering = false
+    @State private var hoverZone: SmartZone?
     @State private var enterFadeDragWidth: CGFloat?
     @State private var exitFadeDragWidth: CGFloat?
+    @State private var selectorDragStartX: CGFloat?
+    @State private var selectorDragCurrentX: CGFloat?
+    /// Zone locked at drag start so it doesn't change mid-gesture.
+    @State private var activeDragZone: SmartZone?
+
+    /// Edge threshold in points for zone detection.
+    private static let edgeThreshold: CGFloat = 12
 
     public init(
         container: Container,
@@ -52,11 +85,15 @@ public struct ContainerView: View {
         waveformPeaks: [Float]? = nil,
         isClone: Bool = false,
         overriddenFields: Set<ContainerField> = [],
+        recordingDurationBars: Double? = nil,
         onSelect: (() -> Void)? = nil,
+        onPlayheadTap: ((_ timelineX: CGFloat) -> Void)? = nil,
         onDelete: (() -> Void)? = nil,
         onMove: ((_ newStartBar: Int) -> Bool)? = nil,
         onResizeLeft: ((_ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
         onResizeRight: ((_ newLength: Int) -> Bool)? = nil,
+        onTrimLeft: ((_ newAudioStartOffset: Double, _ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
+        onTrimRight: ((_ newLength: Int) -> Bool)? = nil,
         onDoubleClick: (() -> Void)? = nil,
         onClone: ((_ newStartBar: Int) -> Void)? = nil,
         onCopy: (() -> Void)? = nil,
@@ -67,7 +104,9 @@ public struct ContainerView: View {
         onUnlink: (() -> Void)? = nil,
         onArmToggle: (() -> Void)? = nil,
         onSetEnterFade: ((FadeSettings?) -> Void)? = nil,
-        onSetExitFade: ((FadeSettings?) -> Void)? = nil
+        onSetExitFade: ((FadeSettings?) -> Void)? = nil,
+        onSplit: (() -> Void)? = nil,
+        onRangeSelect: ((_ startBar: Int, _ endBar: Int) -> Void)? = nil
     ) {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
@@ -77,11 +116,15 @@ public struct ContainerView: View {
         self.waveformPeaks = waveformPeaks
         self.isClone = isClone
         self.overriddenFields = overriddenFields
+        self.recordingDurationBars = recordingDurationBars
         self.onSelect = onSelect
+        self.onPlayheadTap = onPlayheadTap
         self.onDelete = onDelete
         self.onMove = onMove
         self.onResizeLeft = onResizeLeft
         self.onResizeRight = onResizeRight
+        self.onTrimLeft = onTrimLeft
+        self.onTrimRight = onTrimRight
         self.onDoubleClick = onDoubleClick
         self.onClone = onClone
         self.onCopy = onCopy
@@ -93,6 +136,8 @@ public struct ContainerView: View {
         self.onArmToggle = onArmToggle
         self.onSetEnterFade = onSetEnterFade
         self.onSetExitFade = onSetExitFade
+        self.onSplit = onSplit
+        self.onRangeSelect = onRangeSelect
     }
 
     /// Derived from SelectionState observable — only this ContainerView re-evaluates
@@ -103,6 +148,110 @@ public struct ContainerView: View {
 
     private var containerWidth: CGFloat {
         CGFloat(container.lengthBars) * pixelsPerBar
+    }
+
+    /// Container's left edge X in the trackLane coordinate space.
+    private var containerOriginX: CGFloat {
+        CGFloat(container.startBar - 1) * pixelsPerBar
+    }
+
+    private var waveformStartFraction: CGFloat {
+        guard let totalBars = recordingDurationBars, totalBars > 0 else { return 0 }
+        return CGFloat(container.audioStartOffset / totalBars)
+    }
+
+    private var waveformLengthFraction: CGFloat {
+        guard let totalBars = recordingDurationBars, totalBars > 0 else { return 1 }
+        // Use the actual audible bars (clamped to recording end) so peaks
+        // exactly match the audio — avoids slight stretch when container
+        // extends past the recording due to ceil() rounding.
+        let audibleBars = min(Double(container.lengthBars), totalBars - container.audioStartOffset)
+        return min(1.0, CGFloat(max(0, audibleBars) / totalBars))
+    }
+
+    /// Fraction of the container's pixel width that actually contains audio.
+    /// When barsForDuration rounds up (ceil), the container is wider than the recording,
+    /// so the waveform should only fill the portion with audio, aligned to the leading edge.
+    private var waveformWidthFraction: CGFloat {
+        guard let totalBars = recordingDurationBars, totalBars > 0 else { return 1.0 }
+        let audioEnd = min(container.audioStartOffset + Double(container.lengthBars), totalBars)
+        let audibleBars = max(0, audioEnd - container.audioStartOffset)
+        return min(1.0, CGFloat(audibleBars / Double(container.lengthBars)))
+    }
+
+    // MARK: - Extension Preview (Resize or Trim)
+
+    /// Whether the container is being extended rightward (resize or trim).
+    private var isExtendingRight: Bool {
+        (isResizingRight && resizeRightDelta > 0) || (isTrimmingRight && trimRightDelta > 0)
+    }
+
+    /// Whether the container is being extended leftward (resize or trim).
+    private var isExtendingLeft: Bool {
+        (isResizingLeft && resizeLeftDelta < 0) || (isTrimmingLeft && trimLeftDelta < 0)
+    }
+
+    /// Pixel width of a right extension (from either resize or trim).
+    private var rightExtendPixels: CGFloat {
+        if isResizingRight, resizeRightDelta > 0 { return resizeRightDelta }
+        if isTrimmingRight, trimRightDelta > 0 { return trimRightDelta }
+        return 0
+    }
+
+    /// Pixel width of a left extension (from either resize or trim).
+    private var leftExtendPixels: CGFloat {
+        if isResizingLeft, resizeLeftDelta < 0 { return -resizeLeftDelta }
+        if isTrimmingLeft, trimLeftDelta < 0 { return -trimLeftDelta }
+        return 0
+    }
+
+    /// Preview audioStartOffset during trim-left extending.
+    /// Trim-left reveals earlier audio; resize-left does not change audioStartOffset.
+    private var previewAudioStartOffset: Double {
+        if isTrimmingLeft, trimLeftDelta < 0 {
+            let barDelta = round(trimLeftDelta / pixelsPerBar)
+            return max(0, container.audioStartOffset + barDelta)
+        }
+        return container.audioStartOffset
+    }
+
+    /// Waveform start fraction accounting for trim-left extension preview.
+    private var activeWaveformStartFraction: CGFloat {
+        guard let totalBars = recordingDurationBars, totalBars > 0 else { return 0 }
+        return CGFloat(previewAudioStartOffset / totalBars)
+    }
+
+    /// Waveform length fraction accounting for right-extend preview.
+    /// Shows additional peaks from the recording when extending the container.
+    private var activeWaveformLengthFraction: CGFloat {
+        guard isExtendingRight || isExtendingLeft,
+              let totalBars = recordingDurationBars, totalBars > 0 else {
+            return waveformLengthFraction
+        }
+        let barDelta = round((rightExtendPixels > 0 ? rightExtendPixels : -leftExtendPixels) / pixelsPerBar)
+        let previewLength = Double(container.lengthBars) + abs(barDelta)
+        let offset = previewAudioStartOffset
+        let audibleBars = min(previewLength, totalBars - offset)
+        return min(1.0, CGFloat(max(0, audibleBars) / totalBars))
+    }
+
+    /// Waveform width fraction accounting for extension preview.
+    private var activeWaveformWidthFraction: CGFloat {
+        guard isExtendingRight || isExtendingLeft,
+              let totalBars = recordingDurationBars, totalBars > 0 else {
+            return waveformWidthFraction
+        }
+        let barDelta = round((rightExtendPixels > 0 ? rightExtendPixels : -leftExtendPixels) / pixelsPerBar)
+        let previewLength = max(1, Double(container.lengthBars) + abs(barDelta))
+        let offset = previewAudioStartOffset
+        let audioEnd = min(offset + previewLength, totalBars)
+        let audibleBars = max(0, audioEnd - offset)
+        return min(1.0, CGFloat(audibleBars / previewLength))
+    }
+
+    /// Container width used for waveform frame calculation (includes extension).
+    private var activeWaveformContainerWidth: CGFloat {
+        (isExtendingRight || isExtendingLeft) ? displayWidth : containerWidth
     }
 
     public var body: some View {
@@ -120,10 +269,22 @@ public struct ContainerView: View {
 
             // Waveform (audio containers)
             if let peaks = waveformPeaks, !peaks.isEmpty {
-                WaveformView(peaks: peaks, color: trackColor)
-                    .padding(.horizontal, 2)
-                    .padding(.vertical, 16)
-                    .allowsHitTesting(false)
+                WaveformView(
+                    peaks: peaks,
+                    color: trackColor,
+                    startFraction: activeWaveformStartFraction,
+                    lengthFraction: activeWaveformLengthFraction
+                )
+                .frame(width: max(1, (activeWaveformContainerWidth - 4) * activeWaveformWidthFraction))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // During resize-left extension (no audioStartOffset change),
+                // keep waveform at its original position by offsetting right.
+                // Trim-left extension changes audioStartOffset, so the waveform
+                // naturally extends from the leading edge.
+                .offset(x: (isResizingLeft && resizeLeftDelta < 0) ? -resizeLeftDelta : 0)
+                .padding(.horizontal, 2)
+                .padding(.vertical, 16)
+                .allowsHitTesting(false)
             }
 
             // MIDI note minimap (MIDI containers)
@@ -166,8 +327,106 @@ public struct ContainerView: View {
                 .allowsHitTesting(false)
             }
 
-            // Fade handles
-            fadeHandleOverlay
+            // Selector drag highlight (during active drag)
+            if let startX = selectorDragStartX, let endX = selectorDragCurrentX, endX > startX {
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.2))
+                    .frame(width: endX - startX, height: height)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .offset(x: startX)
+                    .allowsHitTesting(false)
+            }
+
+            // Persistent range selection highlight (from SelectionState)
+            if let range = selectionState?.rangeSelection, range.containerID == container.id {
+                let rangeStartX = CGFloat(range.startBar - container.startBar) * pixelsPerBar
+                let rangeWidth = CGFloat(range.endBar - range.startBar) * pixelsPerBar
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.2))
+                    .frame(width: rangeWidth, height: height)
+                    .overlay(
+                        HStack(spacing: 0) {
+                            Rectangle().fill(Color.accentColor.opacity(0.6)).frame(width: 1)
+                            Spacer()
+                            Rectangle().fill(Color.accentColor.opacity(0.6)).frame(width: 1)
+                        }
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .offset(x: rangeStartX)
+                    .allowsHitTesting(false)
+            }
+
+            // Trim crop overlay: darkens the area being cropped away
+            // so the user can see what will remain vs what is trimmed.
+            if isTrimmingLeft, trimLeftDelta > 0 {
+                // Dark overlay on the left portion being cropped
+                Rectangle()
+                    .fill(Color.black.opacity(0.45))
+                    .frame(width: trimLeftDelta)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .allowsHitTesting(false)
+                // Bright edge line at the new left boundary
+                Rectangle()
+                    .fill(Color.white.opacity(0.8))
+                    .frame(width: 1.5)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .offset(x: trimLeftDelta)
+                    .allowsHitTesting(false)
+            }
+
+            if isTrimmingRight, trimRightDelta < 0 {
+                let cropWidth = -trimRightDelta
+                // Dark overlay on the right portion being cropped
+                Rectangle()
+                    .fill(Color.black.opacity(0.45))
+                    .frame(width: cropWidth)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .allowsHitTesting(false)
+                // Bright edge line at the new right boundary
+                Rectangle()
+                    .fill(Color.white.opacity(0.8))
+                    .frame(width: 1.5)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .offset(x: -cropWidth)
+                    .allowsHitTesting(false)
+            }
+
+            // Extension overlay (resize or trim extending): darkens the area being added
+            // so the user can see the original vs extended boundary.
+            if isExtendingRight {
+                let extendWidth = rightExtendPixels
+                Rectangle()
+                    .fill(Color.black.opacity(0.35))
+                    .frame(width: extendWidth)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .allowsHitTesting(false)
+                // Edge line at the original right boundary
+                Rectangle()
+                    .fill(Color.white.opacity(0.6))
+                    .frame(width: 1.5)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .offset(x: -extendWidth)
+                    .allowsHitTesting(false)
+            }
+
+            if isExtendingLeft {
+                let extendWidth = leftExtendPixels
+                Rectangle()
+                    .fill(Color.black.opacity(0.35))
+                    .frame(width: extendWidth)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .allowsHitTesting(false)
+                // Edge line at the original left boundary
+                Rectangle()
+                    .fill(Color.white.opacity(0.6))
+                    .frame(width: 1.5)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .offset(x: extendWidth)
+                    .allowsHitTesting(false)
+            }
+
+            // Zone-dependent visual indicators
+            zoneIndicatorOverlay
 
             // Container label
             VStack(alignment: .leading, spacing: 2) {
@@ -203,44 +462,47 @@ public struct ContainerView: View {
             .padding(.horizontal, 4)
             .padding(.top, 2)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .allowsHitTesting(false)
 
-            // Left resize handle
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: 6)
-                .contentShape(Rectangle())
-                .onHover { hovering in
-                    if hovering {
-                        NSCursor.resizeLeftRight.push()
-                    } else {
-                        NSCursor.pop()
+            // Unified smart tool gesture overlay
+            GeometryReader { geo in
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location):
+                            isHovering = true
+                            let zone = detectZone(at: location, in: geo.size)
+                            if zone != hoverZone {
+                                if hoverZone != nil { NSCursor.pop() }
+                                hoverZone = zone
+                                cursorForZone(zone).push()
+                            }
+                        case .ended:
+                            if hoverZone != nil { NSCursor.pop() }
+                            isHovering = false
+                            hoverZone = nil
+                        }
                     }
-                }
-                .gesture(leftResizeGesture)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Right resize handle
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: 6)
-                .contentShape(Rectangle())
-                .onHover { hovering in
-                    if hovering {
-                        NSCursor.resizeLeftRight.push()
-                    } else {
-                        NSCursor.pop()
-                    }
-                }
-                .gesture(rightResizeGesture)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                    .gesture(altCloneGesture)
+                    .gesture(smartDragGesture(size: geo.size))
+            }
         }
+        .clipped()
         .frame(width: displayWidth, height: height)
         .offset(x: displayOffset)
-        .onHover { hovering in isHovering = hovering }
         .onTapGesture(count: 2) { onDoubleClick?() }
-        .onTapGesture { onSelect?() }
-        .gesture(altCloneGesture)
-        .gesture(moveGesture)
+        .onTapGesture { location in
+            // Clear any range selection on tap
+            selectionState?.rangeSelection = nil
+            let zone = detectZone(at: location, in: CGSize(width: containerWidth, height: height))
+            if zone == .selector, onPlayheadTap != nil {
+                let timelineX = CGFloat(container.startBar - 1) * pixelsPerBar + location.x
+                onPlayheadTap?(timelineX)
+            } else {
+                onSelect?()
+            }
+        }
         .contextMenu {
             Button("Copy") { onCopy?() }
             Button("Duplicate") { onDuplicate?() }
@@ -256,6 +518,7 @@ public struct ContainerView: View {
                 }
             }
             Divider()
+            Button("Split at Playhead") { onSplit?() }
             Button("Edit...") { onDoubleClick?() }
             Button("Arm/Disarm") { onArmToggle?() }
             Divider()
@@ -279,11 +542,131 @@ public struct ContainerView: View {
         }
     }
 
+    // MARK: - Zone Detection
+
+    private func detectZone(at point: CGPoint, in size: CGSize) -> SmartZone {
+        let yFraction = point.y / size.height
+        let nearLeft = point.x < Self.edgeThreshold
+        let nearRight = point.x > size.width - Self.edgeThreshold
+
+        if yFraction < 0.25 {
+            // Top 25%: fade zone
+            if nearLeft { return .fadeLeft }
+            if nearRight { return .fadeRight }
+            return .selector
+        } else if yFraction < 0.75 {
+            // Middle 50%: move/resize
+            if nearLeft { return .resizeLeft }
+            if nearRight { return .resizeRight }
+            return .move
+        } else {
+            // Bottom 25%: trim zone
+            if nearLeft { return .trimLeft }
+            if nearRight { return .trimRight }
+            return .trimMove
+        }
+    }
+
+    private func cursorForZone(_ zone: SmartZone) -> NSCursor {
+        switch zone {
+        case .fadeLeft, .fadeRight:
+            return .resizeLeftRight
+        case .selector:
+            return .iBeam
+        case .resizeLeft, .resizeRight:
+            return .resizeLeftRight
+        case .trimLeft, .trimRight:
+            return .resizeLeftRight
+        case .move, .trimMove:
+            return .openHand
+        }
+    }
+
+    // MARK: - Zone Indicators
+
+    @ViewBuilder
+    private var zoneIndicatorOverlay: some View {
+        if isHovering {
+            // Fade handles: show when hovering in top area or when fades exist
+            if showFadeHandles {
+                // Enter fade handle dot (top-left)
+                Circle()
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: Self.fadeHandleSize, height: Self.fadeHandleSize)
+                    .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 1)
+                    .offset(x: enterFadeWidth - Self.fadeHandleSize / 2)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.top, 2)
+                    .allowsHitTesting(false)
+
+                // Exit fade handle dot (top-right)
+                Circle()
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: Self.fadeHandleSize, height: Self.fadeHandleSize)
+                    .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 1)
+                    .offset(x: -exitFadeWidth + Self.fadeHandleSize / 2)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.top, 2)
+                    .allowsHitTesting(false)
+            }
+
+            // Trim zone bracket indicators at bottom edges
+            if hoverZone == .trimLeft || hoverZone == .trimRight {
+                HStack {
+                    if hoverZone == .trimLeft {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Color.white.opacity(0.5))
+                            .frame(width: 3, height: height * 0.2)
+                    }
+                    Spacer()
+                    if hoverZone == .trimRight {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Color.white.opacity(0.5))
+                            .frame(width: 3, height: height * 0.2)
+                    }
+                }
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .padding(.bottom, 4)
+                .padding(.horizontal, 2)
+                .allowsHitTesting(false)
+            }
+        } else if container.enterFade != nil || container.exitFade != nil {
+            // Always show fade handles when fades exist (even when not hovering)
+            Circle()
+                .fill(Color.white.opacity(0.9))
+                .frame(width: Self.fadeHandleSize, height: Self.fadeHandleSize)
+                .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 1)
+                .offset(x: enterFadeWidth - Self.fadeHandleSize / 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.top, 2)
+                .allowsHitTesting(false)
+
+            Circle()
+                .fill(Color.white.opacity(0.9))
+                .frame(width: Self.fadeHandleSize, height: Self.fadeHandleSize)
+                .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 1)
+                .offset(x: -exitFadeWidth + Self.fadeHandleSize / 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.top, 2)
+                .allowsHitTesting(false)
+        }
+    }
+
+    // MARK: - Display Metrics
+
     private var displayWidth: CGFloat {
         if isResizingLeft {
             return max(pixelsPerBar, containerWidth - resizeLeftDelta)
         } else if isResizingRight {
             return max(pixelsPerBar, containerWidth + resizeRightDelta)
+        }
+        // During trim crop, container stays at original size (dark overlay shows).
+        // During trim extend, container grows to show the preview.
+        if isTrimmingRight, trimRightDelta > 0 {
+            return containerWidth + trimRightDelta
+        }
+        if isTrimmingLeft, trimLeftDelta < 0 {
+            return containerWidth - trimLeftDelta
         }
         return containerWidth
     }
@@ -294,60 +677,166 @@ public struct ContainerView: View {
         } else if isResizingLeft {
             return resizeLeftDelta
         }
+        // During trim-left extend, shift left to show the new area
+        if isTrimmingLeft, trimLeftDelta < 0 {
+            return trimLeftDelta
+        }
         return 0
     }
 
-    private var moveGesture: some Gesture {
-        DragGesture(minimumDistance: 5, coordinateSpace: .global)
-            .onChanged { value in
-                isDragging = true
-                // Snap to bar boundaries
-                let barDelta = round(value.translation.width / pixelsPerBar)
-                dragOffset = barDelta * pixelsPerBar
-            }
-            .onEnded { value in
-                isDragging = false
-                let barDelta = Int(round(value.translation.width / pixelsPerBar))
-                let newStart = container.startBar + barDelta
-                let _ = onMove?(newStart)
-                dragOffset = 0
-            }
-    }
+    // MARK: - Unified Smart Gesture
 
-    private var leftResizeGesture: some Gesture {
-        DragGesture(minimumDistance: 3, coordinateSpace: .global)
+    /// Uses the stable "trackLane" coordinate space from the parent TrackLaneView.
+    /// This prevents jitter: if we used `.local`, the `.offset()` and `.frame(width:)`
+    /// applied during drag/resize/trim would shift the coordinate space mid-gesture,
+    /// causing `value.translation` to oscillate.
+    private func smartDragGesture(size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named("trackLane"))
             .onChanged { value in
-                isResizingLeft = true
-                let barDelta = round(value.translation.width / pixelsPerBar)
-                resizeLeftDelta = barDelta * pixelsPerBar
-            }
-            .onEnded { value in
-                isResizingLeft = false
-                let barDelta = Int(round(value.translation.width / pixelsPerBar))
-                let newStart = container.startBar + barDelta
-                let newLength = container.lengthBars - barDelta
-                if newLength >= 1 && newStart >= 1 {
-                    let _ = onResizeLeft?(newStart, newLength)
+                // Detect zone once at drag start (local coordinates)
+                let zone: SmartZone
+                if let active = activeDragZone {
+                    zone = active
+                } else {
+                    let localStart = CGPoint(
+                        x: value.startLocation.x - containerOriginX,
+                        y: value.startLocation.y - 2 // account for y: 2 offset in TrackLaneView
+                    )
+                    zone = detectZone(at: localStart, in: size)
+                    activeDragZone = zone
                 }
-                resizeLeftDelta = 0
-            }
-    }
 
-    private var rightResizeGesture: some Gesture {
-        DragGesture(minimumDistance: 3, coordinateSpace: .global)
-            .onChanged { value in
-                isResizingRight = true
+                // Translation is stable in trackLane space
                 let barDelta = round(value.translation.width / pixelsPerBar)
-                resizeRightDelta = barDelta * pixelsPerBar
+
+                switch zone {
+                case .fadeLeft:
+                    let currentWidth = CGFloat(container.enterFade?.duration ?? 0) * pixelsPerBar
+                    let newWidth = max(0, min(currentWidth + value.translation.width, containerWidth))
+                    enterFadeDragWidth = newWidth
+
+                case .fadeRight:
+                    let currentWidth = CGFloat(container.exitFade?.duration ?? 0) * pixelsPerBar
+                    let newWidth = max(0, min(currentWidth - value.translation.width, containerWidth))
+                    exitFadeDragWidth = newWidth
+
+                case .resizeLeft:
+                    isResizingLeft = true
+                    resizeLeftDelta = barDelta * pixelsPerBar
+
+                case .resizeRight:
+                    isResizingRight = true
+                    resizeRightDelta = barDelta * pixelsPerBar
+
+                case .trimLeft:
+                    isTrimmingLeft = true
+                    trimLeftDelta = barDelta * pixelsPerBar
+
+                case .trimRight:
+                    isTrimmingRight = true
+                    trimRightDelta = barDelta * pixelsPerBar
+
+                case .selector:
+                    // Convert trackLane coordinates to local for bar computation
+                    let localStartX = value.startLocation.x - containerOriginX
+                    let localCurrentX = value.location.x - containerOriginX
+                    let rawStartX = min(localStartX, localCurrentX)
+                    let rawEndX = max(localStartX, localCurrentX)
+                    let startBarLocal = max(0, Int(round(rawStartX / pixelsPerBar)))
+                    let endBarLocal = min(container.lengthBars, Int(round(rawEndX / pixelsPerBar)))
+                    selectorDragStartX = CGFloat(startBarLocal) * pixelsPerBar
+                    selectorDragCurrentX = CGFloat(endBarLocal) * pixelsPerBar
+
+                case .move, .trimMove:
+                    isDragging = true
+                    dragOffset = value.translation.width
+                }
             }
             .onEnded { value in
-                isResizingRight = false
+                let zone = activeDragZone ?? .move
+                activeDragZone = nil
                 let barDelta = Int(round(value.translation.width / pixelsPerBar))
-                let newLength = container.lengthBars + barDelta
-                if newLength >= 1 {
-                    let _ = onResizeRight?(newLength)
+
+                switch zone {
+                case .fadeLeft:
+                    let currentWidth = CGFloat(container.enterFade?.duration ?? 0) * pixelsPerBar
+                    let newWidth = max(0, min(currentWidth + value.translation.width, containerWidth))
+                    let newDuration = Double(newWidth) / Double(pixelsPerBar)
+                    enterFadeDragWidth = nil
+                    if newDuration < 0.125 {
+                        onSetEnterFade?(nil)
+                    } else {
+                        let snapped = round(newDuration * 4.0) / 4.0
+                        let curve = container.enterFade?.curve ?? .linear
+                        onSetEnterFade?(FadeSettings(duration: max(0.25, snapped), curve: curve))
+                    }
+
+                case .fadeRight:
+                    let currentWidth = CGFloat(container.exitFade?.duration ?? 0) * pixelsPerBar
+                    let newWidth = max(0, min(currentWidth - value.translation.width, containerWidth))
+                    let newDuration = Double(newWidth) / Double(pixelsPerBar)
+                    exitFadeDragWidth = nil
+                    if newDuration < 0.125 {
+                        onSetExitFade?(nil)
+                    } else {
+                        let snapped = round(newDuration * 4.0) / 4.0
+                        let curve = container.exitFade?.curve ?? .linear
+                        onSetExitFade?(FadeSettings(duration: max(0.25, snapped), curve: curve))
+                    }
+
+                case .resizeLeft:
+                    isResizingLeft = false
+                    let newStart = container.startBar + barDelta
+                    let newLength = container.lengthBars - barDelta
+                    if newLength >= 1 && newStart >= 1 {
+                        let _ = onResizeLeft?(newStart, newLength)
+                    }
+                    resizeLeftDelta = 0
+
+                case .resizeRight:
+                    isResizingRight = false
+                    let newLength = container.lengthBars + barDelta
+                    if newLength >= 1 {
+                        let _ = onResizeRight?(newLength)
+                    }
+                    resizeRightDelta = 0
+
+                case .trimLeft:
+                    isTrimmingLeft = false
+                    let newStart = container.startBar + barDelta
+                    let newLength = container.lengthBars - barDelta
+                    let newOffset = container.audioStartOffset + Double(barDelta)
+                    if newLength >= 1 && newStart >= 1 && newOffset >= 0 {
+                        let _ = onTrimLeft?(newOffset, newStart, newLength)
+                    }
+                    trimLeftDelta = 0
+
+                case .trimRight:
+                    isTrimmingRight = false
+                    let newLength = container.lengthBars + barDelta
+                    if newLength >= 1 {
+                        let _ = onTrimRight?(newLength)
+                    }
+                    trimRightDelta = 0
+
+                case .selector:
+                    if let startX = selectorDragStartX, let endX = selectorDragCurrentX, endX > startX {
+                        let startBar = container.startBar + max(0, Int(round(startX / pixelsPerBar)))
+                        let endBar = container.startBar + min(container.lengthBars, Int(round(endX / pixelsPerBar)))
+                        if endBar > startBar {
+                            onSelect?()
+                            onRangeSelect?(startBar, endBar)
+                        }
+                    }
+                    selectorDragStartX = nil
+                    selectorDragCurrentX = nil
+
+                case .move, .trimMove:
+                    isDragging = false
+                    let newStart = container.startBar + barDelta
+                    let _ = onMove?(newStart)
+                    dragOffset = 0
                 }
-                resizeRightDelta = 0
             }
     }
 
@@ -370,7 +859,7 @@ public struct ContainerView: View {
             }
     }
 
-    // MARK: - Fade Handles
+    // MARK: - Fade Metrics
 
     private var showFadeHandles: Bool {
         isHovering || container.enterFade != nil || container.exitFade != nil
@@ -389,81 +878,6 @@ public struct ContainerView: View {
     }
 
     private static let fadeHandleSize: CGFloat = 10
-
-    @ViewBuilder
-    private var fadeHandleOverlay: some View {
-        if showFadeHandles {
-            // Enter fade handle (top-left)
-            Circle()
-                .fill(Color.white.opacity(0.9))
-                .frame(width: Self.fadeHandleSize, height: Self.fadeHandleSize)
-                .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 1)
-                .offset(x: enterFadeWidth - Self.fadeHandleSize / 2)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.top, 2)
-                .gesture(enterFadeDragGesture)
-                .onHover { hovering in
-                    if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                }
-
-            // Exit fade handle (top-right)
-            Circle()
-                .fill(Color.white.opacity(0.9))
-                .frame(width: Self.fadeHandleSize, height: Self.fadeHandleSize)
-                .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 1)
-                .offset(x: -exitFadeWidth + Self.fadeHandleSize / 2)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .padding(.top, 2)
-                .gesture(exitFadeDragGesture)
-                .onHover { hovering in
-                    if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                }
-        }
-    }
-
-    private var enterFadeDragGesture: some Gesture {
-        DragGesture(minimumDistance: 2, coordinateSpace: .global)
-            .onChanged { value in
-                let currentWidth = CGFloat(container.enterFade?.duration ?? 0) * pixelsPerBar
-                let newWidth = max(0, min(currentWidth + value.translation.width, containerWidth))
-                enterFadeDragWidth = newWidth
-            }
-            .onEnded { value in
-                let currentWidth = CGFloat(container.enterFade?.duration ?? 0) * pixelsPerBar
-                let newWidth = max(0, min(currentWidth + value.translation.width, containerWidth))
-                let newDuration = Double(newWidth) / Double(pixelsPerBar)
-                enterFadeDragWidth = nil
-                if newDuration < 0.125 {
-                    onSetEnterFade?(nil)
-                } else {
-                    let snapped = round(newDuration * 4.0) / 4.0
-                    let curve = container.enterFade?.curve ?? .linear
-                    onSetEnterFade?(FadeSettings(duration: max(0.25, snapped), curve: curve))
-                }
-            }
-    }
-
-    private var exitFadeDragGesture: some Gesture {
-        DragGesture(minimumDistance: 2, coordinateSpace: .global)
-            .onChanged { value in
-                let currentWidth = CGFloat(container.exitFade?.duration ?? 0) * pixelsPerBar
-                let newWidth = max(0, min(currentWidth - value.translation.width, containerWidth))
-                exitFadeDragWidth = newWidth
-            }
-            .onEnded { value in
-                let currentWidth = CGFloat(container.exitFade?.duration ?? 0) * pixelsPerBar
-                let newWidth = max(0, min(currentWidth - value.translation.width, containerWidth))
-                let newDuration = Double(newWidth) / Double(pixelsPerBar)
-                exitFadeDragWidth = nil
-                if newDuration < 0.125 {
-                    onSetExitFade?(nil)
-                } else {
-                    let snapped = round(newDuration * 4.0) / 4.0
-                    let curve = container.exitFade?.curve ?? .linear
-                    onSetExitFade?(FadeSettings(duration: max(0.25, snapped), curve: curve))
-                }
-            }
-    }
 }
 
 // MARK: - Equatable
@@ -479,6 +893,7 @@ extension ContainerView: Equatable {
         lhs.waveformPeaks == rhs.waveformPeaks &&
         lhs.isClone == rhs.isClone &&
         lhs.overriddenFields == rhs.overriddenFields &&
+        lhs.recordingDurationBars == rhs.recordingDurationBars &&
         lhs.otherSongs.count == rhs.otherSongs.count &&
         zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name }
     }
