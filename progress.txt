@@ -1041,3 +1041,40 @@
 - What the inspector shows now matches what PlaybackScheduler produces (both use `resolved()`)
 - 7 new tests: clone resolved shows parent's current effects, edit parent effects updates clone resolved, override shows clone's own values, resolved preserves clone ID for edits, editing inherited field creates override, resolved display matches playback, non-clone unchanged
 - All 1001 tests pass
+
+# ============================================================
+# PRD #122: Performance — Reduce Unnecessary View Invalidation
+# Issues: #123-#130 (8 vertical slices)
+# ============================================================
+
+## Issue Dependency Graph
+# #123 Extract SelectionState from ProjectViewModel — no blockers
+# #124 Extract ClipboardState from ProjectViewModel — no blockers
+# #125 Extract UndoState from ProjectViewModel — no blockers
+# #126 Extract ExportState and MIDILearnState from ProjectViewModel — no blockers
+# #127 Isolate playhead rendering from timeline view tree — no blockers
+# #128 Per-track meter isolation in MixerView — no blockers
+# #129 Add Equatable memoization to ContainerView and TrackLaneView — blocked by #123
+# #130 Lazy stacking for timeline tracks and mixer strips — no blockers
+
+## Completed
+### Iteration 12 — #123 Extract SelectionState from ProjectViewModel
+- `SelectionState`: new `@Observable @MainActor` class with the four selection properties (`selectedTrackID`, `selectedContainerID`, `selectedContainerIDs`, `selectedSectionID`) and mutual exclusion logic
+- `SelectionState.deselectAll()`: clears all four selection properties
+- `ProjectViewModel`: new `selectionState` property (instance of `SelectionState`); four selection properties become delegating computed properties (`get`/`set` through `selectionState`)
+- `ProjectViewModel.selectAllContainers()`, `deselectAll()`, `selectTrackByIndex(_:)`: delegate to `selectionState` internally
+- `MainContentView`: new `selectionState: SelectionState` parameter; all selection reads/writes use `selectionState` directly instead of `projectViewModel`
+- `TimelineView`: new `selectionState: SelectionState` parameter; container selection reads/writes use `selectionState` directly
+- `LoopsAppEntry`: MIDI control dispatch reads/writes use `vm.selectionState.selectedTrackID`; extracted `mainContentView` computed property to reduce body type-checking complexity
+- All existing call sites (methods on ProjectViewModel like `addContainer`, `removeContainer`, `cloneContainer` etc.) continue to work via the delegating computed properties
+- 10 new tests: standalone properties default nil, track clears container+containerIDs, container clears track, deselectAll clears all, VM delegates containerID, VM delegates trackID, VM delegates sectionID, VM delegates containerIDs, nil track keeps container, nil container keeps track
+- All 1011 tests pass
+
+### Iteration 13 — #124 Extract ClipboardState from ProjectViewModel
+- `ClipboardState`: new `@Observable @MainActor` class with three clipboard properties (`clipboard`, `clipboardBaseBar`, `clipboardSectionRegion`) and `hasContent` computed property
+- `ClipboardContainerEntry` struct moved from ProjectViewModel.swift to ClipboardState.swift
+- `ProjectViewModel`: new `clipboardState` property (instance of `ClipboardState`); three clipboard properties become delegating computed properties (`get`/`set` through `clipboardState`)
+- All copy/paste methods (`copyContainer`, `copyContainersInRange`, `copySectionWithMetadata`, `pasteContainersToOriginalTracks`, `pasteContainers`) continue to work via delegating properties
+- `MainContentView`: new `clipboardState: ClipboardState` parameter (defaults to `projectViewModel.clipboardState`); `handlePaste()` reads `clipboardState.hasContent` instead of `projectViewModel.clipboard`
+- `TimelineView`: new `clipboardState: ClipboardState` parameter (defaults to `projectViewModel.clipboardState`); `hasClipboard` flag reads from `clipboardState.clipboard` instead of `projectViewModel.clipboard`
+- All 1011 tests pass

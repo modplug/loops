@@ -32,6 +32,7 @@ public struct MainContentView: View {
     @Bindable var projectViewModel: ProjectViewModel
     @Bindable var timelineViewModel: TimelineViewModel
     var selectionState: SelectionState
+    var clipboardState: ClipboardState
     var transportViewModel: TransportViewModel?
     var setlistViewModel: SetlistViewModel?
     var engineManager: AudioEngineManager?
@@ -64,10 +65,11 @@ public struct MainContentView: View {
         focusedField != .main
     }
 
-    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, selectionState: SelectionState? = nil, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil, isVirtualKeyboardVisible: Binding<Bool> = .constant(false)) {
+    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, selectionState: SelectionState? = nil, clipboardState: ClipboardState? = nil, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil, isVirtualKeyboardVisible: Binding<Bool> = .constant(false)) {
         self.projectViewModel = projectViewModel
         self.timelineViewModel = timelineViewModel
         self.selectionState = selectionState ?? projectViewModel.selectionState
+        self.clipboardState = clipboardState ?? projectViewModel.clipboardState
         self.transportViewModel = transportViewModel
         self.setlistViewModel = setlistViewModel
         self.engineManager = engineManager
@@ -1332,7 +1334,7 @@ public struct MainContentView: View {
     }
 
     private func handlePaste() {
-        guard !projectViewModel.clipboard.isEmpty || projectViewModel.clipboardSectionRegion != nil else { return }
+        guard clipboardState.hasContent else { return }
         let playheadBar = Int(timelineViewModel.playheadBar)
         projectViewModel.pasteContainersToOriginalTracks(atBar: playheadBar)
     }

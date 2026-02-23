@@ -2,12 +2,6 @@ import SwiftUI
 import LoopsCore
 import LoopsEngine
 
-/// An entry in the container clipboard, storing a copied container and its source track ID.
-public struct ClipboardContainerEntry: Equatable, Sendable {
-    public let container: Container
-    public let trackID: ID<Track>
-}
-
 /// An entry in the undo history panel, tracking action names and timestamps.
 public struct UndoHistoryEntry: Identifiable, Equatable {
     public let id: UUID
@@ -54,12 +48,25 @@ public final class ProjectViewModel {
     public var isExportSheetPresented: Bool = false
     public var undoManager: UndoManager?
 
+    /// Dedicated clipboard state observable, extracted so clipboard changes don't
+    /// invalidate unrelated parts of the view tree.
+    public let clipboardState = ClipboardState()
+
     /// Clipboard for container copy/paste operations.
-    public var clipboard: [ClipboardContainerEntry] = []
+    public var clipboard: [ClipboardContainerEntry] {
+        get { clipboardState.clipboard }
+        set { clipboardState.clipboard = newValue }
+    }
     /// The leftmost start bar of copied containers, used for offset calculation on paste.
-    public var clipboardBaseBar: Int = 1
+    public var clipboardBaseBar: Int {
+        get { clipboardState.clipboardBaseBar }
+        set { clipboardState.clipboardBaseBar = newValue }
+    }
     /// Section region metadata copied with section copy operations.
-    public var clipboardSectionRegion: SectionRegion?
+    public var clipboardSectionRegion: SectionRegion? {
+        get { clipboardState.clipboardSectionRegion }
+        set { clipboardState.clipboardSectionRegion = newValue }
+    }
 
     /// Live waveform peaks for containers currently being recorded.
     /// Cleared when recording completes and peaks are stored in the SourceRecording.
