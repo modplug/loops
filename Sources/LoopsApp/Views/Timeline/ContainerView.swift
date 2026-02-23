@@ -34,13 +34,13 @@ public struct ContainerView: View {
     var onSelect: (() -> Void)?
     var onPlayheadTap: ((_ timelineX: CGFloat) -> Void)?
     var onDelete: (() -> Void)?
-    var onMove: ((_ newStartBar: Int) -> Bool)?
-    var onResizeLeft: ((_ newStartBar: Int, _ newLength: Int) -> Bool)?
-    var onResizeRight: ((_ newLength: Int) -> Bool)?
-    var onTrimLeft: ((_ newAudioStartOffset: Double, _ newStartBar: Int, _ newLength: Int) -> Bool)?
-    var onTrimRight: ((_ newLength: Int) -> Bool)?
+    var onMove: ((_ newStartBar: Double) -> Bool)?
+    var onResizeLeft: ((_ newStartBar: Double, _ newLength: Double) -> Bool)?
+    var onResizeRight: ((_ newLength: Double) -> Bool)?
+    var onTrimLeft: ((_ newAudioStartOffset: Double, _ newStartBar: Double, _ newLength: Double) -> Bool)?
+    var onTrimRight: ((_ newLength: Double) -> Bool)?
     var onDoubleClick: (() -> Void)?
-    var onClone: ((_ newStartBar: Int) -> Void)?
+    var onClone: ((_ newStartBar: Double) -> Void)?
     var onCopy: (() -> Void)?
     var onCopyToSong: ((_ songID: ID<Song>) -> Void)?
     var otherSongs: [(id: ID<Song>, name: String)]
@@ -51,7 +51,9 @@ public struct ContainerView: View {
     var onSetEnterFade: ((FadeSettings?) -> Void)?
     var onSetExitFade: ((FadeSettings?) -> Void)?
     var onSplit: (() -> Void)?
-    var onRangeSelect: ((_ startBar: Int, _ endBar: Int) -> Void)?
+    var onRangeSelect: ((_ startBar: Double, _ endBar: Double) -> Void)?
+    /// Snaps a bar value to the current grid resolution. Falls back to whole-bar rounding if nil.
+    var snapToGrid: ((_ bar: Double) -> Double)?
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -92,13 +94,13 @@ public struct ContainerView: View {
         onSelect: (() -> Void)? = nil,
         onPlayheadTap: ((_ timelineX: CGFloat) -> Void)? = nil,
         onDelete: (() -> Void)? = nil,
-        onMove: ((_ newStartBar: Int) -> Bool)? = nil,
-        onResizeLeft: ((_ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
-        onResizeRight: ((_ newLength: Int) -> Bool)? = nil,
-        onTrimLeft: ((_ newAudioStartOffset: Double, _ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
-        onTrimRight: ((_ newLength: Int) -> Bool)? = nil,
+        onMove: ((_ newStartBar: Double) -> Bool)? = nil,
+        onResizeLeft: ((_ newStartBar: Double, _ newLength: Double) -> Bool)? = nil,
+        onResizeRight: ((_ newLength: Double) -> Bool)? = nil,
+        onTrimLeft: ((_ newAudioStartOffset: Double, _ newStartBar: Double, _ newLength: Double) -> Bool)? = nil,
+        onTrimRight: ((_ newLength: Double) -> Bool)? = nil,
         onDoubleClick: (() -> Void)? = nil,
-        onClone: ((_ newStartBar: Int) -> Void)? = nil,
+        onClone: ((_ newStartBar: Double) -> Void)? = nil,
         onCopy: (() -> Void)? = nil,
         onCopyToSong: ((_ songID: ID<Song>) -> Void)? = nil,
         otherSongs: [(id: ID<Song>, name: String)] = [],
@@ -109,7 +111,8 @@ public struct ContainerView: View {
         onSetEnterFade: ((FadeSettings?) -> Void)? = nil,
         onSetExitFade: ((FadeSettings?) -> Void)? = nil,
         onSplit: (() -> Void)? = nil,
-        onRangeSelect: ((_ startBar: Int, _ endBar: Int) -> Void)? = nil
+        onRangeSelect: ((_ startBar: Double, _ endBar: Double) -> Void)? = nil,
+        snapToGrid: ((_ bar: Double) -> Double)? = nil
     ) {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
@@ -142,6 +145,7 @@ public struct ContainerView: View {
         self.onSetExitFade = onSetExitFade
         self.onSplit = onSplit
         self.onRangeSelect = onRangeSelect
+        self.snapToGrid = snapToGrid
     }
 
     /// Derived from SelectionState observable — only this ContainerView re-evaluates
@@ -169,7 +173,7 @@ public struct ContainerView: View {
         // Use the actual audible bars (clamped to recording end) so peaks
         // exactly match the audio — avoids slight stretch when container
         // extends past the recording due to ceil() rounding.
-        let audibleBars = min(Double(container.lengthBars), totalBars - container.audioStartOffset)
+        let audibleBars = min(container.lengthBars, totalBars - container.audioStartOffset)
         return min(1.0, CGFloat(max(0, audibleBars) / totalBars))
     }
 
@@ -178,9 +182,9 @@ public struct ContainerView: View {
     /// so the waveform should only fill the portion with audio, aligned to the leading edge.
     private var waveformWidthFraction: CGFloat {
         guard let totalBars = recordingDurationBars, totalBars > 0 else { return 1.0 }
-        let audioEnd = min(container.audioStartOffset + Double(container.lengthBars), totalBars)
+        let audioEnd = min(container.audioStartOffset + container.lengthBars, totalBars)
         let audibleBars = max(0, audioEnd - container.audioStartOffset)
-        return min(1.0, CGFloat(audibleBars / Double(container.lengthBars)))
+        return min(1.0, CGFloat(audibleBars / container.lengthBars))
     }
 
     // MARK: - Extension Preview (Resize or Trim)
@@ -214,7 +218,7 @@ public struct ContainerView: View {
     private var previewAudioStartOffset: Double {
         if isTrimmingLeft, trimLeftDelta < 0 {
             let barDelta = round(trimLeftDelta / pixelsPerBar)
-            return max(0, container.audioStartOffset + barDelta)
+            return max(0, container.audioStartOffset + Double(barDelta))
         }
         return container.audioStartOffset
     }
@@ -233,7 +237,7 @@ public struct ContainerView: View {
             return waveformLengthFraction
         }
         let barDelta = round((rightExtendPixels > 0 ? rightExtendPixels : -leftExtendPixels) / pixelsPerBar)
-        let previewLength = Double(container.lengthBars) + abs(barDelta)
+        let previewLength = container.lengthBars + Double(abs(barDelta))
         let offset = previewAudioStartOffset
         let audibleBars = min(previewLength, totalBars - offset)
         return min(1.0, CGFloat(max(0, audibleBars) / totalBars))
@@ -246,7 +250,7 @@ public struct ContainerView: View {
             return waveformWidthFraction
         }
         let barDelta = round((rightExtendPixels > 0 ? rightExtendPixels : -leftExtendPixels) / pixelsPerBar)
-        let previewLength = max(1, Double(container.lengthBars) + abs(barDelta))
+        let previewLength = max(1, container.lengthBars + Double(abs(barDelta)))
         let offset = previewAudioStartOffset
         let audioEnd = min(offset + previewLength, totalBars)
         let audibleBars = max(0, audioEnd - offset)
@@ -296,7 +300,7 @@ public struct ContainerView: View {
                 let isInheritedMIDI = isClone && !overriddenFields.contains(.midiSequence)
                 MIDINoteMinimapView(
                     notes: sequence.notes,
-                    containerLengthBars: container.lengthBars,
+                    containerLengthBars: Int(container.lengthBars),
                     beatsPerBar: 4,
                     color: trackColor.opacity(isInheritedMIDI ? 0.4 : 1.0)
                 )
@@ -309,7 +313,7 @@ public struct ContainerView: View {
             if !container.automationLanes.isEmpty {
                 AutomationOverlayView(
                     automationLanes: container.automationLanes,
-                    containerLengthBars: container.lengthBars,
+                    containerLengthBars: Int(container.lengthBars),
                     pixelsPerBar: pixelsPerBar,
                     height: height
                 )
@@ -344,7 +348,7 @@ public struct ContainerView: View {
 
             // Persistent range selection highlight (from SelectionState)
             if let range = selectionState?.rangeSelection, range.containerID == container.id {
-                let rangeStartX = CGFloat(range.startBar - container.startBar) * pixelsPerBar
+                let rangeStartX = CGFloat(Double(range.startBar) - container.startBar) * pixelsPerBar
                 let rangeWidth = CGFloat(range.endBar - range.startBar) * pixelsPerBar
                 Rectangle()
                     .fill(Color.accentColor.opacity(0.2))
@@ -451,7 +455,7 @@ public struct ContainerView: View {
                         .lineLimit(1)
                 }
                 HStack(spacing: 2) {
-                    Text("\(container.lengthBars) bar\(container.lengthBars == 1 ? "" : "s")")
+                    Text(formatBarLength(container.lengthBars))
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                     if isClone && !overriddenFields.isEmpty {
@@ -689,6 +693,20 @@ public struct ContainerView: View {
         return 0
     }
 
+    /// Snaps a bar delta to the grid resolution by snapping the target bar and returning the delta.
+    private func snappedBarDelta(from translation: CGFloat) -> Double {
+        let rawTarget = container.startBar + Double(translation) / Double(pixelsPerBar)
+        let snapped = snapToGrid?(rawTarget) ?? rawTarget.rounded()
+        return snapped - container.startBar
+    }
+
+    /// Snaps a length delta to the grid resolution.
+    private func snappedLengthDelta(from translation: CGFloat) -> Double {
+        let rawTarget = container.lengthBars + Double(translation) / Double(pixelsPerBar)
+        let snapped = snapToGrid?(container.startBar + rawTarget) ?? (container.startBar + rawTarget).rounded()
+        return snapped - container.startBar - container.lengthBars
+    }
+
     // MARK: - Unified Smart Gesture
 
     /// Uses the stable "trackLane" coordinate space from the parent TrackLaneView.
@@ -711,8 +729,8 @@ public struct ContainerView: View {
                     activeDragZone = zone
                 }
 
-                // Translation is stable in trackLane space
-                let barDelta = round(value.translation.width / pixelsPerBar)
+                // Translation is stable in trackLane space — snap to grid
+                let barDelta = snappedBarDelta(from: value.translation.width)
 
                 switch zone {
                 case .fadeLeft:
@@ -727,19 +745,19 @@ public struct ContainerView: View {
 
                 case .resizeLeft:
                     isResizingLeft = true
-                    resizeLeftDelta = barDelta * pixelsPerBar
+                    resizeLeftDelta = CGFloat(barDelta) * pixelsPerBar
 
                 case .resizeRight:
                     isResizingRight = true
-                    resizeRightDelta = barDelta * pixelsPerBar
+                    resizeRightDelta = CGFloat(barDelta) * pixelsPerBar
 
                 case .trimLeft:
                     isTrimmingLeft = true
-                    trimLeftDelta = barDelta * pixelsPerBar
+                    trimLeftDelta = CGFloat(barDelta) * pixelsPerBar
 
                 case .trimRight:
                     isTrimmingRight = true
-                    trimRightDelta = barDelta * pixelsPerBar
+                    trimRightDelta = CGFloat(barDelta) * pixelsPerBar
 
                 case .selector:
                     // Convert trackLane coordinates to local for bar computation
@@ -747,20 +765,20 @@ public struct ContainerView: View {
                     let localCurrentX = value.location.x - containerOriginX
                     let rawStartX = min(localStartX, localCurrentX)
                     let rawEndX = max(localStartX, localCurrentX)
-                    let startBarLocal = max(0, Int(round(rawStartX / pixelsPerBar)))
-                    let endBarLocal = min(container.lengthBars, Int(round(rawEndX / pixelsPerBar)))
-                    selectorDragStartX = CGFloat(startBarLocal) * pixelsPerBar
-                    selectorDragCurrentX = CGFloat(endBarLocal) * pixelsPerBar
+                    let startBarLocal = max(0, round(rawStartX / pixelsPerBar))
+                    let endBarLocal = min(container.lengthBars, round(rawEndX / pixelsPerBar))
+                    selectorDragStartX = startBarLocal * pixelsPerBar
+                    selectorDragCurrentX = endBarLocal * pixelsPerBar
 
                 case .move, .trimMove:
                     isDragging = true
-                    dragOffset = value.translation.width
+                    dragOffset = CGFloat(barDelta) * pixelsPerBar
                 }
             }
             .onEnded { value in
                 let zone = activeDragZone ?? .move
                 activeDragZone = nil
-                let barDelta = Int(round(value.translation.width / pixelsPerBar))
+                let barDelta = snappedBarDelta(from: value.translation.width)
 
                 switch zone {
                 case .fadeLeft:
@@ -793,7 +811,7 @@ public struct ContainerView: View {
                     isResizingLeft = false
                     let newStart = container.startBar + barDelta
                     let newLength = container.lengthBars - barDelta
-                    if newLength >= 1 && newStart >= 1 {
+                    if newLength >= 1.0 && newStart >= 1.0 {
                         let _ = onResizeLeft?(newStart, newLength)
                     }
                     resizeLeftDelta = 0
@@ -801,7 +819,7 @@ public struct ContainerView: View {
                 case .resizeRight:
                     isResizingRight = false
                     let newLength = container.lengthBars + barDelta
-                    if newLength >= 1 {
+                    if newLength >= 1.0 {
                         let _ = onResizeRight?(newLength)
                     }
                     resizeRightDelta = 0
@@ -810,8 +828,8 @@ public struct ContainerView: View {
                     isTrimmingLeft = false
                     let newStart = container.startBar + barDelta
                     let newLength = container.lengthBars - barDelta
-                    let newOffset = container.audioStartOffset + Double(barDelta)
-                    if newLength >= 1 && newStart >= 1 && newOffset >= 0 {
+                    let newOffset = container.audioStartOffset + barDelta
+                    if newLength >= 1.0 && newStart >= 1.0 && newOffset >= 0 {
                         let _ = onTrimLeft?(newOffset, newStart, newLength)
                     }
                     trimLeftDelta = 0
@@ -819,15 +837,15 @@ public struct ContainerView: View {
                 case .trimRight:
                     isTrimmingRight = false
                     let newLength = container.lengthBars + barDelta
-                    if newLength >= 1 {
+                    if newLength >= 1.0 {
                         let _ = onTrimRight?(newLength)
                     }
                     trimRightDelta = 0
 
                 case .selector:
                     if let startX = selectorDragStartX, let endX = selectorDragCurrentX, endX > startX {
-                        let startBar = container.startBar + max(0, Int(round(startX / pixelsPerBar)))
-                        let endBar = container.startBar + min(container.lengthBars, Int(round(endX / pixelsPerBar)))
+                        let startBar = container.startBar + max(0, round(startX / pixelsPerBar))
+                        let endBar = container.startBar + min(container.lengthBars, round(endX / pixelsPerBar))
                         if endBar > startBar {
                             onSelect?()
                             onRangeSelect?(startBar, endBar)
@@ -850,14 +868,14 @@ public struct ContainerView: View {
             .modifiers(.option)
             .onChanged { value in
                 isAltDragging = true
-                let barDelta = round(value.translation.width / pixelsPerBar)
-                altDragOffset = barDelta * pixelsPerBar
+                let barDelta = snappedBarDelta(from: value.translation.width)
+                altDragOffset = CGFloat(barDelta) * pixelsPerBar
             }
             .onEnded { value in
                 isAltDragging = false
-                let barDelta = Int(round(value.translation.width / pixelsPerBar))
+                let barDelta = snappedBarDelta(from: value.translation.width)
                 let newStart = container.startBar + barDelta
-                if newStart >= 1 {
+                if newStart >= 1.0 {
                     onClone?(newStart)
                 }
                 altDragOffset = 0
@@ -883,6 +901,14 @@ public struct ContainerView: View {
     }
 
     private static let fadeHandleSize: CGFloat = 10
+
+    private func formatBarLength(_ bars: Double) -> String {
+        if bars == bars.rounded() && bars == Double(Int(bars)) {
+            let intBars = Int(bars)
+            return "\(intBars) bar\(intBars == 1 ? "" : "s")"
+        }
+        return String(format: "%.1f bars", bars)
+    }
 }
 
 // MARK: - Equatable

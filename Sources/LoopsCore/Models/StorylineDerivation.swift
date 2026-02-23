@@ -124,10 +124,10 @@ public enum StorylineDerivation {
     }
 
     private static func containersOverlap(
-        containerStart: Int, containerEnd: Int,
+        containerStart: Double, containerEnd: Double,
         sectionStart: Int, sectionEnd: Int
     ) -> Bool {
-        containerStart < sectionEnd && containerEnd > sectionStart
+        containerStart < Double(sectionEnd) && containerEnd > Double(sectionStart)
     }
 
     private static func describeAction(_ action: ContainerAction) -> String {

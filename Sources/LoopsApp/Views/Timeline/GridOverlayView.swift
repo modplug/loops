@@ -7,22 +7,26 @@ public struct GridOverlayView: View {
     let pixelsPerBar: CGFloat
     let timeSignature: TimeSignature
     let height: CGFloat
+    let gridMode: GridMode
 
     public init(
         totalBars: Int,
         pixelsPerBar: CGFloat,
         timeSignature: TimeSignature,
-        height: CGFloat
+        height: CGFloat,
+        gridMode: GridMode = .adaptive
     ) {
         self.totalBars = totalBars
         self.pixelsPerBar = pixelsPerBar
         self.timeSignature = timeSignature
         self.height = height
+        self.gridMode = gridMode
     }
 
     public var body: some View {
         Canvas { context, size in
             let totalHeight = size.height
+            let pixelsPerBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
 
             // Alternating bar shading (Bitwig-style)
             for bar in 0..<totalBars {
@@ -42,8 +46,7 @@ public struct GridOverlayView: View {
                 barPath.addLine(to: CGPoint(x: x, y: totalHeight))
                 context.stroke(barPath, with: .color(.secondary.opacity(0.25)), lineWidth: 0.5)
 
-                // Beat lines (lighter)
-                let pixelsPerBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
+                // Beat lines — always drawn when space permits (structural)
                 if pixelsPerBar > 50 && bar < totalBars {
                     for beat in 1..<timeSignature.beatsPerBar {
                         let beatX = x + CGFloat(beat) * pixelsPerBeat
@@ -54,34 +57,14 @@ public struct GridOverlayView: View {
                     }
                 }
 
-                // 1/16 subdivision lines
-                if pixelsPerBeat >= 80 && bar < totalBars {
-                    let subdivisions = timeSignature.beatsPerBar * 4
-                    let pixelsPerSub = pixelsPerBar / CGFloat(subdivisions)
-                    for sub in 1..<subdivisions {
-                        // Skip positions that coincide with beat lines
-                        if sub % 4 == 0 { continue }
-                        let subX = x + CGFloat(sub) * pixelsPerSub
-                        var subPath = Path()
-                        subPath.move(to: CGPoint(x: subX, y: 0))
-                        subPath.addLine(to: CGPoint(x: subX, y: totalHeight))
-                        context.stroke(subPath, with: .color(.secondary.opacity(0.04)), lineWidth: 0.5)
-                    }
-                }
+                guard bar < totalBars else { continue }
 
-                // 1/32 subdivision lines
-                if pixelsPerBeat >= 150 && bar < totalBars {
-                    let subdivisions = timeSignature.beatsPerBar * 8
-                    let pixelsPerSub = pixelsPerBar / CGFloat(subdivisions)
-                    for sub in 1..<subdivisions {
-                        // Skip positions that coincide with 1/16 or beat lines
-                        if sub % 2 == 0 { continue }
-                        let subX = x + CGFloat(sub) * pixelsPerSub
-                        var subPath = Path()
-                        subPath.move(to: CGPoint(x: subX, y: 0))
-                        subPath.addLine(to: CGPoint(x: subX, y: totalHeight))
-                        context.stroke(subPath, with: .color(.secondary.opacity(0.02)), lineWidth: 0.5)
-                    }
+                // Subdivision lines based on grid mode
+                switch gridMode {
+                case .adaptive:
+                    drawAdaptiveSubdivisions(context: &context, barX: x, totalHeight: totalHeight, pixelsPerBeat: pixelsPerBeat)
+                case .fixed(let resolution):
+                    drawFixedSubdivisions(context: &context, barX: x, totalHeight: totalHeight, resolution: resolution)
                 }
             }
         }
@@ -89,5 +72,63 @@ public struct GridOverlayView: View {
             width: CGFloat(totalBars) * pixelsPerBar,
             height: height
         )
+    }
+
+    private func drawAdaptiveSubdivisions(context: inout GraphicsContext, barX: CGFloat, totalHeight: CGFloat, pixelsPerBeat: CGFloat) {
+        // 1/16 subdivision lines
+        if pixelsPerBeat >= 80 {
+            let subdivisions = timeSignature.beatsPerBar * 4
+            let pixelsPerSub = pixelsPerBar / CGFloat(subdivisions)
+            for sub in 1..<subdivisions {
+                if sub % 4 == 0 { continue }
+                let subX = barX + CGFloat(sub) * pixelsPerSub
+                var subPath = Path()
+                subPath.move(to: CGPoint(x: subX, y: 0))
+                subPath.addLine(to: CGPoint(x: subX, y: totalHeight))
+                context.stroke(subPath, with: .color(.secondary.opacity(0.04)), lineWidth: 0.5)
+            }
+        }
+
+        // 1/32 subdivision lines
+        if pixelsPerBeat >= 150 {
+            let subdivisions = timeSignature.beatsPerBar * 8
+            let pixelsPerSub = pixelsPerBar / CGFloat(subdivisions)
+            for sub in 1..<subdivisions {
+                if sub % 2 == 0 { continue }
+                let subX = barX + CGFloat(sub) * pixelsPerSub
+                var subPath = Path()
+                subPath.move(to: CGPoint(x: subX, y: 0))
+                subPath.addLine(to: CGPoint(x: subX, y: totalHeight))
+                context.stroke(subPath, with: .color(.secondary.opacity(0.02)), lineWidth: 0.5)
+            }
+        }
+    }
+
+    private func drawFixedSubdivisions(context: inout GraphicsContext, barX: CGFloat, totalHeight: CGFloat, resolution: SnapResolution) {
+        let beatsPerBar = Double(timeSignature.beatsPerBar)
+        let subsPerBeat = resolution.subdivisionsPerBeat
+        let totalSubs = Int(ceil(beatsPerBar * subsPerBeat))
+        let pixelsPerSub = pixelsPerBar / CGFloat(beatsPerBar * subsPerBeat)
+
+        // Skip if lines would be too dense
+        guard pixelsPerSub >= 4 else { return }
+
+        let beatsPerBarInt = timeSignature.beatsPerBar
+        let opacity: Double = resolution.isTriplet ? 0.06 : 0.04
+
+        for sub in 1..<totalSubs {
+            // Skip positions that coincide with beat lines
+            let beatPosition = Double(sub) / subsPerBeat
+            let isOnBeat = abs(beatPosition - beatPosition.rounded()) < 0.001
+                && Int(beatPosition.rounded()) > 0
+                && Int(beatPosition.rounded()) < beatsPerBarInt
+            if isOnBeat { continue }
+
+            let subX = barX + CGFloat(Double(sub)) * pixelsPerSub
+            var subPath = Path()
+            subPath.move(to: CGPoint(x: subX, y: 0))
+            subPath.addLine(to: CGPoint(x: subX, y: totalHeight))
+            context.stroke(subPath, with: .color(.secondary.opacity(opacity)), lineWidth: 0.5)
+        }
     }
 }

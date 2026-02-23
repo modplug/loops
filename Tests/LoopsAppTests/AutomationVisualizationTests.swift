@@ -11,19 +11,19 @@ struct AutomationVisualizationTests {
     @Test("Breakpoint position to x-coordinate mapping")
     func positionToX() {
         // position 0 at start of container → x = 0
-        let x0 = AutomationCoordinateMapping.xForPosition(0.0, containerLengthBars: 4, pixelsPerBar: 100)
+        let x0 = AutomationCoordinateMapping.xForPosition(0.0, containerLengthBars: 4.0, pixelsPerBar: 100)
         #expect(x0 == 0.0)
 
         // position 2.0 (2 bars in) with 100px/bar → x = 200
-        let x2 = AutomationCoordinateMapping.xForPosition(2.0, containerLengthBars: 4, pixelsPerBar: 100)
+        let x2 = AutomationCoordinateMapping.xForPosition(2.0, containerLengthBars: 4.0, pixelsPerBar: 100)
         #expect(x2 == 200.0)
 
         // position at end of 4-bar container → x = 400
-        let xEnd = AutomationCoordinateMapping.xForPosition(4.0, containerLengthBars: 4, pixelsPerBar: 100)
+        let xEnd = AutomationCoordinateMapping.xForPosition(4.0, containerLengthBars: 4.0, pixelsPerBar: 100)
         #expect(xEnd == 400.0)
 
         // fractional position: 1.5 bars → x = 150
-        let xFrac = AutomationCoordinateMapping.xForPosition(1.5, containerLengthBars: 4, pixelsPerBar: 100)
+        let xFrac = AutomationCoordinateMapping.xForPosition(1.5, containerLengthBars: 4.0, pixelsPerBar: 100)
         #expect(xFrac == 150.0)
     }
 
@@ -51,23 +51,23 @@ struct AutomationVisualizationTests {
     @Test("X-coordinate to breakpoint position mapping")
     func xToPosition() {
         // x = 0 → position = 0
-        let p0 = AutomationCoordinateMapping.positionForX(0, containerLengthBars: 4, pixelsPerBar: 100)
+        let p0 = AutomationCoordinateMapping.positionForX(0, containerLengthBars: 4.0, pixelsPerBar: 100)
         #expect(p0 == 0.0)
 
         // x = 200 with 100px/bar → position = 2.0
-        let p2 = AutomationCoordinateMapping.positionForX(200, containerLengthBars: 4, pixelsPerBar: 100)
+        let p2 = AutomationCoordinateMapping.positionForX(200, containerLengthBars: 4.0, pixelsPerBar: 100)
         #expect(p2 == 2.0)
 
         // x = 400 → position = 4.0 (clamped to container length)
-        let pEnd = AutomationCoordinateMapping.positionForX(400, containerLengthBars: 4, pixelsPerBar: 100)
+        let pEnd = AutomationCoordinateMapping.positionForX(400, containerLengthBars: 4.0, pixelsPerBar: 100)
         #expect(pEnd == 4.0)
 
         // Negative x → clamped to 0
-        let pNeg = AutomationCoordinateMapping.positionForX(-50, containerLengthBars: 4, pixelsPerBar: 100)
+        let pNeg = AutomationCoordinateMapping.positionForX(-50, containerLengthBars: 4.0, pixelsPerBar: 100)
         #expect(pNeg == 0.0)
 
         // Beyond container → clamped to container length
-        let pBeyond = AutomationCoordinateMapping.positionForX(600, containerLengthBars: 4, pixelsPerBar: 100)
+        let pBeyond = AutomationCoordinateMapping.positionForX(600, containerLengthBars: 4.0, pixelsPerBar: 100)
         #expect(pBeyond == 4.0)
     }
 
@@ -98,7 +98,7 @@ struct AutomationVisualizationTests {
 
     @Test("Round-trip: position → x → position")
     func positionRoundTrip() {
-        let containerLength = 8
+        let containerLength = 8.0
         let pixelsPerBar: CGFloat = 120
 
         for position in [0.0, 1.0, 2.5, 4.0, 7.99, 8.0] {
@@ -124,7 +124,7 @@ struct AutomationVisualizationTests {
     @Test("Add breakpoint at click position produces correct bar/value")
     func addBreakpointAtClickPosition() {
         // Simulate clicking at x=150, y=80 in a 4-bar container at 100px/bar, height 200
-        let containerLengthBars = 4
+        let containerLengthBars = 4.0
         let pixelsPerBar: CGFloat = 100
         let height: CGFloat = 200
 
@@ -150,7 +150,7 @@ struct AutomationVisualizationTests {
 
     @Test("Drag breakpoint updates position and value correctly")
     func dragBreakpointUpdates() {
-        let containerLengthBars = 8
+        let containerLengthBars = 8.0
         let pixelsPerBar: CGFloat = 120
         let height: CGFloat = 160
 
@@ -176,7 +176,7 @@ struct AutomationVisualizationTests {
 
     @Test("Drag breakpoint clamps to container bounds")
     func dragBreakpointClamps() {
-        let containerLengthBars = 4
+        let containerLengthBars = 4.0
         let pixelsPerBar: CGFloat = 100
         let height: CGFloat = 200
 

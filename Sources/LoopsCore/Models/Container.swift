@@ -7,8 +7,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     public var id: ID<Container>
     public var name: String
     /// 1-based
-    public var startBar: Int
-    public var lengthBars: Int
+    public var startBar: Double
+    public var lengthBars: Double
     public var sourceRecordingID: ID<SourceRecording>?
     /// All containers with same linkGroupID share a recording.
     public var linkGroupID: ID<LinkGroup>?
@@ -50,7 +50,7 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     /// Used for non-destructive trim/crop of the left edge.
     public var audioStartOffset: Double
 
-    public var endBar: Int { startBar + lengthBars }
+    public var endBar: Double { startBar + lengthBars }
 
     /// Whether this container has MIDI content.
     public var hasMIDI: Bool { midiSequence != nil }
@@ -61,8 +61,8 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
     public init(
         id: ID<Container> = ID(),
         name: String = "Container",
-        startBar: Int = 1,
-        lengthBars: Int = 4,
+        startBar: Double = 1.0,
+        lengthBars: Double = 4.0,
         sourceRecordingID: ID<SourceRecording>? = nil,
         linkGroupID: ID<LinkGroup>? = nil,
         loopSettings: LoopSettings = LoopSettings(),
@@ -123,8 +123,10 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(ID.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
-        startBar = try c.decode(Int.self, forKey: .startBar)
-        lengthBars = try c.decode(Int.self, forKey: .lengthBars)
+        startBar = try (try? c.decode(Double.self, forKey: .startBar))
+            ?? Double(c.decode(Int.self, forKey: .startBar))
+        lengthBars = try (try? c.decode(Double.self, forKey: .lengthBars))
+            ?? Double(c.decode(Int.self, forKey: .lengthBars))
         sourceRecordingID = try c.decodeIfPresent(LoopsCore.ID<SourceRecording>.self, forKey: .sourceRecordingID)
         linkGroupID = try c.decodeIfPresent(LoopsCore.ID<LinkGroup>.self, forKey: .linkGroupID)
         loopSettings = try c.decode(LoopSettings.self, forKey: .loopSettings)
@@ -157,7 +159,13 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
             insertEffects = source.insertEffects
             isEffectChainBypassed = source.isEffectChainBypassed
         case .automation:
-            automationLanes = source.automationLanes
+            automationLanes = source.automationLanes.map { lane in
+                var updated = lane
+                if updated.targetPath.containerID == source.id {
+                    updated.targetPath.containerID = self.id
+                }
+                return updated
+            }
         case .fades:
             enterFade = source.enterFade
             exitFade = source.exitFade
@@ -194,7 +202,13 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
             result.isEffectChainBypassed = parent.isEffectChainBypassed
         }
         if !overriddenFields.contains(.automation) {
-            result.automationLanes = parent.automationLanes
+            result.automationLanes = parent.automationLanes.map { lane in
+                var updated = lane
+                if updated.targetPath.containerID == parent.id {
+                    updated.targetPath.containerID = result.id
+                }
+                return updated
+            }
         }
         if !overriddenFields.contains(.fades) {
             result.enterFade = parent.enterFade

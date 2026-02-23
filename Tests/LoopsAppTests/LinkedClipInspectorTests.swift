@@ -402,6 +402,171 @@ struct LinkedClipInspectorTests {
         #expect(target.lengthBars == 8)
     }
 
+    // MARK: - Automation ContainerID Remapping
+
+    @Test("copyField(.automation) remaps containerID from source to self")
+    func copyFieldAutomationRemapsContainerID() {
+        let sourceID = ID<Container>()
+        let trackID = ID<Track>()
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: sourceID, effectIndex: 0, parameterAddress: 42),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 0.0),
+                AutomationBreakpoint(position: 2, value: 1.0)
+            ]
+        )
+        let source = Container(id: sourceID, name: "Source", startBar: 1, lengthBars: 4, automationLanes: [lane])
+
+        var target = Container(name: "Target", startBar: 5, lengthBars: 4)
+        target.copyField(from: source, field: .automation)
+
+        #expect(target.automationLanes.count == 1)
+        // containerID should be remapped to target's own ID
+        #expect(target.automationLanes[0].targetPath.containerID == target.id)
+        // Other path fields unchanged
+        #expect(target.automationLanes[0].targetPath.trackID == trackID)
+        #expect(target.automationLanes[0].targetPath.effectIndex == 0)
+        #expect(target.automationLanes[0].targetPath.parameterAddress == 42)
+        // Breakpoints preserved
+        #expect(target.automationLanes[0].breakpoints.count == 2)
+    }
+
+    @Test("copyField(.automation) does not remap lanes targeting other containers")
+    func copyFieldAutomationPreservesForeignContainerID() {
+        let sourceID = ID<Container>()
+        let otherContainerID = ID<Container>()
+        let trackID = ID<Track>()
+        // Lane that targets a different container (not the source)
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: otherContainerID, effectIndex: 1, parameterAddress: 99),
+            breakpoints: [AutomationBreakpoint(position: 0, value: 0.5)]
+        )
+        let source = Container(id: sourceID, name: "Source", startBar: 1, lengthBars: 4, automationLanes: [lane])
+
+        var target = Container(name: "Target", startBar: 5, lengthBars: 4)
+        target.copyField(from: source, field: .automation)
+
+        // Should NOT be remapped — it's targeting a different container
+        #expect(target.automationLanes[0].targetPath.containerID == otherContainerID)
+    }
+
+    @Test("copyField(.automation) handles mix of own and foreign containerIDs")
+    func copyFieldAutomationMixedContainerIDs() {
+        let sourceID = ID<Container>()
+        let otherID = ID<Container>()
+        let trackID = ID<Track>()
+        let ownLane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: sourceID, effectIndex: 0, parameterAddress: 1),
+            breakpoints: [AutomationBreakpoint(position: 0, value: 0.0)]
+        )
+        let foreignLane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: otherID, effectIndex: 0, parameterAddress: 2),
+            breakpoints: [AutomationBreakpoint(position: 0, value: 1.0)]
+        )
+        let trackLane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 3),
+            breakpoints: [AutomationBreakpoint(position: 0, value: 0.5)]
+        )
+        let source = Container(
+            id: sourceID, name: "Source", startBar: 1, lengthBars: 4,
+            automationLanes: [ownLane, foreignLane, trackLane]
+        )
+
+        var target = Container(name: "Target", startBar: 5, lengthBars: 4)
+        target.copyField(from: source, field: .automation)
+
+        #expect(target.automationLanes.count == 3)
+        // Own lane remapped
+        #expect(target.automationLanes[0].targetPath.containerID == target.id)
+        // Foreign lane preserved
+        #expect(target.automationLanes[1].targetPath.containerID == otherID)
+        // Track-level lane (nil containerID) preserved
+        #expect(target.automationLanes[2].targetPath.containerID == nil)
+    }
+
+    @Test("resolved(parent:) remaps inherited automation containerID to clone")
+    func resolvedRemapsAutomationContainerID() {
+        let parentID = ID<Container>()
+        let trackID = ID<Track>()
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: parentID, effectIndex: 0, parameterAddress: 42),
+            breakpoints: [
+                AutomationBreakpoint(position: 0, value: 0.0),
+                AutomationBreakpoint(position: 4, value: 1.0)
+            ]
+        )
+        let parent = Container(id: parentID, name: "Parent", startBar: 1, lengthBars: 4, automationLanes: [lane])
+
+        let clone = Container(name: "Clone", startBar: 5, lengthBars: 4, parentContainerID: parentID)
+        // Clone has no automation override, so resolved should inherit from parent
+        #expect(!clone.overriddenFields.contains(.automation))
+
+        let resolved = clone.resolved(parent: parent)
+        #expect(resolved.automationLanes.count == 1)
+        // containerID should be the clone's own ID, not the parent's
+        #expect(resolved.automationLanes[0].targetPath.containerID == resolved.id)
+        #expect(resolved.automationLanes[0].targetPath.containerID != parentID)
+        // Breakpoints preserved
+        #expect(resolved.automationLanes[0].breakpoints.count == 2)
+        #expect(resolved.automationLanes[0].breakpoints[0].value == 0.0)
+        #expect(resolved.automationLanes[0].breakpoints[1].value == 1.0)
+    }
+
+    @Test("resolved(parent:) does not remap automation when clone overrides")
+    func resolvedPreservesOverriddenAutomation() {
+        let parentID = ID<Container>()
+        let trackID = ID<Track>()
+        let parentLane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: parentID, effectIndex: 0, parameterAddress: 42),
+            breakpoints: [AutomationBreakpoint(position: 0, value: 0.0)]
+        )
+        let parent = Container(id: parentID, name: "Parent", startBar: 1, lengthBars: 4, automationLanes: [parentLane])
+
+        let cloneID = ID<Container>()
+        let cloneLane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: cloneID, effectIndex: 0, parameterAddress: 99),
+            breakpoints: [AutomationBreakpoint(position: 0, value: 0.7)]
+        )
+        let clone = Container(id: cloneID, name: "Clone", startBar: 5, lengthBars: 4, automationLanes: [cloneLane], parentContainerID: parentID, overriddenFields: [.automation])
+
+        let resolved = clone.resolved(parent: parent)
+        // Should use clone's own lanes, not parent's
+        #expect(resolved.automationLanes.count == 1)
+        #expect(resolved.automationLanes[0].targetPath.parameterAddress == 99)
+        #expect(resolved.automationLanes[0].targetPath.containerID == cloneID)
+    }
+
+    @Test("resolved(using:) lookup remaps automation containerID end-to-end")
+    @MainActor
+    func resolvedUsingLookupRemapsAutomation() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Add automation to parent targeting its own containerID
+        let lane = AutomationLane(
+            targetPath: EffectPath(trackID: trackID, containerID: parentID, effectIndex: 0, parameterAddress: 42),
+            breakpoints: [AutomationBreakpoint(position: 0, value: 0.0), AutomationBreakpoint(position: 4, value: 1.0)]
+        )
+        vm.addAutomationLane(containerID: parentID, lane: lane)
+
+        // Clone the parent
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Resolve the clone using the full lookup
+        let allContainers = vm.project.songs[0].tracks[0].containers
+        let clone = allContainers.first { $0.id == cloneID }!
+        let resolved = clone.resolved { id in allContainers.first(where: { $0.id == id }) }
+
+        // Inherited automation should target the clone, not the parent
+        #expect(resolved.automationLanes.count == 1)
+        #expect(resolved.automationLanes[0].targetPath.containerID == cloneID)
+        #expect(resolved.automationLanes[0].targetPath.containerID != parentID)
+    }
+
     // MARK: - Resolved Container Inspector Display
 
     @Test("Clone with no effect override shows parent's current effects via resolved()")

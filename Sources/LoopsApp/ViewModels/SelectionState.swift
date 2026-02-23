@@ -52,8 +52,8 @@ public final class SelectionState {
 
     public struct RangeSelection: Equatable {
         public let containerID: ID<Container>
-        public let startBar: Int
-        public let endBar: Int
+        public let startBar: Double
+        public let endBar: Double
     }
 
     public init() {}

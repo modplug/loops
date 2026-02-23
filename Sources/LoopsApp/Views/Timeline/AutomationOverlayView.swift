@@ -83,7 +83,7 @@ struct AutomationOverlayView: View {
 /// These are used by both overlay and sub-lane views.
 enum AutomationCoordinateMapping {
     /// Converts a breakpoint position (bar offset) to an x-pixel coordinate within a container.
-    static func xForPosition(_ position: Double, containerLengthBars: Int, pixelsPerBar: CGFloat) -> CGFloat {
+    static func xForPosition(_ position: Double, containerLengthBars: Double, pixelsPerBar: CGFloat) -> CGFloat {
         CGFloat(position) * pixelsPerBar
     }
 
@@ -94,9 +94,9 @@ enum AutomationCoordinateMapping {
     }
 
     /// Converts an x-pixel coordinate within a container to a breakpoint position (bar offset).
-    static func positionForX(_ x: CGFloat, containerLengthBars: Int, pixelsPerBar: CGFloat) -> Double {
+    static func positionForX(_ x: CGFloat, containerLengthBars: Double, pixelsPerBar: CGFloat) -> Double {
         let position = Double(x) / Double(pixelsPerBar)
-        return max(0, min(position, Double(containerLengthBars)))
+        return max(0, min(position, containerLengthBars))
     }
 
     /// Converts a y-pixel coordinate within a given height to a breakpoint value (0-1).

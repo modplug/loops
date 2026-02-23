@@ -32,8 +32,8 @@ public final class ContainerRecorder: @unchecked Sendable {
     private struct ArmedContainer {
         let containerID: ID<Container>
         let trackID: ID<Track>
-        let startBar: Int
-        let endBar: Int
+        let startBar: Double
+        let endBar: Double
     }
 
     private var armedContainers: [ArmedContainer] = []
@@ -65,7 +65,7 @@ public final class ContainerRecorder: @unchecked Sendable {
     /// Starts monitoring armed containers during playback.
     /// Installs an input tap and begins tracking bar position from sample count.
     public func startMonitoring(
-        armedContainers: [(containerID: ID<Container>, trackID: ID<Track>, startBar: Int, endBar: Int)],
+        armedContainers: [(containerID: ID<Container>, trackID: ID<Track>, startBar: Double, endBar: Double)],
         fromBar: Double,
         bpm: Double,
         timeSignature: TimeSignature,
@@ -180,7 +180,7 @@ public final class ContainerRecorder: @unchecked Sendable {
         // Find which armed container (if any) the playhead is in
         var targetArmed: ArmedContainer?
         for ac in armed {
-            if currentBar >= Double(ac.startBar) && currentBar < Double(ac.endBar) {
+            if currentBar >= ac.startBar && currentBar < ac.endBar {
                 targetArmed = ac
                 break
             }

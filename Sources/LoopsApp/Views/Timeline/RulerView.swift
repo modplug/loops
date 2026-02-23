@@ -11,12 +11,14 @@ public struct RulerView: View {
     var onRangeSelect: ((ClosedRange<Int>) -> Void)?
     var onRangeDeselect: (() -> Void)?
     var onPlayheadPosition: ((Double) -> Void)?
+    /// Injected snap closure from TimelineViewModel.snappedBar().
+    var snapBarForX: ((CGFloat) -> Double)?
 
     @State private var dragStartBar: Int?
     @State private var dragCurrentBar: Int?
     @State private var isScrubbing: Bool = false
 
-    public init(totalBars: Int, pixelsPerBar: CGFloat, timeSignature: TimeSignature, selectedRange: ClosedRange<Int>? = nil, onRangeSelect: ((ClosedRange<Int>) -> Void)? = nil, onRangeDeselect: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil) {
+    public init(totalBars: Int, pixelsPerBar: CGFloat, timeSignature: TimeSignature, selectedRange: ClosedRange<Int>? = nil, onRangeSelect: ((ClosedRange<Int>) -> Void)? = nil, onRangeDeselect: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil, snapBarForX: ((CGFloat) -> Double)? = nil) {
         self.totalBars = totalBars
         self.pixelsPerBar = pixelsPerBar
         self.timeSignature = timeSignature
@@ -24,6 +26,7 @@ public struct RulerView: View {
         self.onRangeSelect = onRangeSelect
         self.onRangeDeselect = onRangeDeselect
         self.onPlayheadPosition = onPlayheadPosition
+        self.snapBarForX = snapBarForX
     }
 
     /// The active range: either from an in-progress drag or the committed selection.
@@ -150,8 +153,12 @@ public struct RulerView: View {
     }
 
     /// Returns a snapped bar position (Double) for the given x-coordinate.
-    /// Snaps to beat if zoomed in enough, otherwise to whole bar.
+    /// Uses injected snap closure if available, otherwise falls back to local logic.
     private func snappedBarForX(_ x: CGFloat) -> Double {
+        if let snap = snapBarForX {
+            return snap(x)
+        }
+        // Fallback: snap to beat if zoomed in enough, otherwise to whole bar
         let clampedX = max(x, 0)
         let rawBar = (Double(clampedX) / Double(pixelsPerBar)) + 1.0
         let ppBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)

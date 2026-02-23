@@ -23,8 +23,8 @@ struct StorylineDerivationTests {
 
     private func makeContainer(
         name: String = "Container",
-        startBar: Int = 1,
-        lengthBars: Int = 4,
+        startBar: Double = 1.0,
+        lengthBars: Double = 4.0,
         onEnterActions: [ContainerAction] = [],
         onExitActions: [ContainerAction] = [],
         insertEffects: [InsertEffect] = [],

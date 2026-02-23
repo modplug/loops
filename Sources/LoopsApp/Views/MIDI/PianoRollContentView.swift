@@ -108,7 +108,7 @@ private struct VerticalScrollObserver: NSViewRepresentable {
 /// This avoids SwiftUI's broken hit testing with `.position()` inside ZStack.
 struct PianoRollContentView: View {
     let sequence: MIDISequence
-    let lengthBars: Int
+    let lengthBars: Double
     let timeSignature: TimeSignature
     @Binding var snapResolution: SnapResolution
     @Binding var pixelsPerBeat: CGFloat
@@ -120,7 +120,7 @@ struct PianoRollContentView: View {
     /// Container-relative playhead beat (nil = not visible).
     var playheadBeat: Double?
     /// Absolute bar number for the container start (1-based), used for ruler labels.
-    var containerStartBar: Int = 1
+    var containerStartBar: Double = 1.0
 
     /// Opacity multiplier for note fills (1.0 = full, 0.75 = inline transparency).
     var noteOpacity: Double = 1.0
@@ -162,7 +162,7 @@ struct PianoRollContentView: View {
     }
 
     private var totalBeats: Double {
-        Double(lengthBars * timeSignature.beatsPerBar)
+        lengthBars * Double(timeSignature.beatsPerBar)
     }
 
     private var totalWidth: CGFloat {
@@ -290,7 +290,7 @@ struct PianoRollContentView: View {
             totalBeats: totalBeats,
             pixelsPerBeat: pixelsPerBeat,
             beatsPerBar: timeSignature.beatsPerBar,
-            containerStartBar: containerStartBar
+            containerStartBar: Int(containerStartBar)
         )
         .frame(height: 20)
     }

@@ -28,6 +28,12 @@ public struct ToolbarView: View {
     /// Available output ports for metronome routing.
     var availableOutputPorts: [OutputPort]
 
+    /// Whether snap-to-grid is enabled.
+    @Binding var isSnapEnabled: Bool
+
+    /// Current grid mode (adaptive or fixed resolution).
+    @Binding var gridMode: GridMode
+
     /// Binding to show/hide the virtual MIDI keyboard.
     @Binding var isVirtualKeyboardVisible: Bool
 
@@ -52,6 +58,8 @@ public struct ToolbarView: View {
         redoActionName: String = "",
         undoState: UndoState = UndoState(),
         availableOutputPorts: [OutputPort] = [],
+        isSnapEnabled: Binding<Bool> = .constant(true),
+        gridMode: Binding<GridMode> = .constant(.adaptive),
         isVirtualKeyboardVisible: Binding<Bool> = .constant(false)
     ) {
         self.viewModel = viewModel
@@ -66,6 +74,8 @@ public struct ToolbarView: View {
         self.redoActionName = redoActionName
         self.undoState = undoState
         self.availableOutputPorts = availableOutputPorts
+        self._isSnapEnabled = isSnapEnabled
+        self._gridMode = gridMode
         self._isVirtualKeyboardVisible = isVirtualKeyboardVisible
     }
 
@@ -304,6 +314,62 @@ public struct ToolbarView: View {
 
             Divider().frame(height: 24)
 
+            // Snap toggle
+            Button(action: { isSnapEnabled.toggle() }) {
+                Image(systemName: "dot.arrowtriangles.up.right.down.left.circle")
+                    .foregroundStyle(isSnapEnabled ? Color.accentColor : Color.secondary)
+                    .font(.title3)
+            }
+            .buttonStyle(.plain)
+            .help(isSnapEnabled ? "Snap to Grid: On" : "Snap to Grid: Off")
+
+            // Grid resolution menu
+            Menu {
+                Button(action: { gridMode = .adaptive }) {
+                    HStack {
+                        Text("Adaptive")
+                        if case .adaptive = gridMode {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+
+                Divider()
+
+                ForEach(SnapResolution.straightCases, id: \.self) { res in
+                    Button(action: { gridMode = .fixed(res) }) {
+                        HStack {
+                            Text(res.rawValue)
+                            if case .fixed(let current) = gridMode, current == res {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                ForEach(SnapResolution.tripletCases, id: \.self) { res in
+                    Button(action: { gridMode = .fixed(res) }) {
+                        HStack {
+                            Text(res.rawValue)
+                            if case .fixed(let current) = gridMode, current == res {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Text(gridModeLabel)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(isAdaptiveMode ? Color.secondary : Color.accentColor)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Grid Resolution")
+
+            Divider().frame(height: 24)
+
             // Virtual MIDI keyboard toggle
             Button(action: { isVirtualKeyboardVisible.toggle() }) {
                 Image(systemName: "pianokeys")
@@ -321,6 +387,18 @@ public struct ToolbarView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var gridModeLabel: String {
+        switch gridMode {
+        case .adaptive: return "Auto"
+        case .fixed(let res): return res.rawValue
+        }
+    }
+
+    private var isAdaptiveMode: Bool {
+        if case .adaptive = gridMode { return true }
+        return false
     }
 }
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Grid resolution for MIDI note quantization.
+/// Grid resolution for MIDI note quantization and timeline snapping.
 public enum SnapResolution: String, Codable, Equatable, Sendable, CaseIterable {
     case whole = "1"
     case half = "1/2"
@@ -8,6 +8,10 @@ public enum SnapResolution: String, Codable, Equatable, Sendable, CaseIterable {
     case eighth = "1/8"
     case sixteenth = "1/16"
     case thirtySecond = "1/32"
+    case quarterTriplet = "1/4T"
+    case eighthTriplet = "1/8T"
+    case sixteenthTriplet = "1/16T"
+    case thirtySecondTriplet = "1/32T"
 
     /// Number of subdivisions per beat (quarter note).
     public var subdivisionsPerBeat: Double {
@@ -18,6 +22,10 @@ public enum SnapResolution: String, Codable, Equatable, Sendable, CaseIterable {
         case .eighth: return 2.0
         case .sixteenth: return 4.0
         case .thirtySecond: return 8.0
+        case .quarterTriplet: return 2.0 / 3.0
+        case .eighthTriplet: return 3.0
+        case .sixteenthTriplet: return 6.0
+        case .thirtySecondTriplet: return 12.0
         }
     }
 
@@ -26,11 +34,37 @@ public enum SnapResolution: String, Codable, Equatable, Sendable, CaseIterable {
         1.0 / subdivisionsPerBeat
     }
 
+    /// Whether this is a triplet resolution.
+    public var isTriplet: Bool {
+        switch self {
+        case .quarterTriplet, .eighthTriplet, .sixteenthTriplet, .thirtySecondTriplet:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The straight (non-triplet) resolutions, in order from coarsest to finest.
+    public static var straightCases: [SnapResolution] {
+        [.whole, .half, .quarter, .eighth, .sixteenth, .thirtySecond]
+    }
+
+    /// The triplet resolutions, in order from coarsest to finest.
+    public static var tripletCases: [SnapResolution] {
+        [.quarterTriplet, .eighthTriplet, .sixteenthTriplet, .thirtySecondTriplet]
+    }
+
     /// Snaps a beat position to this resolution.
     public func snap(_ beat: Double) -> Double {
         let unit = beatsPerUnit
         return (beat / unit).rounded() * unit
     }
+}
+
+/// Grid mode for timeline snapping: adaptive (zoom-dependent) or fixed resolution.
+public enum GridMode: Equatable, Sendable {
+    case adaptive
+    case fixed(SnapResolution)
 }
 
 /// A single MIDI note event within a sequence.

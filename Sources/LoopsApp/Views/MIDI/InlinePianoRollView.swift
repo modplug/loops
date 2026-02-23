@@ -45,13 +45,13 @@ struct InlinePianoRollView: View {
 
     private var activeBeatOffset: Double {
         guard let active = activeContainer else { return 0 }
-        return Double((active.startBar - 1) * beatsPerBar)
+        return (active.startBar - 1.0) * Double(beatsPerBar)
     }
 
     private var editableRegionBeatRange: ClosedRange<Double>? {
         guard let active = activeContainer else { return nil }
-        let start = Double((active.startBar - 1) * beatsPerBar)
-        let end = start + Double(active.lengthBars * beatsPerBar)
+        let start = (active.startBar - 1.0) * Double(beatsPerBar)
+        let end = start + active.lengthBars * Double(beatsPerBar)
         return start...end
     }
 
@@ -66,7 +66,7 @@ struct InlinePianoRollView: View {
                   let seq = container.midiSequence,
                   !seq.notes.isEmpty else { return nil }
             let isLinked = container.parentContainerID != nil && !container.overriddenFields.contains(.midiSequence)
-            let offset = Double((container.startBar - 1) * beatsPerBar)
+            let offset = (container.startBar - 1.0) * Double(beatsPerBar)
             let offsetNotes = seq.notes.map { note in
                 var offsetNote = note
                 offsetNote.startBeat = note.startBeat + offset
@@ -107,7 +107,7 @@ struct InlinePianoRollView: View {
             )
             PianoRollContentView(
                 sequence: activeSequence,
-                lengthBars: totalTimelineBars,
+                lengthBars: Double(totalTimelineBars),
                 timeSignature: timeSignature,
                 snapResolution: $editorState.snapResolution,
                 pixelsPerBeat: .init(
@@ -178,8 +178,8 @@ struct InlinePianoRollView: View {
 
     private func containerAtBeat(_ beat: Double) -> Container? {
         containers.first { container in
-            let start = Double((container.startBar - 1) * beatsPerBar)
-            let end = start + Double(container.lengthBars * beatsPerBar)
+            let start = (container.startBar - 1.0) * Double(beatsPerBar)
+            let end = start + container.lengthBars * Double(beatsPerBar)
             return beat >= start && beat < end
         }
     }

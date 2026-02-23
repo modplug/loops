@@ -58,7 +58,8 @@ public struct TimelineView: View {
                 totalBars: viewModel.totalBars,
                 pixelsPerBar: viewModel.pixelsPerBar,
                 timeSignature: song.timeSignature,
-                height: displayHeight
+                height: displayHeight,
+                gridMode: viewModel.gridMode
             )
             .contentShape(Rectangle())
             .onTapGesture { location in
@@ -373,7 +374,7 @@ public struct TimelineView: View {
                 projectViewModel.trimContainerRight(trackID: track.id, containerID: containerID, newLength: newLength)
             },
             onContainerSplit: { containerID in
-                let splitBar = Int(viewModel.playheadBar.rounded())
+                let splitBar = viewModel.playheadBar
                 projectViewModel.splitContainer(trackID: track.id, containerID: containerID, atBar: splitBar)
             },
             onPlayheadTap: { timelineX in
@@ -398,6 +399,9 @@ public struct TimelineView: View {
                     tempo: song.tempo,
                     timeSignature: song.timeSignature
                 )
+            },
+            snapToGrid: { bar in
+                viewModel.snapToGrid(bar, timeSignature: song.timeSignature)
             }
         )
     }

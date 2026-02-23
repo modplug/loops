@@ -18,7 +18,7 @@ public final class ClipboardState {
     public var clipboard: [ClipboardContainerEntry] = []
 
     /// The leftmost start bar of copied containers, used for offset calculation on paste.
-    public var clipboardBaseBar: Int = 1
+    public var clipboardBaseBar: Double = 1.0
 
     /// Section region metadata copied with section copy operations.
     public var clipboardSectionRegion: SectionRegion?

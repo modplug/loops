@@ -28,9 +28,9 @@ struct WaveformAlignmentTests {
     }
 
     /// Computes waveformLengthFraction matching ContainerView logic.
-    private func computeLengthFraction(lengthBars: Int, recordingDurationBars: Double?) -> CGFloat {
+    private func computeLengthFraction(lengthBars: Double, recordingDurationBars: Double?) -> CGFloat {
         guard let totalBars = recordingDurationBars, totalBars > 0 else { return 1 }
-        return min(1.0, CGFloat(Double(lengthBars) / totalBars))
+        return min(1.0, CGFloat(lengthBars / totalBars))
     }
 
     // MARK: - Untrimmed Container Tests
@@ -39,7 +39,7 @@ struct WaveformAlignmentTests {
     func untrimmedContainerPeakSlicing() {
         // Recording is 6.8 bars long, container is 7 bars (ceil(6.8))
         let recordingDurationBars = 6.8
-        let containerLengthBars = 7
+        let containerLengthBars = 7.0
         // 100 peaks/sec at 120 BPM = 200 peaks/bar. 6.8 bars = 1360 peaks
         let peakCount = 1360
         let peaks = Array(repeating: Float(0.5), count: peakCount)
@@ -60,7 +60,7 @@ struct WaveformAlignmentTests {
     func untrimmedContainerShorterThanRecording() {
         // Recording is 7.3 bars long, container is 7 bars (manually trimmed or resized)
         let recordingDurationBars = 7.3
-        let containerLengthBars = 7
+        let containerLengthBars = 7.0
         // 200 peaks/bar × 7.3 bars = 1460 peaks
         let peakCount = 1460
         let peaks = Array(repeating: Float(0.5), count: peakCount)
@@ -87,7 +87,7 @@ struct WaveformAlignmentTests {
         // Real-world scenario: 120 BPM, 4/4, recording is 6.8 bars
         // Container starts at bar 4, lengthBars = 6 (manually trimmed right)
         let recordingDurationBars = 6.8
-        let containerLengthBars = 6
+        let containerLengthBars = 6.0
         let containerStartBar = 4
 
         // Peaks: 100 peaks/sec, 2 sec/bar at 120 BPM = 200 peaks/bar
@@ -127,7 +127,7 @@ struct WaveformAlignmentTests {
         // Recording is 10 bars, container trimmed to show bars 3-7 (offset=3, length=4)
         let recordingDurationBars = 10.0
         let audioStartOffset = 3.0
-        let containerLengthBars = 4
+        let containerLengthBars = 4.0
 
         // 200 peaks/bar × 10 bars = 2000 peaks
         let peakCount = 2000
@@ -155,7 +155,7 @@ struct WaveformAlignmentTests {
 
         // Left half: offset=0, length=6
         let leftStartFrac = computeStartFraction(audioStartOffset: 0, recordingDurationBars: recordingDurationBars)
-        let leftLengthFrac = computeLengthFraction(lengthBars: 6, recordingDurationBars: recordingDurationBars)
+        let leftLengthFrac = computeLengthFraction(lengthBars: 6.0, recordingDurationBars: recordingDurationBars)
         let (leftStart, leftCount) = slicePeaks(
             peaks: Array(repeating: Float(0.5), count: peakCount),
             startFraction: leftStartFrac, lengthFraction: leftLengthFrac
@@ -163,7 +163,7 @@ struct WaveformAlignmentTests {
 
         // Right half: offset=6, length=4
         let rightStartFrac = computeStartFraction(audioStartOffset: 6.0, recordingDurationBars: recordingDurationBars)
-        let rightLengthFrac = computeLengthFraction(lengthBars: 4, recordingDurationBars: recordingDurationBars)
+        let rightLengthFrac = computeLengthFraction(lengthBars: 4.0, recordingDurationBars: recordingDurationBars)
         let (rightStart, rightCount) = slicePeaks(
             peaks: Array(repeating: Float(0.5), count: peakCount),
             startFraction: rightStartFrac, lengthFraction: rightLengthFrac
@@ -429,11 +429,11 @@ struct WaveformAlignmentTests {
     @Test("Split at playhead produces containers with contiguous audio coverage")
     func splitContiguousAudioCoverage() {
         // Original: startBar=1, length=10, offset=0, recording=10.0 bars
-        let originalStart = 1
-        let originalLength = 10
+        let originalStart = 1.0
+        let originalLength = 10.0
         let originalOffset = 0.0
         let recordingBars = 10.0
-        let splitBar = 6 // Split at bar 6
+        let splitBar = 6.0 // Split at bar 6
 
         // Left half
         let leftLength = splitBar - originalStart   // 5
@@ -442,7 +442,7 @@ struct WaveformAlignmentTests {
         // Right half
         let rightStart = splitBar                   // 6
         let rightLength = originalLength - leftLength // 5
-        let rightOffset = originalOffset + Double(leftLength) // 5.0
+        let rightOffset = originalOffset + leftLength // 5.0
 
         // Verify no gap
         #expect(originalStart + leftLength == rightStart)

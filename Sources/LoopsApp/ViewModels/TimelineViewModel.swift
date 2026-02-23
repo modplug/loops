@@ -44,6 +44,12 @@ public final class TimelineViewModel {
     /// Cursor x-coordinate in timeline space. nil when mouse is outside the timeline.
     public var cursorX: CGFloat?
 
+    /// Whether snap-to-grid is enabled (toggled via toolbar).
+    public var isSnapEnabled: Bool = true
+
+    /// Grid mode: adaptive (zoom-dependent) or fixed resolution.
+    public var gridMode: GridMode = .adaptive
+
     /// Cursor position in bars (1-based), derived from cursorX.
     public var cursorBar: Double? {
         guard let x = cursorX else { return nil }
@@ -91,32 +97,42 @@ public final class TimelineViewModel {
         (Double(x) / Double(pixelsPerBar)) + 1.0
     }
 
-    /// Snaps a bar position to the nearest grid boundary depending on zoom level.
-    /// Multi-level snapping: 1/32 → 1/16 → beat → whole bar as zoom decreases.
-    public func snappedBar(forXPosition x: CGFloat, timeSignature: TimeSignature) -> Double {
-        let rawBar = bar(forXPosition: max(x, 0))
-        let ppBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
-        let beatsPerBar = Double(timeSignature.beatsPerBar)
-
-        if ppBeat >= 150.0 {
-            // Snap to 1/32 notes (8 subdivisions per beat)
-            let totalSubdivisions = (rawBar - 1.0) * beatsPerBar * 8.0
-            let snapped = totalSubdivisions.rounded()
-            return max((snapped / (beatsPerBar * 8.0)) + 1.0, 1.0)
-        } else if ppBeat >= 80.0 {
-            // Snap to 1/16 notes (4 subdivisions per beat)
-            let totalSubdivisions = (rawBar - 1.0) * beatsPerBar * 4.0
-            let snapped = totalSubdivisions.rounded()
-            return max((snapped / (beatsPerBar * 4.0)) + 1.0, 1.0)
-        } else if ppBeat >= 40.0 {
-            // Snap to beats
-            let totalBeats = (rawBar - 1.0) * beatsPerBar
-            let snappedBeats = totalBeats.rounded()
-            return max((snappedBeats / beatsPerBar) + 1.0, 1.0)
-        } else {
-            // Snap to whole bars
-            return max(rawBar.rounded(), 1.0)
+    /// Returns the effective snap resolution based on grid mode and zoom level.
+    public func effectiveSnapResolution(timeSignature: TimeSignature) -> SnapResolution {
+        switch gridMode {
+        case .fixed(let res):
+            return res
+        case .adaptive:
+            let ppBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
+            if ppBeat >= 150.0 { return .thirtySecond }
+            if ppBeat >= 80.0 { return .sixteenth }
+            if ppBeat >= 40.0 { return .quarter }
+            return .whole
         }
+    }
+
+    /// Snaps a bar position to the nearest grid boundary.
+    /// When `invertSnap` is true, the snap behavior is inverted (e.g., Cmd held).
+    public func snappedBar(forXPosition x: CGFloat, timeSignature: TimeSignature, invertSnap: Bool = false) -> Double {
+        let rawBar = bar(forXPosition: max(x, 0))
+        let shouldSnap = invertSnap ? !isSnapEnabled : isSnapEnabled
+        guard shouldSnap else { return max(rawBar, 1.0) }
+        return forceSnapToGrid(rawBar, timeSignature: timeSignature)
+    }
+
+    /// Snaps a bar value to the current grid resolution (respects `isSnapEnabled`).
+    public func snapToGrid(_ value: Double, timeSignature: TimeSignature) -> Double {
+        guard isSnapEnabled else { return value }
+        return forceSnapToGrid(value, timeSignature: timeSignature)
+    }
+
+    /// Snaps a bar value to the current grid resolution (always snaps, ignores `isSnapEnabled`).
+    private func forceSnapToGrid(_ value: Double, timeSignature: TimeSignature) -> Double {
+        let resolution = effectiveSnapResolution(timeSignature: timeSignature)
+        let beatsPerBar = Double(timeSignature.beatsPerBar)
+        let totalBeats = (value - 1.0) * beatsPerBar
+        let snappedBeats = resolution.snap(totalBeats)
+        return max((snappedBeats / beatsPerBar) + 1.0, 1.0)
     }
 
     /// Current playhead x-coordinate.
@@ -217,15 +233,17 @@ public final class TimelineViewModel {
     private var contentEndBar: Int = 0
 
     /// Expands the timeline's total bars if the given bar exceeds the current range.
-    public func ensureBarVisible(_ bar: Int) {
-        if bar > totalBars {
-            totalBars = bar + 8
+    public func ensureBarVisible(_ bar: Double) {
+        let barInt = Int(ceil(bar))
+        if barInt > totalBars {
+            totalBars = barInt + 8
         }
     }
 
     /// Updates the content extent from the given tracks and recalculates totalBars.
     public func updateTotalBars(for tracks: [Track]) {
-        contentEndBar = tracks.flatMap(\.containers).map(\.endBar).max() ?? 0
+        let maxEndBar = tracks.flatMap(\.containers).map(\.endBar).max() ?? 0
+        contentEndBar = Int(ceil(maxEndBar))
         recalculateTotalBars()
     }
 

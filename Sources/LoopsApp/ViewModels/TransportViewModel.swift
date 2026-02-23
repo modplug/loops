@@ -485,9 +485,9 @@ public final class TransportViewModel {
         guard let masterTrack = song.masterTrack else { return metronomeSubdivision }
 
         // Find the master track container at the current bar position
-        let barInt = Int(bar)
+        let barDouble = Double(bar)
         for container in masterTrack.containers {
-            if container.startBar <= barInt && container.endBar > barInt,
+            if container.startBar <= barDouble && container.endBar > barDouble,
                let settings = container.metronomeSettings {
                 return settings.subdivision
             }
@@ -541,6 +541,14 @@ public final class TransportViewModel {
     /// subgraphs — unchanged tracks continue playing without interruption.
     ///
     /// Call this after modifying a track's effects/instruments while playback
+    /// Pushes updated automation data to the scheduler without rebuilding the
+    /// audio graph. Called when breakpoints are edited during playback.
+    public func updateAutomationData() {
+        guard isPlaying, let scheduler = playbackScheduler,
+              let context = songProvider?() else { return }
+        scheduler.updateAutomationData(song: context.song)
+    }
+
     /// is active. If not currently playing, marks the graph as stale so the
     /// next play() triggers a full prepare.
     public func refreshPlaybackGraph() {
@@ -684,7 +692,7 @@ public final class TransportViewModel {
         // Collect armed containers from audio tracks.
         // If individual containers are armed, use those.
         // Otherwise, if the track itself is armed, all its containers are candidates.
-        var armed: [(containerID: ID<Container>, trackID: ID<Track>, startBar: Int, endBar: Int)] = []
+        var armed: [(containerID: ID<Container>, trackID: ID<Track>, startBar: Double, endBar: Double)] = []
         for track in song.tracks where track.kind == .audio {
             let containerArmed = track.containers.filter(\.isRecordArmed)
             if !containerArmed.isEmpty {

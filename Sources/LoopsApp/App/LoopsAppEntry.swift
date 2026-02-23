@@ -51,6 +51,14 @@ public struct LoopsRootView: View {
                     availableOutputPorts: engineManager?.deviceManager.outputDevices().flatMap { device in
                         engineManager?.deviceManager.outputPorts(for: device) ?? []
                     } ?? [],
+                    isSnapEnabled: Binding(
+                        get: { timelineViewModel.isSnapEnabled },
+                        set: { timelineViewModel.isSnapEnabled = $0 }
+                    ),
+                    gridMode: Binding(
+                        get: { timelineViewModel.gridMode },
+                        set: { timelineViewModel.gridMode = $0 }
+                    ),
                     isVirtualKeyboardVisible: $isVirtualKeyboardVisible
                 )
                 Divider()
@@ -132,10 +140,10 @@ public struct LoopsRootView: View {
                 timelineViewModel?.playheadBar = bar
                 if let slVM = setlistViewModel, slVM.isPerformMode,
                    let song = viewModel?.currentSong {
-                    let containerMax = song.tracks.flatMap(\.containers).map(\.endBar).max() ?? 1
-                    let sectionMax = song.sections.map(\.endBar).max() ?? 1
-                    let songLength = max(containerMax, sectionMax, 1)
-                    slVM.updateSongProgress(playheadBar: bar, songLengthBars: songLength)
+                    let containerMax = song.tracks.flatMap(\.containers).map(\.endBar).max() ?? 1.0
+                    let sectionMax = Double(song.sections.map(\.endBar).max() ?? 1)
+                    let songLength = max(containerMax, sectionMax, 1.0)
+                    slVM.updateSongProgress(playheadBar: bar, songLengthBars: Int(ceil(songLength)))
                 }
             }
             // Wire view settings persistence: save before song switch or project save
@@ -157,6 +165,10 @@ public struct LoopsRootView: View {
             // Wire live plugin updates: refresh the audio graph during playback
             viewModel.onPlaybackGraphChanged = { [weak transportViewModel] in
                 transportViewModel?.refreshPlaybackGraph()
+            }
+            // Wire live automation updates: push new breakpoints to scheduler during playback
+            viewModel.onAutomationDataChanged = { [weak transportViewModel] in
+                transportViewModel?.updateAutomationData()
             }
             // Sync BPM from the current song
             transportViewModel.bpm = viewModel.currentSong?.tempo.bpm ?? 120.0

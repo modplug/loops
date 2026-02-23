@@ -67,7 +67,7 @@ public final class ProjectViewModel {
         set { clipboardState.clipboard = newValue }
     }
     /// The leftmost start bar of copied containers, used for offset calculation on paste.
-    public var clipboardBaseBar: Int {
+    public var clipboardBaseBar: Double {
         get { clipboardState.clipboardBaseBar }
         set { clipboardState.clipboardBaseBar = newValue }
     }
@@ -378,6 +378,11 @@ public final class ProjectViewModel {
     /// `TransportViewModel.refreshPlaybackGraph()` so live playback updates without
     /// requiring stop/start.
     public var onPlaybackGraphChanged: (() -> Void)?
+
+    /// Called when automation data (lanes or breakpoints) changes. The view layer
+    /// wires this to `TransportViewModel.updateAutomationData()` so edits during
+    /// playback are reflected in real-time without a graph rebuild.
+    public var onAutomationDataChanged: (() -> Void)?
 
     /// Saves the current timeline view settings into the active song's model.
     public func saveViewSettings(_ settings: SongViewSettings) {
@@ -923,11 +928,11 @@ public final class ProjectViewModel {
     }
 
     /// The last bar with content (containers or sections) in the current song. Returns 1 if empty.
-    public var lastBarWithContent: Int {
-        guard let song = currentSong else { return 1 }
-        let containerMax = song.tracks.flatMap(\.containers).map(\.endBar).max() ?? 1
-        let sectionMax = song.sections.map(\.endBar).max() ?? 1
-        return max(containerMax, sectionMax, 1)
+    public var lastBarWithContent: Double {
+        guard let song = currentSong else { return 1.0 }
+        let containerMax = song.tracks.flatMap(\.containers).map(\.endBar).max() ?? 1.0
+        let sectionMax = Double(song.sections.map(\.endBar).max() ?? 1)
+        return max(containerMax, sectionMax, 1.0)
     }
 
     // MARK: - Container Management
@@ -940,15 +945,15 @@ public final class ProjectViewModel {
     }
 
     /// Adds a container to a track. Returns false if it would overlap an existing container.
-    public func addContainer(trackID: ID<Track>, startBar: Int, lengthBars: Int) -> Bool {
+    public func addContainer(trackID: ID<Track>, startBar: Double, lengthBars: Double) -> Bool {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
         registerUndo(actionName: "Add Container")
 
         let newContainer = Container(
             name: "Container",
-            startBar: max(startBar, 1),
-            lengthBars: max(lengthBars, 1)
+            startBar: max(startBar, 1.0),
+            lengthBars: max(lengthBars, 1.0)
         )
 
         if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: newContainer) {
@@ -976,13 +981,13 @@ public final class ProjectViewModel {
     }
 
     /// Moves a container to a new start bar. Returns false if it would overlap.
-    public func moveContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Int) -> Bool {
+    public func moveContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Double) -> Bool {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
         registerUndo(actionName: "Move Container")
 
-        let clampedStart = max(newStartBar, 1)
+        let clampedStart = max(newStartBar, 1.0)
         var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
         proposed.startBar = clampedStart
 
@@ -996,25 +1001,25 @@ public final class ProjectViewModel {
     }
 
     /// Resizes a container. Returns false if it would overlap.
-    public func resizeContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Int? = nil, newLengthBars: Int? = nil) -> Bool {
+    public func resizeContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Double? = nil, newLengthBars: Double? = nil) -> Bool {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
         registerUndo(actionName: "Resize Container")
 
         var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
-        if let start = newStartBar { proposed.startBar = max(start, 1) }
-        if let length = newLengthBars { proposed.lengthBars = max(length, 1) }
+        if let start = newStartBar { proposed.startBar = max(start, 1.0) }
+        if let length = newLengthBars { proposed.lengthBars = max(length, 1.0) }
 
         if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: proposed, excluding: containerID) {
             return false
         }
 
         if let start = newStartBar {
-            project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].startBar = max(start, 1)
+            project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].startBar = max(start, 1.0)
         }
         if let length = newLengthBars {
-            project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].lengthBars = max(length, 1)
+            project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].lengthBars = max(length, 1.0)
         }
         hasUnsavedChanges = true
         return true
@@ -1448,6 +1453,7 @@ public final class ProjectViewModel {
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.append(lane)
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                 hasUnsavedChanges = true
+                onAutomationDataChanged?()
                 return
             }
         }
@@ -1462,6 +1468,7 @@ public final class ProjectViewModel {
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.removeAll { $0.id == laneID }
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                 hasUnsavedChanges = true
+                onAutomationDataChanged?()
                 return
             }
         }
@@ -1477,6 +1484,7 @@ public final class ProjectViewModel {
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.append(breakpoint)
                     markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                     hasUnsavedChanges = true
+                    onAutomationDataChanged?()
                     return
                 }
             }
@@ -1493,6 +1501,7 @@ public final class ProjectViewModel {
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.removeAll { $0.id == breakpointID }
                     markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                     hasUnsavedChanges = true
+                    onAutomationDataChanged?()
                     return
                 }
             }
@@ -1510,6 +1519,7 @@ public final class ProjectViewModel {
                         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints[bpIndex] = breakpoint
                         markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                         hasUnsavedChanges = true
+                        onAutomationDataChanged?()
                         return
                     }
                 }
@@ -1526,6 +1536,7 @@ public final class ProjectViewModel {
         registerUndo(actionName: "Add Track Automation Lane")
         project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.append(lane)
         hasUnsavedChanges = true
+        onAutomationDataChanged?()
     }
 
     /// Removes an automation lane from a track.
@@ -1535,6 +1546,7 @@ public final class ProjectViewModel {
         registerUndo(actionName: "Remove Track Automation Lane")
         project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.removeAll { $0.id == laneID }
         hasUnsavedChanges = true
+        onAutomationDataChanged?()
     }
 
     /// Adds a breakpoint to a track-level automation lane.
@@ -1545,6 +1557,7 @@ public final class ProjectViewModel {
         registerUndo(actionName: "Add Breakpoint")
         project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints.append(breakpoint)
         hasUnsavedChanges = true
+        onAutomationDataChanged?()
     }
 
     /// Removes a breakpoint from a track-level automation lane.
@@ -1555,6 +1568,7 @@ public final class ProjectViewModel {
         registerUndo(actionName: "Remove Breakpoint")
         project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints.removeAll { $0.id == breakpointID }
         hasUnsavedChanges = true
+        onAutomationDataChanged?()
     }
 
     /// Updates a breakpoint in a track-level automation lane.
@@ -1566,6 +1580,7 @@ public final class ProjectViewModel {
         registerUndo(actionName: "Edit Breakpoint")
         project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints[bpIndex] = breakpoint
         hasUnsavedChanges = true
+        onAutomationDataChanged?()
     }
 
     /// Returns the selected container if one is selected.
@@ -1619,7 +1634,7 @@ public final class ProjectViewModel {
     /// Cloning a clone links to the original parent (no nesting).
     /// Returns the new clone's ID, or nil if the clone would overlap.
     @discardableResult
-    public func cloneContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Int) -> ID<Container>? {
+    public func cloneContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Double) -> ID<Container>? {
         guard !project.songs.isEmpty else { return nil }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return nil }
@@ -1631,7 +1646,7 @@ public final class ProjectViewModel {
 
         let clone = Container(
             name: source.name,
-            startBar: max(newStartBar, 1),
+            startBar: max(newStartBar, 1.0),
             lengthBars: source.lengthBars,
             sourceRecordingID: source.sourceRecordingID,
             linkGroupID: source.linkGroupID,
@@ -1747,7 +1762,7 @@ public final class ProjectViewModel {
 
     /// Copies all containers within a bar range (e.g., from a section) to the clipboard.
     /// If trackFilter is non-empty, only includes containers from those tracks.
-    public func copyContainersInRange(startBar: Int, endBar: Int, trackFilter: Set<ID<Track>> = []) {
+    public func copyContainersInRange(startBar: Double, endBar: Double, trackFilter: Set<ID<Track>> = []) {
         guard let song = currentSong else { return }
         var entries: [ClipboardContainerEntry] = []
         for track in song.tracks {
@@ -1768,7 +1783,7 @@ public final class ProjectViewModel {
     public func copySectionWithMetadata(sectionID: ID<SectionRegion>) {
         guard let song = currentSong else { return }
         guard let section = song.sections.first(where: { $0.id == sectionID }) else { return }
-        copyContainersInRange(startBar: section.startBar, endBar: section.endBar)
+        copyContainersInRange(startBar: Double(section.startBar), endBar: Double(section.endBar))
         clipboardSectionRegion = section
     }
 
@@ -1776,7 +1791,7 @@ public final class ProjectViewModel {
     /// If section metadata exists, also creates a section region.
     /// Returns the number of containers successfully pasted.
     @discardableResult
-    public func pasteContainersToOriginalTracks(atBar: Int) -> Int {
+    public func pasteContainersToOriginalTracks(atBar: Double) -> Int {
         guard !project.songs.isEmpty else { return 0 }
         let hasContainers = !clipboard.isEmpty
         let hasSection = clipboardSectionRegion != nil
@@ -1791,7 +1806,7 @@ public final class ProjectViewModel {
 
             let newContainer = Container(
                 name: entry.container.name,
-                startBar: max(entry.container.startBar + offset, 1),
+                startBar: max(entry.container.startBar + offset, 1.0),
                 lengthBars: entry.container.lengthBars,
                 sourceRecordingID: entry.container.sourceRecordingID,
                 linkGroupID: entry.container.linkGroupID,
@@ -1817,7 +1832,7 @@ public final class ProjectViewModel {
         if let section = clipboardSectionRegion {
             let newSection = SectionRegion(
                 name: section.name,
-                startBar: max(section.startBar + offset, 1),
+                startBar: Int(max(Double(section.startBar) + offset, 1.0)),
                 lengthBars: section.lengthBars,
                 color: section.color,
                 notes: section.notes
@@ -1935,7 +1950,7 @@ public final class ProjectViewModel {
     /// Pastes clipboard containers at the given bar on the given track.
     /// Returns the number of containers successfully pasted.
     @discardableResult
-    public func pasteContainers(trackID: ID<Track>, atBar: Int) -> Int {
+    public func pasteContainers(trackID: ID<Track>, atBar: Double) -> Int {
         guard !project.songs.isEmpty, !clipboard.isEmpty else { return 0 }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return 0 }
 
@@ -1946,7 +1961,7 @@ public final class ProjectViewModel {
         for entry in clipboard {
             let newContainer = Container(
                 name: entry.container.name,
-                startBar: max(entry.container.startBar + offset, 1),
+                startBar: max(entry.container.startBar + offset, 1.0),
                 lengthBars: entry.container.lengthBars,
                 sourceRecordingID: entry.container.sourceRecordingID,
                 linkGroupID: entry.container.linkGroupID,
@@ -2452,7 +2467,7 @@ public final class ProjectViewModel {
     public func importAudio(
         url: URL,
         trackID: ID<Track>,
-        startBar: Int,
+        startBar: Double,
         audioDirectory: URL
     ) throws -> ID<Container>? {
         guard !project.songs.isEmpty else { return nil }
@@ -2472,8 +2487,8 @@ public final class ProjectViewModel {
 
         let container = Container(
             name: url.deletingPathExtension().lastPathComponent,
-            startBar: max(startBar, 1),
-            lengthBars: lengthBars,
+            startBar: max(startBar, 1.0),
+            lengthBars: Double(lengthBars),
             sourceRecordingID: recording.id,
             loopSettings: LoopSettings(loopCount: .count(1))
         )
@@ -2496,7 +2511,7 @@ public final class ProjectViewModel {
     public func importAudioAsync(
         url: URL,
         trackID: ID<Track>,
-        startBar: Int,
+        startBar: Double,
         audioDirectory: URL
     ) -> ID<Container>? {
         guard !project.songs.isEmpty else { return nil }
@@ -2528,8 +2543,8 @@ public final class ProjectViewModel {
 
         let container = Container(
             name: url.deletingPathExtension().lastPathComponent,
-            startBar: max(startBar, 1),
-            lengthBars: lengthBars,
+            startBar: max(startBar, 1.0),
+            lengthBars: Double(lengthBars),
             sourceRecordingID: recordingID,
             loopSettings: LoopSettings(loopCount: .count(1))
         )
@@ -2677,7 +2692,7 @@ public final class ProjectViewModel {
     // MARK: - MIDI File Import
 
     /// Imports a standard MIDI file and creates containers with MIDI sequences.
-    public func importMIDIFile(url: URL, trackID: ID<Track>, startBar: Int) {
+    public func importMIDIFile(url: URL, trackID: ID<Track>, startBar: Double) {
         guard !project.songs.isEmpty else { return }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
 
@@ -2695,8 +2710,8 @@ public final class ProjectViewModel {
 
             let container = Container(
                 name: url.deletingPathExtension().lastPathComponent,
-                startBar: startBar,
-                lengthBars: lengthBars,
+                startBar: Double(startBar),
+                lengthBars: Double(lengthBars),
                 midiSequence: sequence
             )
 
@@ -2716,7 +2731,7 @@ public final class ProjectViewModel {
     /// Splits a container at the given bar boundary, creating two independent containers.
     /// Returns the ID of the new right-half container, or nil on failure.
     @discardableResult
-    public func splitContainer(trackID: ID<Track>, containerID: ID<Container>, atBar: Int) -> ID<Container>? {
+    public func splitContainer(trackID: ID<Track>, containerID: ID<Container>, atBar: Double) -> ID<Container>? {
         guard !project.songs.isEmpty else { return nil }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return nil }
@@ -2744,7 +2759,7 @@ public final class ProjectViewModel {
         var rightSequence: MIDISequence?
         if let midi = container.midiSequence {
             let beatsPerBar = Double(project.songs[currentSongIndex].timeSignature.beatsPerBar)
-            let splitBeat = Double(leftLength) * beatsPerBar
+            let splitBeat = leftLength * beatsPerBar
             let (left, right) = splitMIDISequence(midi, atBeat: splitBeat)
             leftSequence = left
             rightSequence = right
@@ -2772,7 +2787,7 @@ public final class ProjectViewModel {
             onExitActions: container.onExitActions,
             automationLanes: [],
             midiSequence: rightSequence ?? container.midiSequence,
-            audioStartOffset: container.audioStartOffset + Double(leftLength)
+            audioStartOffset: container.audioStartOffset + leftLength
         )
 
         project.songs[currentSongIndex].tracks[trackIndex].containers.append(rightContainer)
@@ -2819,7 +2834,7 @@ public final class ProjectViewModel {
     /// Uses a single undo registration so Cmd+Z undoes the entire operation.
     @discardableResult
     public func splitContainerAtRange(trackID: ID<Track>, containerID: ID<Container>,
-                                      rangeStart: Int, rangeEnd: Int) -> Bool {
+                                      rangeStart: Double, rangeEnd: Double) -> Bool {
         guard rangeEnd > rangeStart else { return false }
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
@@ -2850,8 +2865,8 @@ public final class ProjectViewModel {
         var middleSequence: MIDISequence?
         var rightSequence: MIDISequence?
         if let midi = container.midiSequence {
-            let leftBeat = Double(clampedStart - container.startBar) * beatsPerBar
-            let rightBeat = Double(clampedEnd - container.startBar) * beatsPerBar
+            let leftBeat = (clampedStart - container.startBar) * beatsPerBar
+            let rightBeat = (clampedEnd - container.startBar) * beatsPerBar
             let (left, rest) = needsLeftSplit ? splitMIDISequence(midi, atBeat: leftBeat) : (nil, midi)
             if needsRightSplit {
                 let midBeat = needsLeftSplit ? (rightBeat - leftBeat) : rightBeat
@@ -2876,7 +2891,7 @@ public final class ProjectViewModel {
             newContainers.append(leftPart)
         }
 
-        let middleOffset = container.audioStartOffset + Double(clampedStart - container.startBar)
+        let middleOffset = container.audioStartOffset + (clampedStart - container.startBar)
         var middlePart = container
         middlePart.id = ID()
         middlePart.startBar = clampedStart
@@ -2888,7 +2903,7 @@ public final class ProjectViewModel {
         newContainers.append(middlePart)
 
         if needsRightSplit {
-            let rightOffset = container.audioStartOffset + Double(clampedEnd - container.startBar)
+            let rightOffset = container.audioStartOffset + (clampedEnd - container.startBar)
             var rightPart = container
             rightPart.id = ID()
             rightPart.startBar = clampedEnd
@@ -2910,11 +2925,11 @@ public final class ProjectViewModel {
     /// Trims a container's left edge, adjusting startBar, lengthBars, and audioStartOffset atomically.
     /// Returns false if the trim would cause an overlap or invalid state.
     public func trimContainerLeft(trackID: ID<Track>, containerID: ID<Container>,
-                                  newStartBar: Int, newLength: Int, newAudioStartOffset: Double) -> Bool {
+                                  newStartBar: Double, newLength: Double, newAudioStartOffset: Double) -> Bool {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
-        guard newStartBar >= 1 && newLength >= 1 && newAudioStartOffset >= 0 else { return false }
+        guard newStartBar >= 1.0 && newLength >= 1.0 && newAudioStartOffset >= 0 else { return false }
 
         var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
         proposed.startBar = newStartBar
@@ -2935,11 +2950,11 @@ public final class ProjectViewModel {
 
     /// Trims a container's right edge, adjusting only lengthBars.
     /// Returns false if the trim would cause an overlap.
-    public func trimContainerRight(trackID: ID<Track>, containerID: ID<Container>, newLength: Int) -> Bool {
+    public func trimContainerRight(trackID: ID<Track>, containerID: ID<Container>, newLength: Double) -> Bool {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
-        guard newLength >= 1 else { return false }
+        guard newLength >= 1.0 else { return false }
 
         var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
         proposed.lengthBars = newLength

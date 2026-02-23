@@ -16,14 +16,14 @@ public struct TrackLaneView: View {
     var recordingDurationBarsForContainer: ((_ container: Container) -> Double?)?
     var onContainerSelect: ((_ containerID: ID<Container>) -> Void)?
     var onContainerDelete: ((_ containerID: ID<Container>) -> Void)?
-    var onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Bool)?
-    var onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Int, _ newLength: Int) -> Bool)?
-    var onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)?
-    var onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)?
-    var onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)?
-    var onDropMIDIFile: ((_ url: URL, _ startBar: Int) -> Void)?
+    var onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Double) -> Bool)?
+    var onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Double, _ newLength: Double) -> Bool)?
+    var onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Double) -> Bool)?
+    var onCreateContainer: ((_ startBar: Double, _ lengthBars: Double) -> Void)?
+    var onDropAudioFile: ((_ url: URL, _ startBar: Double) -> Void)?
+    var onDropMIDIFile: ((_ url: URL, _ startBar: Double) -> Void)?
     var onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)?
-    var onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)?
+    var onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Double) -> Void)?
     var onCopyContainer: ((_ containerID: ID<Container>) -> Void)?
     var onCopyContainerToSong: ((_ containerID: ID<Container>, _ songID: ID<Song>) -> Void)?
     var otherSongs: [(id: ID<Song>, name: String)]
@@ -31,7 +31,7 @@ public struct TrackLaneView: View {
     var onLinkCloneContainer: ((_ containerID: ID<Container>) -> Void)?
     var onUnlinkContainer: ((_ containerID: ID<Container>) -> Void)?
     var onContainerArmToggle: ((_ containerID: ID<Container>) -> Void)?
-    var onPasteAtBar: ((_ bar: Int) -> Void)?
+    var onPasteAtBar: ((_ bar: Double) -> Void)?
     var hasClipboard: Bool
     /// Returns the resolved MIDI sequence for a container (inheriting from parent for clones).
     var resolvedMIDISequenceForContainer: ((_ container: Container) -> MIDISequence?)?
@@ -47,22 +47,24 @@ public struct TrackLaneView: View {
     var onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
     var onSetEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
     var onSetExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
-    var onContainerTrimLeft: ((_ containerID: ID<Container>, _ newAudioStartOffset: Double, _ newStartBar: Int, _ newLength: Int) -> Bool)?
-    var onContainerTrimRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)?
+    var onContainerTrimLeft: ((_ containerID: ID<Container>, _ newAudioStartOffset: Double, _ newStartBar: Double, _ newLength: Double) -> Bool)?
+    var onContainerTrimRight: ((_ containerID: ID<Container>, _ newLength: Double) -> Bool)?
     var onContainerSplit: ((_ containerID: ID<Container>) -> Void)?
     var onPlayheadTap: ((_ timelineX: CGFloat) -> Void)?
     var onTapBackground: ((_ xPosition: CGFloat) -> Void)?
-    var onRangeSelect: ((_ containerID: ID<Container>, _ startBar: Int, _ endBar: Int) -> Void)?
+    var onRangeSelect: ((_ containerID: ID<Container>, _ startBar: Double, _ endBar: Double) -> Void)?
     /// Resolves an audio file URL to its length in bars (using song tempo/time signature).
     /// Called asynchronously when a file is dragged over the track.
-    var onResolveAudioFileBars: ((_ url: URL) -> Int?)?
+    var onResolveAudioFileBars: ((_ url: URL) -> Double?)?
+    /// Snaps a bar value to the current grid resolution.
+    var snapToGrid: ((_ bar: Double) -> Double)?
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
     @State private var isCreatingContainer = false
     @State private var isDropTargeted = false
-    @State private var dropPreviewBar: Int?
-    @State private var dropPreviewLengthBars: Int?
+    @State private var dropPreviewBar: Double?
+    @State private var dropPreviewLengthBars: Double?
 
     public init(
         track: Track,
@@ -74,14 +76,14 @@ public struct TrackLaneView: View {
         recordingDurationBarsForContainer: ((_ container: Container) -> Double?)? = nil,
         onContainerSelect: ((_ containerID: ID<Container>) -> Void)? = nil,
         onContainerDelete: ((_ containerID: ID<Container>) -> Void)? = nil,
-        onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Bool)? = nil,
-        onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
-        onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)? = nil,
-        onCreateContainer: ((_ startBar: Int, _ lengthBars: Int) -> Void)? = nil,
-        onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil,
-        onDropMIDIFile: ((_ url: URL, _ startBar: Int) -> Void)? = nil,
+        onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Double) -> Bool)? = nil,
+        onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Double, _ newLength: Double) -> Bool)? = nil,
+        onContainerResizeRight: ((_ containerID: ID<Container>, _ newLength: Double) -> Bool)? = nil,
+        onCreateContainer: ((_ startBar: Double, _ lengthBars: Double) -> Void)? = nil,
+        onDropAudioFile: ((_ url: URL, _ startBar: Double) -> Void)? = nil,
+        onDropMIDIFile: ((_ url: URL, _ startBar: Double) -> Void)? = nil,
         onContainerDoubleClick: ((_ containerID: ID<Container>) -> Void)? = nil,
-        onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Int) -> Void)? = nil,
+        onCloneContainer: ((_ containerID: ID<Container>, _ newStartBar: Double) -> Void)? = nil,
         onCopyContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
         onCopyContainerToSong: ((_ containerID: ID<Container>, _ songID: ID<Song>) -> Void)? = nil,
         otherSongs: [(id: ID<Song>, name: String)] = [],
@@ -89,7 +91,7 @@ public struct TrackLaneView: View {
         onLinkCloneContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
         onUnlinkContainer: ((_ containerID: ID<Container>) -> Void)? = nil,
         onContainerArmToggle: ((_ containerID: ID<Container>) -> Void)? = nil,
-        onPasteAtBar: ((_ bar: Int) -> Void)? = nil,
+        onPasteAtBar: ((_ bar: Double) -> Void)? = nil,
         hasClipboard: Bool = false,
         resolvedMIDISequenceForContainer: ((_ container: Container) -> MIDISequence?)? = nil,
         isAutomationExpanded: Bool = false,
@@ -104,13 +106,14 @@ public struct TrackLaneView: View {
         onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)? = nil,
         onSetEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)? = nil,
         onSetExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)? = nil,
-        onContainerTrimLeft: ((_ containerID: ID<Container>, _ newAudioStartOffset: Double, _ newStartBar: Int, _ newLength: Int) -> Bool)? = nil,
-        onContainerTrimRight: ((_ containerID: ID<Container>, _ newLength: Int) -> Bool)? = nil,
+        onContainerTrimLeft: ((_ containerID: ID<Container>, _ newAudioStartOffset: Double, _ newStartBar: Double, _ newLength: Double) -> Bool)? = nil,
+        onContainerTrimRight: ((_ containerID: ID<Container>, _ newLength: Double) -> Bool)? = nil,
         onContainerSplit: ((_ containerID: ID<Container>) -> Void)? = nil,
         onPlayheadTap: ((_ timelineX: CGFloat) -> Void)? = nil,
         onTapBackground: ((_ xPosition: CGFloat) -> Void)? = nil,
-        onRangeSelect: ((_ containerID: ID<Container>, _ startBar: Int, _ endBar: Int) -> Void)? = nil,
-        onResolveAudioFileBars: ((_ url: URL) -> Int?)? = nil
+        onRangeSelect: ((_ containerID: ID<Container>, _ startBar: Double, _ endBar: Double) -> Void)? = nil,
+        onResolveAudioFileBars: ((_ url: URL) -> Double?)? = nil,
+        snapToGrid: ((_ bar: Double) -> Double)? = nil
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
@@ -158,6 +161,7 @@ public struct TrackLaneView: View {
         self.onTapBackground = onTapBackground
         self.onRangeSelect = onRangeSelect
         self.onResolveAudioFileBars = onResolveAudioFileBars
+        self.snapToGrid = snapToGrid
     }
 
     private var baseHeight: CGFloat {
@@ -179,20 +183,20 @@ public struct TrackLaneView: View {
                     .gesture(createContainerGesture)
                     .contextMenu {
                         Button("Create Container Here") {
-                            onCreateContainer?(1, 4)
+                            onCreateContainer?(1.0, 4.0)
                         }
                         if hasClipboard {
                             Button("Paste") {
-                                onPasteAtBar?(1)
+                                onPasteAtBar?(1.0)
                             }
                         }
                     }
 
                 // Drop target highlight with snapped position and resolved width
                 if isDropTargeted, let bar = dropPreviewBar {
-                    let lengthBars = CGFloat(dropPreviewLengthBars ?? 4)
-                    let previewWidth = pixelsPerBar * lengthBars
-                    let previewX = CGFloat(bar - 1) * pixelsPerBar
+                    let lengthBars = dropPreviewLengthBars ?? 4.0
+                    let previewWidth = pixelsPerBar * CGFloat(lengthBars)
+                    let previewX = CGFloat(bar - 1.0) * pixelsPerBar
                     RoundedRectangle(cornerRadius: 4)
                         .fill(trackColor.opacity(0.12))
                         .strokeBorder(trackColor.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [6, 3]))
@@ -296,8 +300,16 @@ public struct TrackLaneView: View {
             onSetEnterFade: { fade in onSetEnterFade?(container.id, fade) },
             onSetExitFade: { fade in onSetExitFade?(container.id, fade) },
             onSplit: { onContainerSplit?(container.id) },
-            onRangeSelect: { startBar, endBar in onRangeSelect?(container.id, startBar, endBar) }
+            onRangeSelect: { startBar, endBar in onRangeSelect?(container.id, startBar, endBar) },
+            snapToGrid: snapToGrid
         )
+    }
+
+    /// Snaps an x-position to the grid by converting to bar, snapping, and converting back.
+    private func snappedX(_ x: CGFloat) -> CGFloat {
+        let rawBar = Double(x) / Double(pixelsPerBar) + 1.0
+        let snapped = snapToGrid?(rawBar) ?? rawBar.rounded()
+        return CGFloat(snapped - 1.0) * pixelsPerBar
     }
 
     private var createContainerGesture: some Gesture {
@@ -305,13 +317,9 @@ public struct TrackLaneView: View {
             .onChanged { value in
                 if !isCreatingContainer {
                     isCreatingContainer = true
-                    // Snap start to bar boundary
-                    let snappedStart = round(value.startLocation.x / pixelsPerBar) * pixelsPerBar
-                    dragStartX = snappedStart
+                    dragStartX = snappedX(value.startLocation.x)
                 }
-                // Snap current to bar boundary
-                let snappedCurrent = round(value.location.x / pixelsPerBar) * pixelsPerBar
-                dragCurrentX = snappedCurrent
+                dragCurrentX = snappedX(value.location.x)
             }
             .onEnded { value in
                 defer {
@@ -324,8 +332,8 @@ public struct TrackLaneView: View {
 
                 let minX = min(startX, currentX)
                 let maxX = max(startX, currentX)
-                let startBar = Int(minX / pixelsPerBar) + 1
-                let lengthBars = max(Int(round((maxX - minX) / pixelsPerBar)), 1)
+                let startBar = Double(minX) / Double(pixelsPerBar) + 1.0
+                let lengthBars = max(Double(maxX - minX) / Double(pixelsPerBar), 1.0)
 
                 onCreateContainer?(startBar, lengthBars)
             }
@@ -347,11 +355,11 @@ public struct TrackLaneView: View {
 private struct AudioFileDropDelegate: DropDelegate {
     let pixelsPerBar: CGFloat
     @Binding var isDropTargeted: Bool
-    @Binding var dropPreviewBar: Int?
-    @Binding var dropPreviewLengthBars: Int?
-    var onResolveAudioFileBars: ((_ url: URL) -> Int?)?
-    var onDropAudioFile: ((_ url: URL, _ startBar: Int) -> Void)?
-    var onDropMIDIFile: ((_ url: URL, _ startBar: Int) -> Void)?
+    @Binding var dropPreviewBar: Double?
+    @Binding var dropPreviewLengthBars: Double?
+    var onResolveAudioFileBars: ((_ url: URL) -> Double?)?
+    var onDropAudioFile: ((_ url: URL, _ startBar: Double) -> Void)?
+    var onDropMIDIFile: ((_ url: URL, _ startBar: Double) -> Void)?
 
     func dropEntered(info: DropInfo) {
         isDropTargeted = true
@@ -372,7 +380,7 @@ private struct AudioFileDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         isDropTargeted = false
-        let barAtDrop = dropPreviewBar ?? max(Int(info.location.x / pixelsPerBar) + 1, 1)
+        let barAtDrop = dropPreviewBar ?? max(Double(info.location.x / pixelsPerBar) + 1.0, 1.0)
         dropPreviewBar = nil
         dropPreviewLengthBars = nil
 
@@ -393,7 +401,7 @@ private struct AudioFileDropDelegate: DropDelegate {
     }
 
     private func updatePreviewBar(info: DropInfo) {
-        let bar = max(Int(round(info.location.x / pixelsPerBar)) + 1, 1)
+        let bar = max(round(info.location.x / pixelsPerBar) + 1.0, 1.0)
         dropPreviewBar = bar
     }
 

@@ -110,9 +110,9 @@ public final class AudioImporter: Sendable {
     }
 
     /// Calculates the number of bars an audio file spans at a given tempo and time signature.
-    public static func barsForDuration(_ durationSeconds: Double, tempo: Tempo, timeSignature: TimeSignature) -> Int {
+    public static func barsForDuration(_ durationSeconds: Double, tempo: Tempo, timeSignature: TimeSignature) -> Double {
         let barDuration = (60.0 / tempo.bpm) * Double(timeSignature.beatsPerBar)
         let bars = durationSeconds / barDuration
-        return max(1, Int(ceil(bars)))
+        return max(1.0, ceil(bars))
     }
 }

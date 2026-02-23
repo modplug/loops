@@ -48,9 +48,9 @@ enum PianoRollLayout {
 public struct PianoRollView: View {
     let containerID: ID<Container>
     let sequence: MIDISequence
-    let lengthBars: Int
+    let lengthBars: Double
     let timeSignature: TimeSignature
-    let containerStartBar: Int
+    let containerStartBar: Double
 
     var playheadBeat: Double?
     var onAddNote: ((MIDINoteEvent) -> Void)?
@@ -70,10 +70,10 @@ public struct PianoRollView: View {
     public init(
         containerID: ID<Container>,
         sequence: MIDISequence,
-        lengthBars: Int,
+        lengthBars: Double,
         timeSignature: TimeSignature,
         snapResolution: SnapResolution = .sixteenth,
-        containerStartBar: Int = 1,
+        containerStartBar: Double = 1.0,
         playheadBeat: Double? = nil,
         onAddNote: ((MIDINoteEvent) -> Void)? = nil,
         onUpdateNote: ((MIDINoteEvent) -> Void)? = nil,
