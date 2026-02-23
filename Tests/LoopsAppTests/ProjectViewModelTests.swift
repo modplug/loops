@@ -3020,9 +3020,9 @@ struct ProjectViewModelTests {
         #expect(container?.sourceRecordingID != nil)
     }
 
-    @Test("importAudioAsync recording has nil peaks initially")
+    @Test("importAudioAsync recording has peaks immediately (synchronous generation)")
     @MainActor
-    func importAudioAsyncNilPeaksInitially() throws {
+    func importAudioAsyncHasPeaksImmediately() throws {
         let vm = ProjectViewModel()
         vm.newProject()
         vm.addTrack(kind: .audio)
@@ -3044,9 +3044,10 @@ struct ProjectViewModelTests {
         #expect(containerID != nil)
         let container = vm.project.songs[0].tracks[0].containers.first { $0.id == containerID }
         #expect(container != nil)
-        // Peaks should be nil initially (background task hasn't completed)
+        // Peaks are generated synchronously from the source URL before file copy
         let peaks = vm.waveformPeaks(for: container!)
-        #expect(peaks == nil)
+        #expect(peaks != nil)
+        #expect(peaks!.count > 0)
     }
 
     @Test("importAudioAsync rejects overlapping container")
@@ -4017,5 +4018,168 @@ struct ProjectViewModelTests {
         #expect(vm.project.midiParameterMappings.count == 1)
         #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].targetPath.effectIndex == 0)
         #expect(vm.project.midiParameterMappings[0].targetPath.effectIndex == 0)
+    }
+
+    // MARK: - Split Container
+
+    @Test("splitContainer creates two containers with correct bars")
+    @MainActor
+    func splitContainerBasic() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 8)
+
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+        let rightID = vm.splitContainer(trackID: trackID, containerID: originalID, atBar: 5)
+
+        #expect(rightID != nil)
+        let containers = vm.project.songs[0].tracks[0].containers.sorted { $0.startBar < $1.startBar }
+        #expect(containers.count == 2)
+        #expect(containers[0].startBar == 1)
+        #expect(containers[0].lengthBars == 4)
+        #expect(containers[1].startBar == 5)
+        #expect(containers[1].lengthBars == 4)
+    }
+
+    @Test("splitContainer sets correct audioStartOffset on right half")
+    @MainActor
+    func splitContainerAudioOffset() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 10)
+
+        let originalID = vm.project.songs[0].tracks[0].containers[0].id
+        let _ = vm.splitContainer(trackID: trackID, containerID: originalID, atBar: 4)
+
+        let containers = vm.project.songs[0].tracks[0].containers.sorted { $0.startBar < $1.startBar }
+        #expect(containers[0].audioStartOffset == 0.0)
+        #expect(containers[1].audioStartOffset == 3.0) // 4 - 1 = 3 bars into recording
+    }
+
+    @Test("splitContainerAtRange creates three containers")
+    @MainActor
+    func splitContainerAtRangeBasic() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 12)
+
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+        let result = vm.splitContainerAtRange(
+            trackID: trackID, containerID: containerID,
+            rangeStart: 5, rangeEnd: 9
+        )
+
+        #expect(result == true)
+        let containers = vm.project.songs[0].tracks[0].containers.sorted { $0.startBar < $1.startBar }
+        #expect(containers.count == 3)
+
+        // Left part: bars 1-4
+        #expect(containers[0].startBar == 1)
+        #expect(containers[0].lengthBars == 4)
+        #expect(containers[0].audioStartOffset == 0.0)
+
+        // Middle part: bars 5-8
+        #expect(containers[1].startBar == 5)
+        #expect(containers[1].lengthBars == 4)
+        #expect(containers[1].audioStartOffset == 4.0)
+
+        // Right part: bars 9-12
+        #expect(containers[2].startBar == 9)
+        #expect(containers[2].lengthBars == 4)
+        #expect(containers[2].audioStartOffset == 8.0)
+    }
+
+    @Test("splitContainerAtRange at container start creates two containers")
+    @MainActor
+    func splitContainerAtRangeFromStart() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 10)
+
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+        let result = vm.splitContainerAtRange(
+            trackID: trackID, containerID: containerID,
+            rangeStart: 1, rangeEnd: 4
+        )
+
+        #expect(result == true)
+        let containers = vm.project.songs[0].tracks[0].containers.sorted { $0.startBar < $1.startBar }
+        #expect(containers.count == 2)
+
+        // Middle (selection): bars 1-3
+        #expect(containers[0].startBar == 1)
+        #expect(containers[0].lengthBars == 3)
+
+        // Right: bars 4-10
+        #expect(containers[1].startBar == 4)
+        #expect(containers[1].lengthBars == 7)
+        #expect(containers[1].audioStartOffset == 3.0)
+    }
+
+    @Test("splitContainerAtRange at container end creates two containers")
+    @MainActor
+    func splitContainerAtRangeToEnd() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 10)
+
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+        let result = vm.splitContainerAtRange(
+            trackID: trackID, containerID: containerID,
+            rangeStart: 7, rangeEnd: 11
+        )
+
+        #expect(result == true)
+        let containers = vm.project.songs[0].tracks[0].containers.sorted { $0.startBar < $1.startBar }
+        #expect(containers.count == 2)
+
+        // Left: bars 1-6
+        #expect(containers[0].startBar == 1)
+        #expect(containers[0].lengthBars == 6)
+
+        // Middle (selection): bars 7-10
+        #expect(containers[1].startBar == 7)
+        #expect(containers[1].lengthBars == 4)
+        #expect(containers[1].audioStartOffset == 6.0)
+    }
+
+    @Test("splitContainerAtRange preserves audioStartOffset from original")
+    @MainActor
+    func splitContainerAtRangePreservesOffset() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 10)
+
+        // Set an existing audioStartOffset
+        vm.project.songs[0].tracks[0].containers[0].audioStartOffset = 2.0
+
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+        let result = vm.splitContainerAtRange(
+            trackID: trackID, containerID: containerID,
+            rangeStart: 8, rangeEnd: 12
+        )
+
+        #expect(result == true)
+        let containers = vm.project.songs[0].tracks[0].containers.sorted { $0.startBar < $1.startBar }
+        #expect(containers.count == 3)
+
+        // Left: bars 5-7, offset = original 2.0
+        #expect(containers[0].audioStartOffset == 2.0)
+        // Middle: bars 8-11, offset = 2.0 + (8-5) = 5.0
+        #expect(containers[1].audioStartOffset == 5.0)
+        // Right: bars 12-14, offset = 2.0 + (12-5) = 9.0
+        #expect(containers[2].audioStartOffset == 9.0)
     }
 }

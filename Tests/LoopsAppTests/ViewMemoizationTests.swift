@@ -86,6 +86,23 @@ struct ViewMemoizationTests {
         #expect(lhs != rhs)
     }
 
+    @Test("ContainerView: different recordingDurationBars makes views unequal")
+    func containerViewUnequalRecordingDuration() {
+        let container = Container()
+        let lhs = ContainerView(container: container, pixelsPerBar: 60, recordingDurationBars: nil)
+        let rhs = ContainerView(container: container, pixelsPerBar: 60, recordingDurationBars: 8.0)
+        #expect(lhs != rhs)
+    }
+
+    @Test("ContainerView: different audioStartOffset makes views unequal via container")
+    func containerViewUnequalAudioOffset() {
+        let c1 = Container(name: "A", startBar: 1, lengthBars: 4, audioStartOffset: 0.0)
+        let c2 = Container(name: "A", startBar: 1, lengthBars: 4, audioStartOffset: 2.0)
+        let lhs = ContainerView(container: c1, pixelsPerBar: 60)
+        let rhs = ContainerView(container: c2, pixelsPerBar: 60)
+        #expect(lhs != rhs)
+    }
+
     // MARK: - TrackLaneView Equatable
 
     @Test("TrackLaneView: identical data inputs are equal regardless of closures")
