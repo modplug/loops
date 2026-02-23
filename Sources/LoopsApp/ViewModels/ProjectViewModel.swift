@@ -111,6 +111,15 @@ public final class ProjectViewModel {
     private let persistence = ProjectPersistence()
     private var undoObservers: [NSObjectProtocol] = []
 
+    /// Tracks the currently open coalesced undo group action name.
+    /// While this is non-nil, rapid calls to `registerUndoCoalesced` with the
+    /// same action name skip creating new undo entries — only the first call
+    /// captures a snapshot and registers with the undo manager. The redo closure
+    /// dynamically captures the post-gesture state when undo fires.
+    private var activeCoalescedAction: String?
+    /// Timer that auto-closes the coalesced undo group after the gesture ends.
+    private var coalescedUndoTimer: Timer?
+
     public init(project: Project = Project()) {
         self.project = project
         let um = UndoManager()
@@ -154,6 +163,7 @@ public final class ProjectViewModel {
 
     /// Registers an undo action that snapshots and restores the full project state.
     private func registerUndo(actionName: String) {
+        let undoStart = CFAbsoluteTimeGetCurrent()
         let snapshot = project
         let wasUnsaved = hasUnsavedChanges
         let savedSongID = currentSongID
@@ -178,11 +188,61 @@ public final class ProjectViewModel {
         undoManager?.endUndoGrouping()
         // Track in undo history panel
         appendToUndoHistory(actionName: actionName)
+        let undoMs = (CFAbsoluteTimeGetCurrent() - undoStart) * 1000
+        print("[PERF] registerUndo('\(actionName)'): \(String(format: "%.2f", undoMs))ms")
     }
 
     /// Adds an entry to the undo history, trimming any "future" entries above the cursor.
     private func appendToUndoHistory(actionName: String) {
         undoState.appendToHistory(actionName: actionName)
+    }
+
+    /// Registers an undo action for continuous gestures (sliders, knobs) that coalesces
+    /// rapid changes into a single undo entry. Only the first call for a given action name
+    /// captures a snapshot; subsequent calls with the same name just mutate the property
+    /// (the undo closure already holds the pre-gesture state). The group auto-closes after
+    /// 0.3s of inactivity or when a different action is registered.
+    /// Registers an undo action for continuous gestures (sliders, knobs) that coalesces
+    /// rapid changes into a single undo entry. Only the first call for a given action name
+    /// captures a snapshot and registers with the undo manager; subsequent calls with the
+    /// same name are no-ops (the undo closure already holds the pre-gesture state, and the
+    /// redo closure will dynamically capture the post-gesture state when undo fires).
+    /// The group auto-closes after 0.3s of inactivity or when a different action starts.
+    private func registerUndoCoalesced(actionName: String) {
+        coalescedUndoTimer?.invalidate()
+        coalescedUndoTimer = nil
+
+        if activeCoalescedAction == actionName {
+            // Same gesture — restart the idle timer but skip the snapshot
+            print("[PERF] registerUndoCoalesced('\(actionName)'): COALESCED (skipped snapshot)")
+            coalescedUndoTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.closeCoalescedUndoGroup()
+                }
+            }
+            return
+        }
+
+        // Different action or no active group — close any open group first
+        closeCoalescedUndoGroup()
+
+        // Open a new coalesced group with a fresh snapshot + immediate undo registration
+        activeCoalescedAction = actionName
+        print("[PERF] registerUndoCoalesced('\(actionName)'): NEW group (taking snapshot)")
+        registerUndo(actionName: actionName)
+
+        coalescedUndoTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.closeCoalescedUndoGroup()
+            }
+        }
+    }
+
+    /// Closes the active coalesced undo group, if any.
+    private func closeCoalescedUndoGroup() {
+        coalescedUndoTimer?.invalidate()
+        coalescedUndoTimer = nil
+        activeCoalescedAction = nil
     }
 
     /// Creates a new empty project with a default song (with master track).
@@ -322,7 +382,7 @@ public final class ProjectViewModel {
     public func setMetronomeConfig(songID: ID<Song>, config: MetronomeConfig) {
         guard let index = project.songs.firstIndex(where: { $0.id == songID }) else { return }
         guard project.songs[index].metronomeConfig != config else { return }
-        registerUndo(actionName: "Set Metronome Config")
+        registerUndoCoalesced(actionName: "Set Metronome Config")
         project.songs[index].metronomeConfig = config
         hasUnsavedChanges = true
     }
@@ -525,7 +585,7 @@ public final class ProjectViewModel {
     public func setTrackVolume(trackID: ID<Track>, volume: Float) {
         guard !project.songs.isEmpty else { return }
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
-        registerUndo(actionName: "Adjust Volume")
+        registerUndoCoalesced(actionName: "Adjust Volume")
         project.songs[currentSongIndex].tracks[index].volume = max(0, min(volume, 2.0))
         hasUnsavedChanges = true
     }
@@ -562,7 +622,7 @@ public final class ProjectViewModel {
     public func setTrackPan(trackID: ID<Track>, pan: Float) {
         guard !project.songs.isEmpty else { return }
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
-        registerUndo(actionName: "Adjust Pan")
+        registerUndoCoalesced(actionName: "Adjust Pan")
         project.songs[currentSongIndex].tracks[index].pan = max(-1.0, min(pan, 1.0))
         hasUnsavedChanges = true
     }
@@ -572,7 +632,7 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return }
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         guard sendIndex < project.songs[currentSongIndex].tracks[index].sendLevels.count else { return }
-        registerUndo(actionName: "Adjust Send Level")
+        registerUndoCoalesced(actionName: "Adjust Send Level")
         project.songs[currentSongIndex].tracks[index].sendLevels[sendIndex].level = max(0.0, min(level, 1.0))
         hasUnsavedChanges = true
     }
