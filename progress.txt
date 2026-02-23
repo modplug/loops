@@ -986,3 +986,35 @@
 - Master track changes handled: if master effects change, master chain is rebuilt and all track mixers are reconnected to the new output target
 - 8 new tests: prepareIncremental no changes (empty set), single track changed (only that track rebuilt), preserve unchanged track's player node (same instance), fallback to full prepare without prior fingerprints, currentPlaybackBar nil when stopped, currentPlaybackBar near fromBar after play, rapid incremental cycles (no crashes), playChangedTracks schedules only specified tracks
 - All 967 tests pass
+
+### Iteration 7 — #116 Inline I/O controls on track headers
+- `TrackHeaderView`: added `availableInputPorts: [InputPort]`, `availableOutputPorts: [OutputPort]`, `availableMIDIDevices: [MIDIInputDevice]` parameters (all default `[]`)
+- `TrackHeaderView`: added `onSetInputPort: ((String?) -> Void)?`, `onSetOutputPort: ((String?) -> Void)?`, `onSetMIDIInput: ((String?, UInt8?) -> Void)?` callbacks (all default nil)
+- Audio tracks: replaced read-only input/output text labels with `Menu` pickers listing available ports + "Default" option
+- MIDI tracks: replaced read-only device/channel text labels with `Menu` pickers listing available MIDI devices + "All Devices" option, and channels 1–16 + "Omni" option
+- Master track: replaced read-only output text label with `Menu` picker listing available output ports + "Default" option
+- All pickers use `.menuStyle(.borderlessButton)` and `.menuIndicator(.hidden)` for compact inline appearance matching existing header layout
+- MIDI device picker preserves current channel when changing device; channel picker preserves current device when changing channel
+- `MainContentView.trackHeaderWithActions()`: wired `availableInputPorts` (from `settingsViewModel?.inputPorts`), `availableOutputPorts` (from `settingsViewModel?.outputPorts`), `availableMIDIDevices` (from `engineManager?.midiManager.availableInputDevices()`), and all three selection callbacks to existing `ProjectViewModel` methods (`setTrackInputPort`, `setTrackOutputPort`/`setMasterOutputPort`, `setTrackMIDIInput`)
+- All routing changes go through existing undo-enabled ProjectViewModel methods — no new undo code needed
+- 10 new tests: inline input port selection, inline output port selection, inline MIDI device selection, inline MIDI channel selection, inline master output port selection, selecting Default clears port, inline routing change undo/redo, TrackHeaderView accepts ports and devices, MIDI device/channel change preserves other field
+- All 976 tests pass
+
+### Iteration 8 — #118 Auto-open plugin window after adding effect
+- `MainContentView`: all three `onAddEffect` closures (containerDetailEditorSheet, containerInspectorContent, trackInspectorContent) now call `PluginWindowManager.shared.open()` immediately after `addContainerEffect` / `addTrackEffect`
+- Container effect closures pass `onPresetChanged` callback wired to `projectViewModel.updateContainerEffectPreset` so preset saves work from the auto-opened window
+- Track effect closure passes `onPresetChanged: nil` (matching existing inspector behavior)
+- All auto-opened windows use `liveAudioUnit: nil` and `presetData: nil` since the effect was just created and isn't in the engine graph yet — standalone AU instantiation handles async loading
+- Manually opening plugin windows from inspector effect rows still works unchanged
+- 3 new tests: auto-open after add effect (window visible with nil preset), auto-open while another plugin window is open (both visible), auto-opened window receives preset callback on close
+- All 979 tests pass
+
+### Iteration 9 — #119 Clean up automation lanes and MIDI mappings on effect/instrument removal
+- `ProjectViewModel.removeTrackEffect()`: after removing effect, removes all `trackAutomationLanes` and `midiParameterMappings` targeting the removed effect's `effectIndex`; decrements `effectIndex` in remaining lanes/mappings that referenced effects after the removed one
+- `ProjectViewModel.removeContainerEffect()`: after removing effect, removes all container `automationLanes` and `midiParameterMappings` targeting the removed effect's `effectIndex`; decrements `effectIndex` in remaining lanes/mappings for higher-indexed effects; marks `.automation` field as overridden
+- `ProjectViewModel.reorderTrackEffects()`: captures old→new index mapping from the move operation; updates `effectIndex` in all `trackAutomationLanes` and `midiParameterMappings` to match new ordering
+- `ProjectViewModel.reorderContainerEffects()`: captures old→new index mapping; updates `effectIndex` in container `automationLanes` and `midiParameterMappings`; marks `.automation` field as overridden
+- `ProjectViewModel.setContainerInstrumentOverride(nil)`: removes container `automationLanes` where `effectIndex == instrumentParameterEffectIndex` (-2); removes `midiParameterMappings` targeting the instrument; marks `.automation` field as overridden
+- All cleanup operations happen within the same `registerUndo()` transaction as the effect/instrument removal, so undo restores everything atomically
+- 8 new tests: track effect removal cleans up automation+MIDI, track effect removal decrements higher indices, track effect reorder updates indices, container effect removal cleans up automation+MIDI, container effect removal decrements higher indices, container effect reorder updates indices, instrument override removal cleans up automation+MIDI, undo track effect removal restores automation+MIDI
+- All 987 tests pass

@@ -3734,4 +3734,288 @@ struct ProjectViewModelTests {
         #expect(newContainer?.midiSequence?.notes.count == 1)
         #expect(newContainer?.midiSequence?.notes.first?.pitch == 60)
     }
+
+    // MARK: - Effect/Instrument Removal Cleanup (#119)
+
+    @Test("Remove track effect also removes its automation lanes and MIDI mappings")
+    @MainActor
+    func removeTrackEffectCleansUpAutomationAndMIDI() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effect = InsertEffect(component: comp, displayName: "Reverb", orderIndex: 0)
+        vm.addTrackEffect(trackID: trackID, effect: effect)
+        let effectID = vm.project.songs[0].tracks[0].insertEffects[0].id
+
+        // Add automation lane targeting this effect
+        let lane = AutomationLane(targetPath: EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 100))
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.count == 1)
+
+        // Add MIDI parameter mapping targeting this effect
+        let mapping = MIDIParameterMapping(
+            trigger: .controlChange(channel: 0, controller: 1),
+            targetPath: EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 100)
+        )
+        vm.addMIDIParameterMapping(mapping)
+        #expect(vm.project.midiParameterMappings.count == 1)
+
+        // Remove the effect
+        vm.removeTrackEffect(trackID: trackID, effectID: effectID)
+
+        // Automation lane and MIDI mapping should be gone
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.isEmpty)
+        #expect(vm.project.midiParameterMappings.isEmpty)
+    }
+
+    @Test("Remove track effect at index N decrements automation/MIDI for effects after N")
+    @MainActor
+    func removeTrackEffectDecrementsHigherIndices() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addTrackEffect(trackID: trackID, effect: InsertEffect(component: comp, displayName: "A", orderIndex: 0))
+        vm.addTrackEffect(trackID: trackID, effect: InsertEffect(component: comp, displayName: "B", orderIndex: 1))
+        vm.addTrackEffect(trackID: trackID, effect: InsertEffect(component: comp, displayName: "C", orderIndex: 2))
+        let effectBID = vm.project.songs[0].tracks[0].insertEffects.first(where: { $0.displayName == "B" })!.id
+
+        // Add automation for A (index 0) and C (index 2)
+        let laneA = AutomationLane(targetPath: EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 100))
+        let laneC = AutomationLane(targetPath: EffectPath(trackID: trackID, effectIndex: 2, parameterAddress: 200))
+        vm.addTrackAutomationLane(trackID: trackID, lane: laneA)
+        vm.addTrackAutomationLane(trackID: trackID, lane: laneC)
+
+        // Add MIDI mapping for C (index 2)
+        let mapping = MIDIParameterMapping(
+            trigger: .controlChange(channel: 0, controller: 1),
+            targetPath: EffectPath(trackID: trackID, effectIndex: 2, parameterAddress: 200)
+        )
+        vm.addMIDIParameterMapping(mapping)
+
+        // Remove B (index 1)
+        vm.removeTrackEffect(trackID: trackID, effectID: effectBID)
+
+        // A's lane unchanged (index 0)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.count == 2)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].targetPath.effectIndex == 0)
+        // C's lane decremented from 2 to 1
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[1].targetPath.effectIndex == 1)
+        // MIDI mapping for C also decremented
+        #expect(vm.project.midiParameterMappings[0].targetPath.effectIndex == 1)
+    }
+
+    @Test("Reorder track effects updates effectIndex in automation lanes and MIDI mappings")
+    @MainActor
+    func reorderTrackEffectsUpdatesAutomationAndMIDI() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addTrackEffect(trackID: trackID, effect: InsertEffect(component: comp, displayName: "A", orderIndex: 0))
+        vm.addTrackEffect(trackID: trackID, effect: InsertEffect(component: comp, displayName: "B", orderIndex: 1))
+        vm.addTrackEffect(trackID: trackID, effect: InsertEffect(component: comp, displayName: "C", orderIndex: 2))
+
+        // Add automation lane for A (index 0) and MIDI mapping for C (index 2)
+        let laneA = AutomationLane(targetPath: EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 100))
+        vm.addTrackAutomationLane(trackID: trackID, lane: laneA)
+        let mappingC = MIDIParameterMapping(
+            trigger: .controlChange(channel: 0, controller: 1),
+            targetPath: EffectPath(trackID: trackID, effectIndex: 2, parameterAddress: 200)
+        )
+        vm.addMIDIParameterMapping(mappingC)
+
+        // Move A (index 0) to after C (position 3) → new order: B(0), C(1), A(2)
+        vm.reorderTrackEffects(trackID: trackID, from: IndexSet(integer: 0), to: 3)
+
+        // Verify effects reordered
+        let effects = vm.project.songs[0].tracks[0].insertEffects.sorted { $0.orderIndex < $1.orderIndex }
+        #expect(effects[0].displayName == "B")
+        #expect(effects[1].displayName == "C")
+        #expect(effects[2].displayName == "A")
+
+        // A's automation lane moved from index 0 to index 2
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].targetPath.effectIndex == 2)
+        // C's MIDI mapping moved from index 2 to index 1
+        #expect(vm.project.midiParameterMappings[0].targetPath.effectIndex == 1)
+    }
+
+    @Test("Remove container effect also removes its automation lanes and MIDI mappings")
+    @MainActor
+    func removeContainerEffectCleansUpAutomationAndMIDI() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effect = InsertEffect(component: comp, displayName: "Reverb", orderIndex: 0)
+        vm.addContainerEffect(containerID: containerID, effect: effect)
+        let effectID = vm.project.songs[0].tracks[0].containers[0].insertEffects[0].id
+
+        // Add automation lane targeting this container effect
+        let lane = AutomationLane(targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 100))
+        vm.addAutomationLane(containerID: containerID, lane: lane)
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes.count == 1)
+
+        // Add MIDI parameter mapping targeting this container effect
+        let mapping = MIDIParameterMapping(
+            trigger: .controlChange(channel: 0, controller: 1),
+            targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 100)
+        )
+        vm.addMIDIParameterMapping(mapping)
+        #expect(vm.project.midiParameterMappings.count == 1)
+
+        // Remove the effect
+        vm.removeContainerEffect(containerID: containerID, effectID: effectID)
+
+        // Automation lane and MIDI mapping should be gone
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes.isEmpty)
+        #expect(vm.project.midiParameterMappings.isEmpty)
+    }
+
+    @Test("Remove container effect at index N decrements automation/MIDI for effects after N")
+    @MainActor
+    func removeContainerEffectDecrementsHigherIndices() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "A", orderIndex: 0))
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "B", orderIndex: 1))
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "C", orderIndex: 2))
+        let effectBID = vm.project.songs[0].tracks[0].containers[0].insertEffects.first(where: { $0.displayName == "B" })!.id
+
+        // Add automation for A (index 0) and C (index 2)
+        let laneA = AutomationLane(targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 100))
+        let laneC = AutomationLane(targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 2, parameterAddress: 200))
+        vm.addAutomationLane(containerID: containerID, lane: laneA)
+        vm.addAutomationLane(containerID: containerID, lane: laneC)
+
+        // Remove B (index 1)
+        vm.removeContainerEffect(containerID: containerID, effectID: effectBID)
+
+        // A's lane unchanged (index 0)
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes.count == 2)
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes[0].targetPath.effectIndex == 0)
+        // C's lane decremented from 2 to 1
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes[1].targetPath.effectIndex == 1)
+    }
+
+    @Test("Reorder container effects updates effectIndex in automation lanes")
+    @MainActor
+    func reorderContainerEffectsUpdatesAutomation() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "A", orderIndex: 0))
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "B", orderIndex: 1))
+
+        // Add automation lane for A (index 0)
+        let laneA = AutomationLane(targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 100))
+        vm.addAutomationLane(containerID: containerID, lane: laneA)
+
+        // Move A (index 0) to after B (position 2) → new order: B(0), A(1)
+        vm.reorderContainerEffects(containerID: containerID, from: IndexSet(integer: 0), to: 2)
+
+        // A's automation lane moved from index 0 to index 1
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes[0].targetPath.effectIndex == 1)
+    }
+
+    @Test("Remove instrument override removes instrument automation lanes and MIDI mappings")
+    @MainActor
+    func removeInstrumentOverrideCleansUpAutomation() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let containerID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Set instrument override
+        let instComp = AudioComponentInfo(componentType: 1, componentSubType: 2, componentManufacturer: 1)
+        vm.setContainerInstrumentOverride(containerID: containerID, override: instComp)
+
+        // Add instrument automation lane (effectIndex == -2)
+        let instLane = AutomationLane(targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: EffectPath.instrumentParameterEffectIndex, parameterAddress: 50))
+        vm.addAutomationLane(containerID: containerID, lane: instLane)
+
+        // Add a regular effect automation lane (should NOT be removed)
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: containerID, effect: InsertEffect(component: comp, displayName: "FX", orderIndex: 0))
+        let effectLane = AutomationLane(targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: 0, parameterAddress: 100))
+        vm.addAutomationLane(containerID: containerID, lane: effectLane)
+
+        // Add MIDI mapping for instrument
+        let instMapping = MIDIParameterMapping(
+            trigger: .controlChange(channel: 0, controller: 1),
+            targetPath: EffectPath(trackID: trackID, containerID: containerID, effectIndex: EffectPath.instrumentParameterEffectIndex, parameterAddress: 50)
+        )
+        vm.addMIDIParameterMapping(instMapping)
+
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes.count == 2)
+        #expect(vm.project.midiParameterMappings.count == 1)
+
+        // Remove instrument override
+        vm.setContainerInstrumentOverride(containerID: containerID, override: nil)
+
+        // Instrument automation lane and MIDI mapping removed, effect lane preserved
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes.count == 1)
+        #expect(vm.project.songs[0].tracks[0].containers[0].automationLanes[0].targetPath.effectIndex == 0)
+        #expect(vm.project.midiParameterMappings.isEmpty)
+    }
+
+    @Test("Undo track effect removal restores automation lanes and MIDI mappings")
+    @MainActor
+    func undoTrackEffectRemovalRestoresAutomationAndMIDI() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addTrackEffect(trackID: trackID, effect: InsertEffect(component: comp, displayName: "Reverb", orderIndex: 0))
+        let effectID = vm.project.songs[0].tracks[0].insertEffects[0].id
+
+        // Add automation and MIDI mapping
+        let lane = AutomationLane(targetPath: EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 100))
+        vm.addTrackAutomationLane(trackID: trackID, lane: lane)
+        let mapping = MIDIParameterMapping(
+            trigger: .controlChange(channel: 0, controller: 1),
+            targetPath: EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 100)
+        )
+        vm.addMIDIParameterMapping(mapping)
+
+        // Remove the effect
+        vm.removeTrackEffect(trackID: trackID, effectID: effectID)
+        #expect(vm.project.songs[0].tracks[0].insertEffects.isEmpty)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.isEmpty)
+        #expect(vm.project.midiParameterMappings.isEmpty)
+
+        // Undo should restore everything
+        vm.undoManager?.undo()
+        #expect(vm.project.songs[0].tracks[0].insertEffects.count == 1)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes.count == 1)
+        #expect(vm.project.midiParameterMappings.count == 1)
+        #expect(vm.project.songs[0].tracks[0].trackAutomationLanes[0].targetPath.effectIndex == 0)
+        #expect(vm.project.midiParameterMappings[0].targetPath.effectIndex == 0)
+    }
 }

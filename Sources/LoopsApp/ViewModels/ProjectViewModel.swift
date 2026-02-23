@@ -641,10 +641,39 @@ public final class ProjectViewModel {
     public func removeTrackEffect(trackID: ID<Track>, effectID: ID<InsertEffect>) {
         guard !project.songs.isEmpty else { return }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        let removedIndex = project.songs[currentSongIndex].tracks[trackIndex].insertEffects
+            .first(where: { $0.id == effectID })?.orderIndex
         registerUndo(actionName: "Remove Track Effect")
         project.songs[currentSongIndex].tracks[trackIndex].insertEffects.removeAll { $0.id == effectID }
         for i in project.songs[currentSongIndex].tracks[trackIndex].insertEffects.indices {
             project.songs[currentSongIndex].tracks[trackIndex].insertEffects[i].orderIndex = i
+        }
+        if let removedIndex {
+            // Remove automation lanes targeting the removed effect
+            project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.removeAll {
+                $0.targetPath.trackID == trackID && $0.targetPath.effectIndex == removedIndex
+            }
+            // Decrement effectIndex for lanes targeting effects after the removed one
+            for i in project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.indices {
+                if project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[i].targetPath.trackID == trackID
+                    && project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[i].targetPath.effectIndex > removedIndex
+                    && project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[i].targetPath.isTrackEffectParameter {
+                    project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[i].targetPath.effectIndex -= 1
+                }
+            }
+            // Remove MIDI parameter mappings targeting the removed effect
+            project.midiParameterMappings.removeAll {
+                $0.targetPath.trackID == trackID && $0.targetPath.containerID == nil && $0.targetPath.effectIndex == removedIndex
+            }
+            // Decrement effectIndex for MIDI mappings targeting effects after the removed one
+            for i in project.midiParameterMappings.indices {
+                if project.midiParameterMappings[i].targetPath.trackID == trackID
+                    && project.midiParameterMappings[i].targetPath.containerID == nil
+                    && project.midiParameterMappings[i].targetPath.effectIndex > removedIndex
+                    && project.midiParameterMappings[i].targetPath.isTrackEffectParameter {
+                    project.midiParameterMappings[i].targetPath.effectIndex -= 1
+                }
+            }
         }
         hasUnsavedChanges = true
     }
@@ -655,9 +684,33 @@ public final class ProjectViewModel {
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         registerUndo(actionName: "Reorder Track Effects")
         project.songs[currentSongIndex].tracks[trackIndex].insertEffects.sort { $0.orderIndex < $1.orderIndex }
+        // Capture old ordering (effect ID at each old index)
+        let oldOrder = project.songs[currentSongIndex].tracks[trackIndex].insertEffects.map(\.id)
         project.songs[currentSongIndex].tracks[trackIndex].insertEffects.move(fromOffsets: source, toOffset: destination)
+        // Build old→new index mapping
+        let newOrder = project.songs[currentSongIndex].tracks[trackIndex].insertEffects.map(\.id)
+        var indexMap: [Int: Int] = [:]
+        for (oldIdx, eid) in oldOrder.enumerated() {
+            if let newIdx = newOrder.firstIndex(of: eid) {
+                indexMap[oldIdx] = newIdx
+            }
+        }
         for i in project.songs[currentSongIndex].tracks[trackIndex].insertEffects.indices {
             project.songs[currentSongIndex].tracks[trackIndex].insertEffects[i].orderIndex = i
+        }
+        // Update effectIndex in track automation lanes
+        for i in project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.indices {
+            let path = project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[i].targetPath
+            if path.trackID == trackID && path.isTrackEffectParameter, let newIdx = indexMap[path.effectIndex] {
+                project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[i].targetPath.effectIndex = newIdx
+            }
+        }
+        // Update effectIndex in MIDI parameter mappings
+        for i in project.midiParameterMappings.indices {
+            let path = project.midiParameterMappings[i].targetPath
+            if path.trackID == trackID && path.containerID == nil && path.isTrackEffectParameter, let newIdx = indexMap[path.effectIndex] {
+                project.midiParameterMappings[i].targetPath.effectIndex = newIdx
+            }
         }
         hasUnsavedChanges = true
     }
@@ -980,12 +1033,42 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return }
         for trackIndex in project.songs[currentSongIndex].tracks.indices {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                let trackID = project.songs[currentSongIndex].tracks[trackIndex].id
+                let removedIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects
+                    .first(where: { $0.id == effectID })?.orderIndex
                 registerUndo(actionName: "Remove Container Effect")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.removeAll { $0.id == effectID }
                 for i in project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.indices {
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[i].orderIndex = i
                 }
+                if let removedIndex {
+                    // Remove automation lanes targeting the removed effect
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.removeAll {
+                        $0.targetPath.effectIndex == removedIndex
+                    }
+                    // Decrement effectIndex for lanes targeting effects after the removed one
+                    for i in project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.indices {
+                        if project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[i].targetPath.effectIndex > removedIndex
+                            && project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[i].targetPath.effectIndex >= 0 {
+                            project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[i].targetPath.effectIndex -= 1
+                        }
+                    }
+                    // Remove MIDI parameter mappings targeting the removed container effect
+                    project.midiParameterMappings.removeAll {
+                        $0.targetPath.trackID == trackID && $0.targetPath.containerID == containerID && $0.targetPath.effectIndex == removedIndex
+                    }
+                    // Decrement effectIndex for MIDI mappings targeting container effects after the removed one
+                    for i in project.midiParameterMappings.indices {
+                        if project.midiParameterMappings[i].targetPath.trackID == trackID
+                            && project.midiParameterMappings[i].targetPath.containerID == containerID
+                            && project.midiParameterMappings[i].targetPath.effectIndex > removedIndex
+                            && project.midiParameterMappings[i].targetPath.effectIndex >= 0 {
+                            project.midiParameterMappings[i].targetPath.effectIndex -= 1
+                        }
+                    }
+                }
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                 hasUnsavedChanges = true
                 return
             }
@@ -1011,14 +1094,40 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return }
         for trackIndex in project.songs[currentSongIndex].tracks.indices {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                let trackID = project.songs[currentSongIndex].tracks[trackIndex].id
                 registerUndo(actionName: "Reorder Effects")
                 // Sort effects by orderIndex before reordering
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.sort { $0.orderIndex < $1.orderIndex }
+                // Capture old ordering
+                let oldOrder = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.map(\.id)
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.move(fromOffsets: source, toOffset: destination)
+                // Build old→new index mapping
+                let newOrder = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.map(\.id)
+                var indexMap: [Int: Int] = [:]
+                for (oldIdx, eid) in oldOrder.enumerated() {
+                    if let newIdx = newOrder.firstIndex(of: eid) {
+                        indexMap[oldIdx] = newIdx
+                    }
+                }
                 for i in project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects.indices {
                     project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].insertEffects[i].orderIndex = i
                 }
+                // Update effectIndex in container automation lanes
+                for i in project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.indices {
+                    let path = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[i].targetPath
+                    if path.effectIndex >= 0, let newIdx = indexMap[path.effectIndex] {
+                        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[i].targetPath.effectIndex = newIdx
+                    }
+                }
+                // Update effectIndex in MIDI parameter mappings
+                for i in project.midiParameterMappings.indices {
+                    let path = project.midiParameterMappings[i].targetPath
+                    if path.trackID == trackID && path.containerID == containerID && path.effectIndex >= 0, let newIdx = indexMap[path.effectIndex] {
+                        project.midiParameterMappings[i].targetPath.effectIndex = newIdx
+                    }
+                }
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .effects)
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
                 hasUnsavedChanges = true
                 return
             }
@@ -1064,8 +1173,21 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return }
         for trackIndex in project.songs[currentSongIndex].tracks.indices {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                let trackID = project.songs[currentSongIndex].tracks[trackIndex].id
                 registerUndo(actionName: override != nil ? "Set Instrument Override" : "Remove Instrument Override")
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].instrumentOverride = override
+                if override == nil {
+                    // Remove instrument automation lanes (effectIndex == -2)
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.removeAll {
+                        $0.targetPath.effectIndex == EffectPath.instrumentParameterEffectIndex
+                    }
+                    // Remove MIDI parameter mappings targeting the instrument
+                    project.midiParameterMappings.removeAll {
+                        $0.targetPath.trackID == trackID && $0.targetPath.containerID == containerID
+                            && $0.targetPath.effectIndex == EffectPath.instrumentParameterEffectIndex
+                    }
+                    markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
+                }
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .instrumentOverride)
                 hasUnsavedChanges = true
                 return
