@@ -35,6 +35,7 @@ public struct ContainerInspector: View {
     /// Returns the engine's live AVAudioUnit for a container effect at the given index, if available.
     var liveEffectUnit: ((Int) -> AVAudioUnit?)?
     var onNavigateToParent: (() -> Void)?
+    var onResetField: ((ContainerField) -> Void)?
     let parentContainer: Container?
     var isMIDIActive: Bool
     var playheadBar: Double
@@ -100,6 +101,7 @@ public struct ContainerInspector: View {
         onUpdateEffectPreset: ((ID<InsertEffect>, Data?) -> Void)? = nil,
         liveEffectUnit: ((Int) -> AVAudioUnit?)? = nil,
         onNavigateToParent: (() -> Void)? = nil,
+        onResetField: ((ContainerField) -> Void)? = nil,
         parentContainer: Container? = nil,
         isMIDIActive: Bool = false,
         playheadBar: Double = 1.0
@@ -134,6 +136,7 @@ public struct ContainerInspector: View {
         self.onUpdateEffectPreset = onUpdateEffectPreset
         self.liveEffectUnit = liveEffectUnit
         self.onNavigateToParent = onNavigateToParent
+        self.onResetField = onResetField
         self.parentContainer = parentContainer
         self.isMIDIActive = isMIDIActive
         self.playheadBar = playheadBar
@@ -146,7 +149,8 @@ public struct ContainerInspector: View {
                 LinkedClipInspectorView(
                     container: container,
                     parentContainer: parentContainer,
-                    onNavigateToParent: onNavigateToParent
+                    onNavigateToParent: onNavigateToParent,
+                    onResetField: onResetField
                 )
             }
 

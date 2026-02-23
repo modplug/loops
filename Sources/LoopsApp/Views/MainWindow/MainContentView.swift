@@ -867,6 +867,9 @@ public struct MainContentView: View {
                         projectViewModel.selectedContainerID = parentID
                     }
                 } : nil,
+                onResetField: container.isClone ? { field in
+                    projectViewModel.resetContainerField(containerID: container.id, field: field)
+                } : nil,
                 parentContainer: container.parentContainerID.flatMap { projectViewModel.findContainer(id: $0) },
                 isMIDIActive: {
                     guard let track = projectViewModel.selectedContainerTrack else { return false }

@@ -194,4 +194,211 @@ struct LinkedClipInspectorTests {
         let result = vm.findContainer(id: orphanParentID)
         #expect(result == nil)
     }
+
+    // MARK: - Reset Field to Parent Value
+
+    @Test("Reset field removes it from overriddenFields")
+    @MainActor
+    func resetFieldRemovesOverride() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Override name
+        vm.updateContainerName(containerID: cloneID, name: "Custom Name")
+        let cloneBefore = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(cloneBefore.overriddenFields.contains(.name))
+
+        // Reset the name field
+        vm.resetContainerField(containerID: cloneID, field: .name)
+
+        let cloneAfter = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(!cloneAfter.overriddenFields.contains(.name))
+    }
+
+    @Test("Reset field copies parent's current value into clone")
+    @MainActor
+    func resetFieldCopiesParentValue() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+        vm.updateContainerName(containerID: parentID, name: "Parent Name")
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+        vm.updateContainerName(containerID: cloneID, name: "Clone Override")
+
+        let cloneBefore = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(cloneBefore.name == "Clone Override")
+
+        // Reset — should copy parent's current value
+        vm.resetContainerField(containerID: cloneID, field: .name)
+
+        let cloneAfter = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(cloneAfter.name == "Parent Name")
+    }
+
+    @Test("After reset, clone inherits future parent edits via resolved()")
+    @MainActor
+    func resetFieldInheritsFutureParentEdits() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+        vm.updateContainerName(containerID: parentID, name: "Original")
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+        vm.updateContainerName(containerID: cloneID, name: "Override")
+        vm.resetContainerField(containerID: cloneID, field: .name)
+
+        // Now edit parent's name
+        vm.updateContainerName(containerID: parentID, name: "Updated Parent")
+
+        // Clone should inherit the new parent name via resolved()
+        let clone = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        let parent = vm.findContainer(id: parentID)!
+        let resolved = clone.resolved(parent: parent)
+        #expect(resolved.name == "Updated Parent")
+    }
+
+    @Test("Undo reset restores override and original value")
+    @MainActor
+    func undoResetRestoresOverride() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+        vm.updateContainerName(containerID: parentID, name: "Parent")
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+        vm.updateContainerName(containerID: cloneID, name: "My Override")
+
+        // Reset
+        vm.resetContainerField(containerID: cloneID, field: .name)
+        let afterReset = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(!afterReset.overriddenFields.contains(.name))
+        #expect(afterReset.name == "Parent")
+
+        // Undo
+        vm.undoManager?.undo()
+        let afterUndo = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(afterUndo.overriddenFields.contains(.name))
+        #expect(afterUndo.name == "My Override")
+    }
+
+    @Test("Reset has no effect on non-overridden fields")
+    @MainActor
+    func resetNonOverriddenFieldIsNoOp() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Name is not overridden — reset should be a no-op
+        let cloneBefore = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(!cloneBefore.overriddenFields.contains(.name))
+
+        vm.resetContainerField(containerID: cloneID, field: .name)
+
+        let cloneAfter = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(!cloneAfter.overriddenFields.contains(.name))
+    }
+
+    @Test("Reset effects field copies parent's effect chain")
+    @MainActor
+    func resetEffectsFieldCopiesParentEffects() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Add an effect to parent
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        let effect = InsertEffect(component: comp, displayName: "Reverb")
+        vm.addContainerEffect(containerID: parentID, effect: effect)
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Override effects on clone by adding a different effect
+        let cloneEffect = InsertEffect(component: comp, displayName: "Delay")
+        vm.addContainerEffect(containerID: cloneID, effect: cloneEffect)
+        let cloneBefore = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(cloneBefore.overriddenFields.contains(.effects))
+        #expect(cloneBefore.insertEffects.count == 2) // Original + new
+
+        // Reset effects
+        vm.resetContainerField(containerID: cloneID, field: .effects)
+
+        let cloneAfter = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(!cloneAfter.overriddenFields.contains(.effects))
+        // Clone should now have parent's effects (just the one Reverb)
+        let parent = vm.findContainer(id: parentID)!
+        #expect(cloneAfter.insertEffects.count == parent.insertEffects.count)
+        #expect(cloneAfter.insertEffects.first?.displayName == "Reverb")
+    }
+
+    @Test("Container.copyField copies each field type correctly")
+    func copyFieldAllTypes() {
+        let source = Container(
+            name: "Source",
+            startBar: 1,
+            lengthBars: 4,
+            loopSettings: LoopSettings(loopCount: .count(3)),
+            insertEffects: [InsertEffect(component: AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1), displayName: "FX")],
+            isEffectChainBypassed: true,
+            enterFade: FadeSettings(duration: 2.0, curve: .exponential),
+            exitFade: FadeSettings(duration: 3.0, curve: .linear),
+            onEnterActions: [.makeSendMIDI(message: .programChange(channel: 0, program: 5), destination: .externalPort(name: "Port"))],
+            onExitActions: [.makeSendMIDI(message: .programChange(channel: 0, program: 10), destination: .externalPort(name: "Port"))],
+            midiSequence: MIDISequence(notes: [MIDINoteEvent(pitch: 60, velocity: 100, startBeat: 0, duration: 1.0)])
+        )
+
+        var target = Container(name: "Target", startBar: 5, lengthBars: 8)
+
+        // Copy each field and verify
+        target.copyField(from: source, field: .name)
+        #expect(target.name == "Source")
+
+        target.copyField(from: source, field: .effects)
+        #expect(target.insertEffects.count == 1)
+        #expect(target.isEffectChainBypassed == true)
+
+        target.copyField(from: source, field: .fades)
+        #expect(target.enterFade?.duration == 2.0)
+        #expect(target.exitFade?.duration == 3.0)
+
+        target.copyField(from: source, field: .enterActions)
+        #expect(target.onEnterActions.count == 1)
+
+        target.copyField(from: source, field: .exitActions)
+        #expect(target.onExitActions.count == 1)
+
+        target.copyField(from: source, field: .loopSettings)
+        #expect(target.loopSettings.loopCount == .count(3))
+
+        target.copyField(from: source, field: .midiSequence)
+        #expect(target.midiSequence != nil)
+        #expect(target.midiSequence?.notes.count == 1)
+
+        // Position fields should NOT have been affected
+        #expect(target.startBar == 5)
+        #expect(target.lengthBars == 8)
+    }
 }

@@ -7,15 +7,18 @@ public struct LinkedClipInspectorView: View {
     let container: Container
     let parentContainer: Container?
     var onNavigateToParent: (() -> Void)?
+    var onResetField: ((ContainerField) -> Void)?
 
     public init(
         container: Container,
         parentContainer: Container?,
-        onNavigateToParent: (() -> Void)? = nil
+        onNavigateToParent: (() -> Void)? = nil,
+        onResetField: ((ContainerField) -> Void)? = nil
     ) {
         self.container = container
         self.parentContainer = parentContainer
         self.onNavigateToParent = onNavigateToParent
+        self.onResetField = onResetField
     }
 
     public var body: some View {
@@ -72,6 +75,17 @@ public struct LinkedClipInspectorView: View {
                     .font(.caption)
                 Text(field.displayName)
                 Spacer()
+                if isOverridden, onResetField != nil {
+                    Button {
+                        onResetField?(field)
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward.circle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Reset to parent value")
+                }
                 Text(isOverridden ? "Overridden" : "Inherited")
                     .font(.caption)
                     .foregroundStyle(isOverridden ? .orange : .secondary)

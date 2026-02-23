@@ -1526,6 +1526,26 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    /// Resets a single overridden field on a linked clone back to the parent's current value.
+    /// Removes the field from `overriddenFields` so future parent edits propagate.
+    public func resetContainerField(containerID: ID<Container>, field: ContainerField) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.containers.contains(where: { $0.id == containerID }) }) else { return }
+        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return }
+        let container = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
+        guard let parentID = container.parentContainerID else { return }
+        guard container.overriddenFields.contains(field) else { return }
+
+        let allContainers = project.songs[currentSongIndex].tracks.flatMap(\.containers)
+        guard let parent = allContainers.first(where: { $0.id == parentID }) else { return }
+
+        registerUndo(actionName: "Reset \(field.displayName)")
+
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].copyField(from: parent, field: field)
+        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].overriddenFields.remove(field)
+        hasUnsavedChanges = true
+    }
+
     /// Finds a container by ID across all tracks in the current song.
     public func findContainer(id: ID<Container>) -> Container? {
         guard let song = currentSong else { return nil }

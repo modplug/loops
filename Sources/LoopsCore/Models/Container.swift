@@ -139,6 +139,36 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
         metronomeSettings = try c.decodeIfPresent(MetronomeSettings.self, forKey: .metronomeSettings)
     }
 
+    // MARK: - Per-field Operations
+
+    /// Copies a single field's value from the given source container into this container.
+    public mutating func copyField(from source: Container, field: ContainerField) {
+        switch field {
+        case .name:
+            name = source.name
+        case .effects:
+            insertEffects = source.insertEffects
+            isEffectChainBypassed = source.isEffectChainBypassed
+        case .automation:
+            automationLanes = source.automationLanes
+        case .fades:
+            enterFade = source.enterFade
+            exitFade = source.exitFade
+        case .enterActions:
+            onEnterActions = source.onEnterActions
+        case .exitActions:
+            onExitActions = source.onExitActions
+        case .loopSettings:
+            loopSettings = source.loopSettings
+        case .instrumentOverride:
+            instrumentOverride = source.instrumentOverride
+        case .sourceRecording:
+            sourceRecordingID = source.sourceRecordingID
+        case .midiSequence:
+            midiSequence = source.midiSequence
+        }
+    }
+
     // MARK: - Clone Resolution
 
     /// Returns a new container with all fields resolved against the given parent.
