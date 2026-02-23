@@ -79,6 +79,8 @@ public final class ProjectViewModel {
 
     /// Live waveform peaks for containers currently being recorded.
     /// Cleared when recording completes and peaks are stored in the SourceRecording.
+    public var recentProjectURLs: [URL] = []
+
     public var liveRecordingPeaks: [ID<Container>: [Float]] = [:]
 
     /// Callback fired when a recording completes and needs to be registered with the
@@ -125,6 +127,7 @@ public final class ProjectViewModel {
         let um = UndoManager()
         um.groupsByEvent = false
         self.undoManager = um
+        recentProjectURLs = Self.loadRecentProjectURLs()
         setupUndoNotifications()
     }
 
@@ -273,6 +276,7 @@ public final class ProjectViewModel {
         try persistence.save(project, to: url)
         projectURL = url
         hasUnsavedChanges = false
+        noteRecentProject(url)
     }
 
     /// Loads a project from a bundle URL.
@@ -287,11 +291,40 @@ public final class ProjectViewModel {
         hasUnsavedChanges = false
         undoManager?.removeAllActions()
         clearUndoHistory()
+        noteRecentProject(url)
     }
 
     /// Clears the undo history panel.
     public func clearUndoHistory() {
         undoState.clear()
+    }
+
+    // MARK: - Recent Projects
+
+    public func noteRecentProject(_ url: URL) {
+        let standardized = url.standardizedFileURL
+        var recent = recentProjectURLs
+        recent.removeAll { $0.standardizedFileURL == standardized }
+        recent.insert(standardized, at: 0)
+        if recent.count > 10 { recent = Array(recent.prefix(10)) }
+        recentProjectURLs = recent
+        Self.saveRecentProjectURLs(recent)
+    }
+
+    public func clearRecentProjects() {
+        recentProjectURLs = []
+        Self.saveRecentProjectURLs([])
+    }
+
+    private static let recentProjectsKey = "recentProjectURLs"
+
+    private static func loadRecentProjectURLs() -> [URL] {
+        (UserDefaults.standard.array(forKey: recentProjectsKey) as? [String])?
+            .compactMap { URL(fileURLWithPath: $0) } ?? []
+    }
+
+    private static func saveRecentProjectURLs(_ urls: [URL]) {
+        UserDefaults.standard.set(urls.map(\.path), forKey: recentProjectsKey)
     }
 
     // MARK: - Song Access
@@ -905,6 +938,7 @@ public final class ProjectViewModel {
         project.songs[currentSongIndex].tracks[trackIndex].containers.append(newContainer)
         selectedContainerID = newContainer.id
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
         return true
     }
 
@@ -918,6 +952,7 @@ public final class ProjectViewModel {
             selectedContainerID = nil
         }
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Moves a container to a new start bar. Returns false if it would overlap.
@@ -1601,6 +1636,7 @@ public final class ProjectViewModel {
         project.songs[currentSongIndex].tracks[trackIndex].containers.append(clone)
         selectedContainerID = clone.id
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
         return clone.id
     }
 
@@ -1623,6 +1659,7 @@ public final class ProjectViewModel {
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].parentContainerID = nil
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].overriddenFields = Set(ContainerField.allCases)
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Resets a single overridden field on a linked clone back to the parent's current value.
@@ -1643,6 +1680,7 @@ public final class ProjectViewModel {
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].copyField(from: parent, field: field)
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].overriddenFields.remove(field)
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Finds a container by ID across all tracks in the current song.
@@ -1654,6 +1692,19 @@ public final class ProjectViewModel {
             }
         }
         return nil
+    }
+
+    /// Returns a resolved copy of a container, inheriting fields from its parent if it's a linked clone.
+    /// For non-clone containers, returns the container unchanged.
+    public func resolveContainer(_ container: Container) -> Container {
+        guard let parentID = container.parentContainerID,
+              let parent = findContainer(id: parentID) else { return container }
+        return container.resolved(parent: parent)
+    }
+
+    /// Returns the resolved MIDI sequence for a container (inheriting from parent for clones).
+    public func resolvedMIDISequence(_ container: Container) -> MIDISequence? {
+        resolveContainer(container).midiSequence
     }
 
     /// Marks a field as overridden on a clone container.
@@ -1732,7 +1783,8 @@ public final class ProjectViewModel {
                 exitFade: entry.container.exitFade,
                 onEnterActions: entry.container.onEnterActions,
                 onExitActions: entry.container.onExitActions,
-                automationLanes: entry.container.automationLanes
+                automationLanes: entry.container.automationLanes,
+                midiSequence: entry.container.midiSequence
             )
 
             if !hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: newContainer) {
@@ -1757,6 +1809,7 @@ public final class ProjectViewModel {
 
         if pasted > 0 || hasSection {
             hasUnsavedChanges = true
+            onPlaybackGraphChanged?()
         }
         return pasted
     }
@@ -1784,7 +1837,8 @@ public final class ProjectViewModel {
             exitFade: source.exitFade,
             onEnterActions: source.onEnterActions,
             onExitActions: source.onExitActions,
-            automationLanes: source.automationLanes
+            automationLanes: source.automationLanes,
+            midiSequence: source.midiSequence
         )
 
         if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: duplicate) {
@@ -1795,6 +1849,7 @@ public final class ProjectViewModel {
         project.songs[currentSongIndex].tracks[trackIndex].containers.append(duplicate)
         selectedContainerID = duplicate.id
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
         return duplicate.id
     }
 
@@ -1883,7 +1938,8 @@ public final class ProjectViewModel {
                 exitFade: entry.container.exitFade,
                 onEnterActions: entry.container.onEnterActions,
                 onExitActions: entry.container.onExitActions,
-                automationLanes: entry.container.automationLanes
+                automationLanes: entry.container.automationLanes,
+                midiSequence: entry.container.midiSequence
             )
 
             if !hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: newContainer) {
@@ -2468,6 +2524,7 @@ public final class ProjectViewModel {
         project.songs[currentSongIndex].tracks[trackIndex].containers.append(container)
         selectedContainerID = container.id
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
 
         let containerID = container.id
 
@@ -2631,6 +2688,7 @@ public final class ProjectViewModel {
         }
 
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     // MARK: - Split & Trim
@@ -2699,6 +2757,7 @@ public final class ProjectViewModel {
 
         project.songs[currentSongIndex].tracks[trackIndex].containers.append(rightContainer)
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
         return rightContainer.id
     }
 
@@ -2824,6 +2883,7 @@ public final class ProjectViewModel {
         project.songs[currentSongIndex].tracks[trackIndex].containers.remove(at: containerIndex)
         project.songs[currentSongIndex].tracks[trackIndex].containers.append(contentsOf: newContainers)
         hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
         return true
     }
 

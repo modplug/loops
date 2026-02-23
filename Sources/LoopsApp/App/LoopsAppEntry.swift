@@ -376,6 +376,26 @@ public struct ProjectCommands: Commands {
             }
             .keyboardShortcut("o")
 
+            Menu("Open Recent") {
+                ForEach(viewModel.recentProjectURLs, id: \.self) { url in
+                    Button(url.lastPathComponent) {
+                        do {
+                            try viewModel.open(from: url)
+                        } catch {
+                            presentError(error)
+                        }
+                    }
+                }
+
+                if !viewModel.recentProjectURLs.isEmpty {
+                    Divider()
+                    Button("Clear Menu") {
+                        viewModel.clearRecentProjects()
+                    }
+                }
+            }
+            .disabled(viewModel.recentProjectURLs.isEmpty)
+
             Divider()
 
             Button("Save Project") {
