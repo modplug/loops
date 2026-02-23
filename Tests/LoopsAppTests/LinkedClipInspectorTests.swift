@@ -401,4 +401,204 @@ struct LinkedClipInspectorTests {
         #expect(target.startBar == 5)
         #expect(target.lengthBars == 8)
     }
+
+    // MARK: - Resolved Container Inspector Display
+
+    @Test("Clone with no effect override shows parent's current effects via resolved()")
+    @MainActor
+    func resolvedCloneShowsParentEffects() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Clone before adding effects — clone gets empty effects at creation
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Now add effects to parent AFTER cloning
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: parentID, effect: InsertEffect(component: comp, displayName: "Reverb"))
+
+        let clone = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        let parent = vm.findContainer(id: parentID)!
+
+        // Clone's raw effects are stale (empty, from before parent got the effect)
+        #expect(clone.insertEffects.isEmpty)
+        #expect(!clone.overriddenFields.contains(.effects))
+
+        // Resolved clone's effects match parent's current state
+        let resolved = clone.resolved(parent: parent)
+        #expect(resolved.insertEffects.count == 1)
+        #expect(resolved.insertEffects.first?.displayName == "Reverb")
+    }
+
+    @Test("Edit parent effects updates clone's resolved effects")
+    @MainActor
+    func editParentEffectsUpdatesCloneResolved() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Add an effect to parent after clone creation
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 2, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: parentID, effect: InsertEffect(component: comp, displayName: "Delay"))
+
+        let clone = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        let parent = vm.findContainer(id: parentID)!
+
+        // Parent now has one effect
+        #expect(parent.insertEffects.count == 1)
+
+        // Resolved clone picks up parent's new effect
+        let resolved = clone.resolved(parent: parent)
+        #expect(resolved.insertEffects.count == 1)
+        #expect(resolved.insertEffects.first?.displayName == "Delay")
+    }
+
+    @Test("Override clone's effects shows clone's own values, not parent's")
+    @MainActor
+    func overrideCloneEffectsShowsOwnValues() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: parentID, effect: InsertEffect(component: comp, displayName: "Reverb"))
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Override effects on clone
+        let cloneEffect = InsertEffect(component: comp, displayName: "Chorus")
+        vm.addContainerEffect(containerID: cloneID, effect: cloneEffect)
+
+        let clone = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        let parent = vm.findContainer(id: parentID)!
+
+        #expect(clone.overriddenFields.contains(.effects))
+        let resolved = clone.resolved(parent: parent)
+        // Resolved should use clone's own effects (overridden)
+        #expect(resolved.insertEffects.contains { $0.displayName == "Chorus" })
+    }
+
+    @Test("Resolved container preserves clone identity for edit callbacks")
+    @MainActor
+    func resolvedContainerPreservesCloneID() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+        let clone = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        let parent = vm.findContainer(id: parentID)!
+
+        let resolved = clone.resolved(parent: parent)
+        // Resolved container keeps clone's ID, parentContainerID, and overriddenFields
+        #expect(resolved.id == cloneID)
+        #expect(resolved.parentContainerID == parentID)
+        #expect(resolved.isClone)
+
+        // Editing via the resolved ID should create an override on the clone
+        vm.updateContainerName(containerID: resolved.id, name: "Edited Clone")
+        let updatedClone = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(updatedClone.name == "Edited Clone")
+        #expect(updatedClone.overriddenFields.contains(.name))
+
+        // Parent should be unaffected
+        let parentAfter = vm.findContainer(id: parentID)!
+        #expect(parentAfter.name != "Edited Clone")
+    }
+
+    @Test("Editing inherited field in clone inspector creates override")
+    @MainActor
+    func editInheritedFieldCreatesOverride() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        vm.setContainerEnterFade(containerID: parentID, fade: FadeSettings(duration: 2.0, curve: .exponential))
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+        let cloneBefore = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(!cloneBefore.overriddenFields.contains(.fades))
+
+        // Edit the fade on the clone (inherited field) — should create override
+        vm.setContainerEnterFade(containerID: cloneID, fade: FadeSettings(duration: 4.0, curve: .linear))
+
+        let cloneAfter = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+        #expect(cloneAfter.overriddenFields.contains(.fades))
+        #expect(cloneAfter.enterFade?.duration == 4.0)
+
+        // Parent unchanged
+        let parent = vm.findContainer(id: parentID)!
+        #expect(parent.enterFade?.duration == 2.0)
+    }
+
+    @Test("Resolved display matches what playback uses")
+    @MainActor
+    func resolvedDisplayMatchesPlayback() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .audio)
+        let trackID = vm.project.songs[0].tracks[0].id
+        _ = vm.addContainer(trackID: trackID, startBar: 1, lengthBars: 4)
+        let parentID = vm.project.songs[0].tracks[0].containers[0].id
+
+        // Set up parent with various fields
+        let comp = AudioComponentInfo(componentType: 1, componentSubType: 1, componentManufacturer: 1)
+        vm.addContainerEffect(containerID: parentID, effect: InsertEffect(component: comp, displayName: "Reverb"))
+        vm.setContainerEnterFade(containerID: parentID, fade: FadeSettings(duration: 1.0, curve: .linear))
+        vm.updateContainerName(containerID: parentID, name: "Parent Clip")
+
+        let cloneID = vm.cloneContainer(trackID: trackID, containerID: parentID, newStartBar: 5)!
+
+        // Override only the name
+        vm.updateContainerName(containerID: cloneID, name: "My Clone")
+
+        let clone = vm.project.songs[0].tracks[0].containers.first { $0.id == cloneID }!
+
+        // Using the same resolution that PlaybackScheduler uses
+        let resolvedViaLookup = clone.resolved(using: { id in vm.findContainer(id: id) })
+        let parent = vm.findContainer(id: parentID)!
+        let resolvedViaDirect = clone.resolved(parent: parent)
+
+        // Both resolution methods produce the same result
+        #expect(resolvedViaLookup.name == resolvedViaDirect.name)
+        #expect(resolvedViaLookup.insertEffects.count == resolvedViaDirect.insertEffects.count)
+        #expect(resolvedViaLookup.enterFade?.duration == resolvedViaDirect.enterFade?.duration)
+
+        // Name is overridden — shows clone's value
+        #expect(resolvedViaLookup.name == "My Clone")
+        // Effects are inherited — shows parent's value
+        #expect(resolvedViaLookup.insertEffects.count == 1)
+        #expect(resolvedViaLookup.insertEffects.first?.displayName == "Reverb")
+        // Fades are inherited — shows parent's value
+        #expect(resolvedViaLookup.enterFade?.duration == 1.0)
+    }
+
+    @Test("Non-clone container passed through unchanged")
+    func nonCloneUnchanged() {
+        let container = Container(name: "Regular", startBar: 1, lengthBars: 4)
+        #expect(!container.isClone)
+
+        // resolved(using:) returns self when not a clone
+        let resolved = container.resolved(using: { _ in nil })
+        #expect(resolved.name == "Regular")
+        #expect(resolved.id == container.id)
+    }
 }

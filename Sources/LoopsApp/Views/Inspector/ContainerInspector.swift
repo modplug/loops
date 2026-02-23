@@ -160,6 +160,8 @@ public struct ContainerInspector: View {
                     TextField("Name", text: $editingName)
                         .onSubmit { onUpdateName?(editingName) }
 
+                    if isFieldInherited(.name) { inheritedBadge() }
+
                     if showMIDIBadge {
                         Text("MIDI")
                             .font(.system(size: 9, weight: .semibold))
@@ -205,39 +207,69 @@ public struct ContainerInspector: View {
             }
 
             // Inline effects editing
-            Section("Effects") {
+            Section {
                 effectsEditor
+            } header: {
+                HStack {
+                    Text("Effects")
+                    if isFieldInherited(.effects) { inheritedBadge() }
+                }
             }
 
             // Inline actions editing
-            Section("Enter Actions") {
+            Section {
                 actionListEditor(
                     actions: container.onEnterActions,
                     onAdd: onAddEnterAction,
                     onRemove: onRemoveEnterAction
                 )
+            } header: {
+                HStack {
+                    Text("Enter Actions")
+                    if isFieldInherited(.enterActions) { inheritedBadge() }
+                }
             }
 
-            Section("Exit Actions") {
+            Section {
                 actionListEditor(
                     actions: container.onExitActions,
                     onAdd: onAddExitAction,
                     onRemove: onRemoveExitAction
                 )
+            } header: {
+                HStack {
+                    Text("Exit Actions")
+                    if isFieldInherited(.exitActions) { inheritedBadge() }
+                }
             }
 
             // Inline fades editing
-            Section("Enter Fade") {
+            Section {
                 enterFadeEditor
+            } header: {
+                HStack {
+                    Text("Enter Fade")
+                    if isFieldInherited(.fades) { inheritedBadge() }
+                }
             }
 
-            Section("Exit Fade") {
+            Section {
                 exitFadeEditor
+            } header: {
+                HStack {
+                    Text("Exit Fade")
+                    if isFieldInherited(.fades) { inheritedBadge() }
+                }
             }
 
             // Inline automation editing
-            Section("Automation") {
+            Section {
                 automationEditor
+            } header: {
+                HStack {
+                    Text("Automation")
+                    if isFieldInherited(.automation) { inheritedBadge() }
+                }
             }
 
             // Full detail editor button
@@ -253,7 +285,7 @@ public struct ContainerInspector: View {
             }
 
             // Loop settings
-            Section("Loop Settings") {
+            Section {
                 Picker("Loop Mode", selection: $loopCountMode) {
                     ForEach(LoopCountMode.allCases, id: \.self) { mode in
                         Text(mode.rawValue).tag(mode)
@@ -265,9 +297,14 @@ public struct ContainerInspector: View {
                     Stepper("Repeats: \(loopCountValue)", value: $loopCountValue, in: 1...99)
                         .onChange(of: loopCountValue) { _, _ in commitLoopSettings() }
                 }
+            } header: {
+                HStack {
+                    Text("Loop Settings")
+                    if isFieldInherited(.loopSettings) { inheritedBadge() }
+                }
             }
 
-            Section("Boundary Mode") {
+            Section {
                 Picker("Mode", selection: $selectedBoundaryMode) {
                     ForEach(BoundaryMode.allCases, id: \.self) { mode in
                         Text(mode.displayName).tag(mode)
@@ -288,6 +325,11 @@ public struct ContainerInspector: View {
                 Text(selectedBoundaryMode.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } header: {
+                HStack {
+                    Text("Boundary Mode")
+                    if isFieldInherited(.loopSettings) { inheritedBadge() }
+                }
             }
         }
         .formStyle(.grouped)
@@ -892,6 +934,25 @@ public struct ContainerInspector: View {
             }
             .font(.callout)
         }
+    }
+
+    // MARK: - Inherited Field Helpers
+
+    private func isFieldInherited(_ field: ContainerField) -> Bool {
+        container.isClone && !container.overriddenFields.contains(field)
+    }
+
+    @ViewBuilder
+    private func inheritedBadge() -> some View {
+        Label("Inherited", systemImage: "arrow.down.circle")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color.secondary.opacity(0.1))
+            )
     }
 
     // MARK: - State Management

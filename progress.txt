@@ -1018,3 +1018,26 @@
 - All cleanup operations happen within the same `registerUndo()` transaction as the effect/instrument removal, so undo restores everything atomically
 - 8 new tests: track effect removal cleans up automation+MIDI, track effect removal decrements higher indices, track effect reorder updates indices, container effect removal cleans up automation+MIDI, container effect removal decrements higher indices, container effect reorder updates indices, instrument override removal cleans up automation+MIDI, undo track effect removal restores automation+MIDI
 - All 987 tests pass
+
+### Iteration 10 — #120 Reset individual linked container field overrides to parent value
+- `Container`: new `copyField(from:field:)` mutating method — copies a single field's value from a source container, mapping each `ContainerField` case to its corresponding properties (e.g., `.effects` → `insertEffects` + `isEffectChainBypassed`, `.fades` → `enterFade` + `exitFade`)
+- `ProjectViewModel`: new `resetContainerField(containerID:field:)` — validates clone has parent and field is overridden, copies parent's current value via `copyField(from:field:)`, removes field from `overriddenFields`, registers undo action ("Reset <fieldDisplayName>")
+- `LinkedClipInspectorView`: added `onResetField: ((ContainerField) -> Void)?` callback parameter; overridden fields now show a reset button (arrow.uturn.backward.circle icon) next to the "Overridden" badge; non-overridden fields show no reset button
+- `ContainerInspector`: added `onResetField` parameter, passes through to `LinkedClipInspectorView`
+- `MainContentView`: wired `onResetField` callback to `projectViewModel.resetContainerField(containerID:field:)` for clone containers
+- After reset, the field is removed from `overriddenFields` so future parent edits propagate via `resolved()`
+- 7 new tests: reset removes field from overriddenFields, reset copies parent's current value, after reset clone inherits future parent edits via resolved(), undo restores override and original value, reset non-overridden field is no-op, reset effects field copies parent's effect chain, Container.copyField copies all field types correctly
+- All 994 tests pass
+
+### Iteration 11 — #121 Resolve linked container fields in inspector display
+- `MainContentView.containerInspectorContent`: resolves linked clone containers via `container.resolved(parent:)` before passing to `ContainerInspector` — inspector now shows parent's current values for non-overridden fields
+- `MainContentView.containerDetailEditorSheet`: same resolution applied to `ContainerDetailEditor` — detail editor also shows resolved values
+- Resolution reuses existing `parentContainer` lookup (avoids duplicate `findContainer` call)
+- `ContainerInspector`: new `isFieldInherited(_:)` helper — returns true when container is a clone and the field is not in `overriddenFields`
+- `ContainerInspector`: new `inheritedBadge()` view — "Inherited" label with arrow.down.circle icon, secondary styling, rounded background
+- Section headers for Effects, Enter Actions, Exit Actions, Enter Fade, Exit Fade, Automation, Loop Settings, and Boundary Mode now show "Inherited" badge when the corresponding field is inherited from parent
+- Container name row shows inline "Inherited" badge next to the name TextField when `.name` field is inherited
+- Edit callbacks still use the clone's container ID — editing an inherited field correctly creates an override on the clone (auto-override mechanism unchanged)
+- What the inspector shows now matches what PlaybackScheduler produces (both use `resolved()`)
+- 7 new tests: clone resolved shows parent's current effects, edit parent effects updates clone resolved, override shows clone's own values, resolved preserves clone ID for edits, editing inherited field creates override, resolved display matches playback, non-clone unchanged
+- All 1001 tests pass

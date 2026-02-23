@@ -83,8 +83,10 @@ public struct MainContentView: View {
     private var containerDetailEditorSheet: some View {
         if let container = projectViewModel.selectedContainer,
            let track = projectViewModel.selectedContainerTrack {
+            let parentContainer = container.parentContainerID.flatMap { projectViewModel.findContainer(id: $0) }
+            let displayContainer = parentContainer.map { container.resolved(parent: $0) } ?? container
             ContainerDetailEditor(
-                container: container,
+                container: displayContainer,
                 trackKind: track.kind,
                 containerTrack: track,
                 allContainers: projectViewModel.allContainersInCurrentSong,
@@ -782,8 +784,10 @@ public struct MainContentView: View {
     @ViewBuilder
     private var containerInspectorContent: some View {
         if let container = projectViewModel.selectedContainer {
+            let parentContainer = container.parentContainerID.flatMap { projectViewModel.findContainer(id: $0) }
+            let displayContainer = parentContainer.map { container.resolved(parent: $0) } ?? container
             ContainerInspector(
-                container: container,
+                container: displayContainer,
                 trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
                 containerTrack: projectViewModel.selectedContainerTrack ?? Track(name: "", kind: .audio),
                 allContainers: projectViewModel.allContainersInCurrentSong,
@@ -870,7 +874,7 @@ public struct MainContentView: View {
                 onResetField: container.isClone ? { field in
                     projectViewModel.resetContainerField(containerID: container.id, field: field)
                 } : nil,
-                parentContainer: container.parentContainerID.flatMap { projectViewModel.findContainer(id: $0) },
+                parentContainer: parentContainer,
                 isMIDIActive: {
                     guard let track = projectViewModel.selectedContainerTrack else { return false }
                     return midiActivityMonitor?.isTrackActive(track.id) ?? false
