@@ -445,7 +445,7 @@ public struct MainContentView: View {
                 SongListView(viewModel: projectViewModel)
             case .setlists:
                 if let setlistVM = setlistViewModel {
-                    SetlistSidebarView(viewModel: setlistVM, playheadBar: timelineViewModel.playheadBar)
+                    SetlistSidebarView(viewModel: setlistVM, timelineViewModel: timelineViewModel)
                 } else {
                     Text("Setlists unavailable")
                         .foregroundStyle(.secondary)
@@ -519,7 +519,16 @@ public struct MainContentView: View {
 
             switch inspectorMode {
             case .container:
-                containerInspectorContent
+                SelectionBasedInspectorView(
+                    projectViewModel: projectViewModel,
+                    selectionState: selectionState,
+                    transportViewModel: transportViewModel,
+                    setlistViewModel: setlistViewModel,
+                    engineManager: engineManager,
+                    settingsViewModel: settingsViewModel,
+                    midiActivityMonitor: midiActivityMonitor,
+                    showContainerDetailEditor: $showContainerDetailEditor
+                )
             case .storyline:
                 storylineInspectorContent
             }
@@ -742,9 +751,21 @@ public struct MainContentView: View {
             mixerViewModel: mixerViewModel ?? MixerViewModel(),
             selectedTrackID: selectionState.selectedTrackID,
             onVolumeChange: { trackID, volume in
-                projectViewModel.setTrackVolume(trackID: trackID, volume: volume)
+                // During drag: only update the live audio graph (no model mutation)
+                let pan = song.tracks.first(where: { $0.id == trackID })?.pan ?? 0
+                transportViewModel?.updateTrackMixLive(trackID: trackID, volume: volume, pan: pan)
             },
             onPanChange: { trackID, pan in
+                // During drag: only update the live audio graph (no model mutation)
+                let volume = song.tracks.first(where: { $0.id == trackID })?.volume ?? 1
+                transportViewModel?.updateTrackMixLive(trackID: trackID, volume: volume, pan: pan)
+            },
+            onVolumeCommit: { trackID, volume in
+                // On gesture end: persist to model (triggers view re-evaluation once)
+                projectViewModel.setTrackVolume(trackID: trackID, volume: volume)
+            },
+            onPanCommit: { trackID, pan in
+                // On gesture end: persist to model (triggers view re-evaluation once)
                 projectViewModel.setTrackPan(trackID: trackID, pan: pan)
             },
             onMuteToggle: { trackID in
@@ -783,201 +804,6 @@ public struct MainContentView: View {
                 .frame(width: timelineViewModel.trackHeaderWidth)
             Spacer()
         }
-    }
-
-    // MARK: - Inspector Content
-
-    @ViewBuilder
-    private var containerInspectorContent: some View {
-        if let container = projectViewModel.selectedContainer {
-            let parentContainer = container.parentContainerID.flatMap { projectViewModel.findContainer(id: $0) }
-            let displayContainer = parentContainer.map { container.resolved(parent: $0) } ?? container
-            ContainerInspector(
-                container: displayContainer,
-                trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
-                containerTrack: projectViewModel.selectedContainerTrack ?? Track(name: "", kind: .audio),
-                allContainers: projectViewModel.allContainersInCurrentSong,
-                allTracks: projectViewModel.allTracksInCurrentSong,
-                bpm: transportViewModel?.bpm ?? 120.0,
-                beatsPerBar: transportViewModel?.timeSignature.beatsPerBar ?? 4,
-                showDetailEditor: $showContainerDetailEditor,
-                onUpdateLoopSettings: { settings in
-                    projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)
-                },
-                onUpdateName: { name in
-                    projectViewModel.updateContainerName(containerID: container.id, name: name)
-                },
-                onAddEffect: { effect in
-                    projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
-                    PluginWindowManager.shared.open(
-                        component: effect.component,
-                        displayName: effect.displayName,
-                        presetData: nil,
-                        onPresetChanged: { data in
-                            projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effect.id, presetData: data)
-                        }
-                    )
-                },
-                onRemoveEffect: { effectID in
-                    projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
-                },
-                onToggleEffectBypass: { effectID in
-                    projectViewModel.toggleContainerEffectBypass(containerID: container.id, effectID: effectID)
-                },
-                onToggleChainBypass: {
-                    projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
-                },
-                onReorderEffects: { source, destination in
-                    projectViewModel.reorderContainerEffects(containerID: container.id, from: source, to: destination)
-                },
-                onSetInstrumentOverride: { override in
-                    projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
-                },
-                onSetEnterFade: { fade in
-                    projectViewModel.setContainerEnterFade(containerID: container.id, fade: fade)
-                },
-                onSetExitFade: { fade in
-                    projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
-                },
-                onAddEnterAction: { action in
-                    projectViewModel.addContainerEnterAction(containerID: container.id, action: action)
-                },
-                onRemoveEnterAction: { actionID in
-                    projectViewModel.removeContainerEnterAction(containerID: container.id, actionID: actionID)
-                },
-                onAddExitAction: { action in
-                    projectViewModel.addContainerExitAction(containerID: container.id, action: action)
-                },
-                onRemoveExitAction: { actionID in
-                    projectViewModel.removeContainerExitAction(containerID: container.id, actionID: actionID)
-                },
-                onAddAutomationLane: { lane in
-                    projectViewModel.addAutomationLane(containerID: container.id, lane: lane)
-                },
-                onRemoveAutomationLane: { laneID in
-                    projectViewModel.removeAutomationLane(containerID: container.id, laneID: laneID)
-                },
-                onAddBreakpoint: { laneID, breakpoint in
-                    projectViewModel.addAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
-                },
-                onRemoveBreakpoint: { laneID, breakpointID in
-                    projectViewModel.removeAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpointID: breakpointID)
-                },
-                onUpdateBreakpoint: { laneID, breakpoint in
-                    projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
-                },
-                onUpdateEffectPreset: { effectID, data in
-                    projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effectID, presetData: data)
-                },
-                liveEffectUnit: { index in
-                    transportViewModel?.liveEffectUnit(containerID: container.id, effectIndex: index)
-                },
-                onNavigateToParent: container.parentContainerID != nil ? {
-                    if let parentID = container.parentContainerID {
-                        selectionState.selectedContainerID = parentID
-                    }
-                } : nil,
-                onResetField: container.isClone ? { field in
-                    projectViewModel.resetContainerField(containerID: container.id, field: field)
-                } : nil,
-                parentContainer: parentContainer,
-                isMIDIActive: {
-                    guard let track = projectViewModel.selectedContainerTrack else { return false }
-                    return midiActivityMonitor?.isTrackActive(track.id) ?? false
-                }(),
-                playheadBar: transportViewModel?.playheadBar ?? 1.0
-            )
-        } else if let track = projectViewModel.selectedTrack {
-            trackInspectorContent(track: track)
-        } else if let setlistVM = setlistViewModel,
-                  let entry = setlistVM.selectedSetlistEntry {
-            SetlistEntryInspectorView(
-                entry: entry,
-                songName: setlistVM.songName(for: entry),
-                onUpdateTransition: { transition in
-                    setlistVM.updateTransition(entryID: entry.id, transition: transition)
-                },
-                onUpdateFadeIn: { fadeIn in
-                    setlistVM.updateFadeIn(entryID: entry.id, fadeIn: fadeIn)
-                }
-            )
-        } else {
-            Text("Select a container or track")
-                .foregroundStyle(.secondary)
-                .padding()
-            Spacer()
-        }
-    }
-
-    @ViewBuilder
-    private func trackInspectorContent(track: Track) -> some View {
-        TrackInspectorView(
-            track: track,
-            onRename: { name in
-                projectViewModel.renameTrack(id: track.id, newName: name)
-            },
-            onAddEffect: { effect in
-                projectViewModel.addTrackEffect(trackID: track.id, effect: effect)
-                PluginWindowManager.shared.open(
-                    component: effect.component,
-                    displayName: effect.displayName,
-                    presetData: nil,
-                    onPresetChanged: nil
-                )
-            },
-            onRemoveEffect: { effectID in
-                projectViewModel.removeTrackEffect(trackID: track.id, effectID: effectID)
-            },
-            onToggleEffectBypass: { effectID in
-                projectViewModel.toggleTrackEffectBypass(trackID: track.id, effectID: effectID)
-            },
-            onToggleChainBypass: {
-                projectViewModel.toggleTrackEffectChainBypass(trackID: track.id)
-            },
-            onReorderEffects: { source, destination in
-                projectViewModel.reorderTrackEffects(trackID: track.id, from: source, to: destination)
-            },
-            onSetInputPort: { portID in
-                projectViewModel.setTrackInputPort(trackID: track.id, portID: portID)
-            },
-            onSetOutputPort: { portID in
-                if track.kind == .master {
-                    projectViewModel.setMasterOutputPort(portID: portID)
-                } else {
-                    projectViewModel.setTrackOutputPort(trackID: track.id, portID: portID)
-                }
-            },
-            onSetMIDIInput: { deviceID, channel in
-                projectViewModel.setTrackMIDIInput(trackID: track.id, deviceID: deviceID, channel: channel)
-            },
-            onSetVolume: { volume in
-                projectViewModel.setTrackVolume(trackID: track.id, volume: volume)
-            },
-            onSetPan: { pan in
-                projectViewModel.setTrackPan(trackID: track.id, pan: pan)
-            },
-            onMIDILearn: { targetPath in
-                projectViewModel.startMIDIParameterLearn(targetPath: targetPath)
-            },
-            onRemoveMIDIMapping: { targetPath in
-                projectViewModel.removeMIDIParameterMapping(forTarget: targetPath)
-                projectViewModel.onMIDIParameterMappingsChanged?()
-            },
-            onAssignExpressionPedal: { cc, target in
-                projectViewModel.assignExpressionPedal(trackID: track.id, cc: cc, target: target)
-            },
-            onRemoveExpressionPedal: {
-                projectViewModel.removeExpressionPedal(trackID: track.id)
-            },
-            midiParameterMappings: projectViewModel.project.midiParameterMappings,
-            isMIDILearning: projectViewModel.midiLearnState.isMIDIParameterLearning,
-            availableInputPorts: settingsViewModel?.inputPorts ?? [],
-            availableOutputPorts: settingsViewModel?.outputPorts ?? [],
-            availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? [],
-            liveTrackEffectUnit: { index in
-                transportViewModel?.liveTrackEffectUnit(trackID: track.id, effectIndex: index)
-            }
-        )
     }
 
     // MIDI learn is handled by ProjectViewModel; real-time CC dispatch
@@ -1384,7 +1210,7 @@ public struct MainContentView: View {
                 if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
             }
             .gesture(
-                DragGesture(minimumDistance: 1)
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { value in
                         if headerDragStartWidth == 0 {
                             headerDragStartWidth = timelineViewModel.trackHeaderWidth
@@ -1512,6 +1338,227 @@ private struct TrackDropDelegate: DropDelegate {
 
     func validateDrop(info: DropInfo) -> Bool {
         draggingTrackID != nil && targetTrack.kind != .master
+    }
+}
+
+// MARK: - Selection-Based Inspector (isolated from MainContentView)
+
+/// Isolates selection-dependent inspector content from MainContentView so that
+/// changes to selectedContainerID / selectedTrackID only re-evaluate this view,
+/// not the entire main content tree.
+struct SelectionBasedInspectorView: View {
+    @Bindable var projectViewModel: ProjectViewModel
+    var selectionState: SelectionState
+    var transportViewModel: TransportViewModel?
+    var setlistViewModel: SetlistViewModel?
+    var engineManager: AudioEngineManager?
+    var settingsViewModel: SettingsViewModel?
+    var midiActivityMonitor: MIDIActivityMonitor?
+    @Binding var showContainerDetailEditor: Bool
+
+    var body: some View {
+        if let container = projectViewModel.selectedContainer {
+            containerInspector(container: container)
+        } else if let track = projectViewModel.selectedTrack {
+            trackInspector(track: track)
+        } else if let setlistVM = setlistViewModel,
+                  let entry = setlistVM.selectedSetlistEntry {
+            SetlistEntryInspectorView(
+                entry: entry,
+                songName: setlistVM.songName(for: entry),
+                onUpdateTransition: { transition in
+                    setlistVM.updateTransition(entryID: entry.id, transition: transition)
+                },
+                onUpdateFadeIn: { fadeIn in
+                    setlistVM.updateFadeIn(entryID: entry.id, fadeIn: fadeIn)
+                }
+            )
+        } else {
+            Text("Select a container or track")
+                .foregroundStyle(.secondary)
+                .padding()
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private func containerInspector(container: Container) -> some View {
+        let parentContainer = container.parentContainerID.flatMap { projectViewModel.findContainer(id: $0) }
+        let displayContainer = parentContainer.map { container.resolved(parent: $0) } ?? container
+        ContainerInspector(
+            container: displayContainer,
+            trackKind: projectViewModel.selectedContainerTrackKind ?? .audio,
+            containerTrack: projectViewModel.selectedContainerTrack ?? Track(name: "", kind: .audio),
+            allContainers: projectViewModel.allContainersInCurrentSong,
+            allTracks: projectViewModel.allTracksInCurrentSong,
+            bpm: transportViewModel?.bpm ?? 120.0,
+            beatsPerBar: transportViewModel?.timeSignature.beatsPerBar ?? 4,
+            showDetailEditor: $showContainerDetailEditor,
+            onUpdateLoopSettings: { settings in
+                projectViewModel.updateContainerLoopSettings(containerID: container.id, settings: settings)
+            },
+            onUpdateName: { name in
+                projectViewModel.updateContainerName(containerID: container.id, name: name)
+            },
+            onAddEffect: { effect in
+                projectViewModel.addContainerEffect(containerID: container.id, effect: effect)
+                PluginWindowManager.shared.open(
+                    component: effect.component,
+                    displayName: effect.displayName,
+                    presetData: nil,
+                    onPresetChanged: { data in
+                        projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effect.id, presetData: data)
+                    }
+                )
+            },
+            onRemoveEffect: { effectID in
+                projectViewModel.removeContainerEffect(containerID: container.id, effectID: effectID)
+            },
+            onToggleEffectBypass: { effectID in
+                projectViewModel.toggleContainerEffectBypass(containerID: container.id, effectID: effectID)
+            },
+            onToggleChainBypass: {
+                projectViewModel.toggleContainerEffectChainBypass(containerID: container.id)
+            },
+            onReorderEffects: { source, destination in
+                projectViewModel.reorderContainerEffects(containerID: container.id, from: source, to: destination)
+            },
+            onSetInstrumentOverride: { override in
+                projectViewModel.setContainerInstrumentOverride(containerID: container.id, override: override)
+            },
+            onSetEnterFade: { fade in
+                projectViewModel.setContainerEnterFade(containerID: container.id, fade: fade)
+            },
+            onSetExitFade: { fade in
+                projectViewModel.setContainerExitFade(containerID: container.id, fade: fade)
+            },
+            onAddEnterAction: { action in
+                projectViewModel.addContainerEnterAction(containerID: container.id, action: action)
+            },
+            onRemoveEnterAction: { actionID in
+                projectViewModel.removeContainerEnterAction(containerID: container.id, actionID: actionID)
+            },
+            onAddExitAction: { action in
+                projectViewModel.addContainerExitAction(containerID: container.id, action: action)
+            },
+            onRemoveExitAction: { actionID in
+                projectViewModel.removeContainerExitAction(containerID: container.id, actionID: actionID)
+            },
+            onAddAutomationLane: { lane in
+                projectViewModel.addAutomationLane(containerID: container.id, lane: lane)
+            },
+            onRemoveAutomationLane: { laneID in
+                projectViewModel.removeAutomationLane(containerID: container.id, laneID: laneID)
+            },
+            onAddBreakpoint: { laneID, breakpoint in
+                projectViewModel.addAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+            },
+            onRemoveBreakpoint: { laneID, breakpointID in
+                projectViewModel.removeAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpointID: breakpointID)
+            },
+            onUpdateBreakpoint: { laneID, breakpoint in
+                projectViewModel.updateAutomationBreakpoint(containerID: container.id, laneID: laneID, breakpoint: breakpoint)
+            },
+            onUpdateEffectPreset: { effectID, data in
+                projectViewModel.updateContainerEffectPreset(containerID: container.id, effectID: effectID, presetData: data)
+            },
+            liveEffectUnit: { index in
+                transportViewModel?.liveEffectUnit(containerID: container.id, effectIndex: index)
+            },
+            onNavigateToParent: container.parentContainerID != nil ? {
+                if let parentID = container.parentContainerID {
+                    selectionState.selectedContainerID = parentID
+                }
+            } : nil,
+            onResetField: container.isClone ? { field in
+                projectViewModel.resetContainerField(containerID: container.id, field: field)
+            } : nil,
+            parentContainer: parentContainer,
+            isMIDIActive: {
+                guard let track = projectViewModel.selectedContainerTrack else { return false }
+                return midiActivityMonitor?.isTrackActive(track.id) ?? false
+            }(),
+            transportViewModel: transportViewModel
+        )
+    }
+
+    @ViewBuilder
+    private func trackInspector(track: Track) -> some View {
+        TrackInspectorView(
+            track: track,
+            onRename: { name in
+                projectViewModel.renameTrack(id: track.id, newName: name)
+            },
+            onAddEffect: { effect in
+                projectViewModel.addTrackEffect(trackID: track.id, effect: effect)
+                PluginWindowManager.shared.open(
+                    component: effect.component,
+                    displayName: effect.displayName,
+                    presetData: nil,
+                    onPresetChanged: nil
+                )
+            },
+            onRemoveEffect: { effectID in
+                projectViewModel.removeTrackEffect(trackID: track.id, effectID: effectID)
+            },
+            onToggleEffectBypass: { effectID in
+                projectViewModel.toggleTrackEffectBypass(trackID: track.id, effectID: effectID)
+            },
+            onToggleChainBypass: {
+                projectViewModel.toggleTrackEffectChainBypass(trackID: track.id)
+            },
+            onReorderEffects: { source, destination in
+                projectViewModel.reorderTrackEffects(trackID: track.id, from: source, to: destination)
+            },
+            onSetInputPort: { portID in
+                projectViewModel.setTrackInputPort(trackID: track.id, portID: portID)
+            },
+            onSetOutputPort: { portID in
+                if track.kind == .master {
+                    projectViewModel.setMasterOutputPort(portID: portID)
+                } else {
+                    projectViewModel.setTrackOutputPort(trackID: track.id, portID: portID)
+                }
+            },
+            onSetMIDIInput: { deviceID, channel in
+                projectViewModel.setTrackMIDIInput(trackID: track.id, deviceID: deviceID, channel: channel)
+            },
+            onVolumeLive: { volume in
+                let pan = track.pan
+                transportViewModel?.updateTrackMixLive(trackID: track.id, volume: volume, pan: pan)
+            },
+            onPanLive: { pan in
+                let volume = track.volume
+                transportViewModel?.updateTrackMixLive(trackID: track.id, volume: volume, pan: pan)
+            },
+            onSetVolume: { volume in
+                projectViewModel.setTrackVolume(trackID: track.id, volume: volume)
+            },
+            onSetPan: { pan in
+                projectViewModel.setTrackPan(trackID: track.id, pan: pan)
+            },
+            onMIDILearn: { targetPath in
+                projectViewModel.startMIDIParameterLearn(targetPath: targetPath)
+            },
+            onRemoveMIDIMapping: { targetPath in
+                projectViewModel.removeMIDIParameterMapping(forTarget: targetPath)
+                projectViewModel.onMIDIParameterMappingsChanged?()
+            },
+            onAssignExpressionPedal: { cc, target in
+                projectViewModel.assignExpressionPedal(trackID: track.id, cc: cc, target: target)
+            },
+            onRemoveExpressionPedal: {
+                projectViewModel.removeExpressionPedal(trackID: track.id)
+            },
+            midiParameterMappings: projectViewModel.project.midiParameterMappings,
+            isMIDILearning: projectViewModel.midiLearnState.isMIDIParameterLearning,
+            availableInputPorts: settingsViewModel?.inputPorts ?? [],
+            availableOutputPorts: settingsViewModel?.outputPorts ?? [],
+            availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? [],
+            liveTrackEffectUnit: { index in
+                transportViewModel?.liveTrackEffectUnit(trackID: track.id, effectIndex: index)
+            }
+        )
     }
 }
 

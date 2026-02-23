@@ -195,17 +195,20 @@ public struct ToolbarView: View {
             .buttonStyle(.plain)
             .help("Metronome")
 
-            // Metronome volume slider
+            // Metronome volume slider — only persists to model on gesture end
             Slider(value: Binding(
                 get: { Double(viewModel.metronomeVolume) },
-                set: { viewModel.setMetronomeVolume(Float($0))
+                set: { viewModel.setMetronomeVolume(Float($0)) }
+            ), in: 0...1) { editing in
+                if !editing {
+                    // Gesture ended — persist to project model
                     onMetronomeConfigChange?(MetronomeConfig(
-                        volume: Float($0),
+                        volume: viewModel.metronomeVolume,
                         subdivision: viewModel.metronomeSubdivision,
                         outputPortID: viewModel.metronomeOutputPortID
                     ))
                 }
-            ), in: 0...1)
+            }
             .frame(width: 60)
             .help("Metronome Volume: \(Int(viewModel.metronomeVolume * 100))%")
 
@@ -313,30 +316,38 @@ public struct ToolbarView: View {
 
             Spacer()
 
-            // Count-in countdown display
+            // Position display — isolated to avoid 60fps re-renders of the whole toolbar
+            TransportPositionView(viewModel: viewModel)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+/// Isolates playhead-dependent display from ToolbarView so the toolbar
+/// doesn't re-evaluate at 60fps during playback.
+struct TransportPositionView: View {
+    let viewModel: TransportViewModel
+
+    var body: some View {
+        HStack(spacing: 8) {
             if viewModel.isCountingIn {
                 Text("Count: \(viewModel.countInBarsRemaining)...")
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.red)
                     .bold()
             }
-
-            // Position display
-            HStack(spacing: 8) {
-                Text("Bar \(String(format: "%.1f", viewModel.playheadBar))")
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Text(WallTimeConverter.formattedTime(
-                    forBar: viewModel.playheadBar,
-                    bpm: viewModel.bpm,
-                    beatsPerBar: viewModel.timeSignature.beatsPerBar
-                ))
+            Text("Bar \(String(format: "%.1f", viewModel.playheadBar))")
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
-            }
+            Text(WallTimeConverter.formattedTime(
+                forBar: viewModel.playheadBar,
+                bpm: viewModel.bpm,
+                beatsPerBar: viewModel.timeSignature.beatsPerBar
+            ))
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 }

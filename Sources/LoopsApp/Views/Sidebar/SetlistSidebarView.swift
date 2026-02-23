@@ -4,7 +4,7 @@ import LoopsCore
 /// Sidebar view for managing setlists: list of setlists and their entries.
 public struct SetlistSidebarView: View {
     @Bindable var viewModel: SetlistViewModel
-    var playheadBar: Double = 1.0
+    var timelineViewModel: TimelineViewModel?
     @State private var setlistToDelete: Setlist?
     @State private var renamingSetlistID: ID<Setlist>?
     @State private var renamingText: String = ""
@@ -45,7 +45,7 @@ public struct SetlistSidebarView: View {
 
                 // Entries for selected setlist
                 if let setlist = viewModel.selectedSetlist {
-                    SetlistEntryListView(viewModel: viewModel, setlist: setlist, playheadBar: playheadBar)
+                    SetlistEntryListView(viewModel: viewModel, setlist: setlist, timelineViewModel: timelineViewModel)
                 }
             }
         }
@@ -117,7 +117,7 @@ public struct SetlistSidebarView: View {
 public struct SetlistEntryListView: View {
     @Bindable var viewModel: SetlistViewModel
     let setlist: Setlist
-    var playheadBar: Double = 1.0
+    var timelineViewModel: TimelineViewModel?
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -166,7 +166,7 @@ public struct SetlistEntryListView: View {
         let index = entryIndex(for: entry)
         let isCurrent = viewModel.isPerformMode && index == viewModel.currentEntryIndex
         let song = viewModel.song(for: entry)
-        let activeSectionID = isCurrent ? viewModel.activeSectionID(atBar: playheadBar) : nil
+        let activeSectionID = isCurrent ? viewModel.activeSectionID(atBar: timelineViewModel?.playheadBar ?? 1.0) : nil
 
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {

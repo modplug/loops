@@ -38,7 +38,7 @@ public struct ContainerInspector: View {
     var onResetField: ((ContainerField) -> Void)?
     let parentContainer: Container?
     var isMIDIActive: Bool
-    var playheadBar: Double
+    var transportViewModel: TransportViewModel?
 
     @Binding var showDetailEditor: Bool
 
@@ -104,7 +104,7 @@ public struct ContainerInspector: View {
         onResetField: ((ContainerField) -> Void)? = nil,
         parentContainer: Container? = nil,
         isMIDIActive: Bool = false,
-        playheadBar: Double = 1.0
+        transportViewModel: TransportViewModel? = nil
     ) {
         self.container = container
         self.trackKind = trackKind
@@ -139,7 +139,7 @@ public struct ContainerInspector: View {
         self.onResetField = onResetField
         self.parentContainer = parentContainer
         self.isMIDIActive = isMIDIActive
-        self.playheadBar = playheadBar
+        self.transportViewModel = transportViewModel
     }
 
     public var body: some View {
@@ -586,7 +586,7 @@ public struct ContainerInspector: View {
     /// Shows MIDI badge when track has MIDI activity AND playhead is within this container's bar range.
     private var showMIDIBadge: Bool {
         guard trackKind == .midi, isMIDIActive else { return false }
-        let bar = Int(playheadBar)
+        let bar = Int(transportViewModel?.playheadBar ?? 1.0)
         return bar >= container.startBar && bar < container.endBar
     }
 
