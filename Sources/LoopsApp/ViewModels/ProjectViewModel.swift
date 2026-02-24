@@ -902,6 +902,12 @@ public final class ProjectViewModel {
         set { selectionState.selectedTrackID = newValue }
     }
 
+    /// Set of all selected track IDs for multi-selection (Cmd+Click, Shift+Click).
+    public var selectedTrackIDs: Set<ID<Track>> {
+        get { selectionState.selectedTrackIDs }
+        set { selectionState.selectedTrackIDs = newValue }
+    }
+
     /// Set of all selected container IDs (populated by select-all; cleared on single-select or deselect).
     public var selectedContainerIDs: Set<ID<Container>> {
         get { selectionState.selectedContainerIDs }
