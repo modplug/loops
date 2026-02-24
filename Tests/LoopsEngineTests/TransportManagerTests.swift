@@ -42,15 +42,16 @@ struct TransportManagerTests {
         #expect(transport.playheadBar >= 5.0)
     }
 
-    @Test("Stop returns to bar 1 when return-to-start disabled")
-    func stopReturnsToBar1() {
+    @Test("Stop leaves playhead at current position when return-to-start disabled")
+    func stopLeavesPlayheadWhenDisabled() {
         let transport = TransportManager()
         transport.returnToStartEnabled = false
         transport.setPlayheadPosition(10.0)
         transport.play()
         transport.stop()
         #expect(transport.state == .stopped)
-        #expect(transport.playheadBar == 1.0)
+        // When return-to-start is disabled, playhead stays where it was
+        #expect(transport.playheadBar == 10.0)
     }
 
     @Test("Toggle record arm")
@@ -424,15 +425,16 @@ struct TransportManagerTests {
         #expect(transport.playheadBar == 1.0)
     }
 
-    @Test("Stop returns to bar 1 when return-to-start disabled (from any position)")
-    func stopReturnsToBar1WhenDisabled() {
+    @Test("Stop leaves playhead at seek position when return-to-start disabled")
+    func stopLeavesPlayheadAtSeekWhenDisabled() {
         let transport = TransportManager()
         transport.returnToStartEnabled = false
         transport.setPlayheadPosition(5.0)
         transport.play()
         transport.setPlayheadPosition(8.0)
         transport.stop()
-        #expect(transport.playheadBar == 1.0)
+        // When disabled, playhead stays at the position it was when stop was pressed
+        #expect(transport.playheadBar == 8.0)
     }
 
     @Test("Return-to-start default is true")
@@ -480,16 +482,45 @@ struct TransportManagerTests {
         #expect(transport.playheadBar == 8.0) // returns to new start
     }
 
-    @Test("Return-to-start bypassed when disabled via property")
+    @Test("Return-to-start bypassed when disabled via property mid-playback")
     func returnToStartBypassedViaProperty() {
         let transport = TransportManager()
         transport.setPlayheadPosition(5.0)
         transport.play()
         transport.setPlayheadPosition(12.0)
-        // Disable before stopping
+        // Disable before stopping — playhead stays at current position
         transport.returnToStartEnabled = false
         transport.stop()
-        #expect(transport.playheadBar == 1.0)
+        #expect(transport.playheadBar == 12.0)
+    }
+
+    @Test("Seek during playback preserves original start position for return-to-start")
+    func seekDuringPlaybackPreservesStartPosition() {
+        let transport = TransportManager()
+        // Play from bar 5
+        transport.setPlayheadPosition(5.0)
+        transport.play()
+        #expect(transport.userPlayStartBar == 5.0)
+        // Seek to bar 20 during playback — original start position should be preserved
+        transport.setPlayheadPosition(20.0)
+        #expect(transport.userPlayStartBar == 5.0)
+        // Stop returns to original play position, not the seek position
+        transport.stop()
+        #expect(transport.playheadBar == 5.0)
+    }
+
+    @Test("Multiple seeks during playback all preserve original start position")
+    func multipleSeeksDuringPlayback() {
+        let transport = TransportManager()
+        transport.setPlayheadPosition(3.0)
+        transport.play()
+        transport.setPlayheadPosition(10.0)
+        transport.setPlayheadPosition(25.0)
+        transport.setPlayheadPosition(50.0)
+        // All seeks should not change the original start
+        #expect(transport.userPlayStartBar == 3.0)
+        transport.stop()
+        #expect(transport.playheadBar == 3.0)
     }
 
     @Test("Count-in records userPlayStartBar")

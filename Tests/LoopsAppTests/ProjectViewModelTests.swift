@@ -3183,9 +3183,9 @@ struct ProjectViewModelTests {
         #expect(transportVM.playheadBar == 5.0)
     }
 
-    @Test("TransportViewModel stop returns to bar 1 when disabled")
+    @Test("TransportViewModel stop leaves playhead at current position when disabled")
     @MainActor
-    func transportVMStopReturnsToBar1WhenDisabled() {
+    func transportVMStopLeavesPlayheadWhenDisabled() {
         let transport = TransportManager()
         let transportVM = TransportViewModel(transport: transport)
         transportVM.returnToStartEnabled = false
@@ -3193,7 +3193,8 @@ struct ProjectViewModelTests {
         transport.play()
         transport.setPlayheadPosition(12.0)
         transportVM.stop()
-        #expect(transportVM.playheadBar == 1.0)
+        // When return-to-start is disabled, playhead stays at current position
+        #expect(transportVM.playheadBar == 12.0)
     }
 
     @Test("TransportViewModel stop bypasses return-to-start in perform mode")

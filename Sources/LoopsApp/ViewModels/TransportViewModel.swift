@@ -222,9 +222,15 @@ public final class TransportViewModel {
         playbackScheduler?.stop()
         engineManager?.metronome?.setEnabled(false)
         engineManager?.metronome?.reset()
-        // In perform mode, always return to bar 1 (bypass return-to-start)
-        transport.returnToStartEnabled = returnToStartEnabled && !isPerformMode
-        transport.stop()
+        if isPerformMode {
+            // Perform mode: always return to bar 1 (bypass return-to-start)
+            transport.returnToStartEnabled = false
+            transport.stop()
+            transport.setPlayheadPosition(1.0)
+        } else {
+            transport.returnToStartEnabled = returnToStartEnabled
+            transport.stop()
+        }
         syncFromTransport()
     }
 

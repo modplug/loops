@@ -128,17 +128,19 @@ public final class TransportManager: @unchecked Sendable {
 
     /// Stops playback. When `returnToStartEnabled` is true, returns playhead
     /// to where play was last pressed; pressing stop again returns to bar 1.
-    /// When disabled, always returns to bar 1.
+    /// When disabled, playhead stays at its current position.
     public func stop() {
         stopTimer()
         state = .stopped
         countInBarsRemaining = 0
         isWaitingForAudioSync = false
 
-        if returnToStartEnabled && abs(playheadBar - userPlayStartBar) > 0.001 {
-            playheadBar = userPlayStartBar
-        } else {
-            playheadBar = 1.0
+        if returnToStartEnabled {
+            if abs(playheadBar - userPlayStartBar) > 0.001 {
+                playheadBar = userPlayStartBar
+            } else {
+                playheadBar = 1.0
+            }
         }
 
         onPositionUpdate?(playheadBar)
