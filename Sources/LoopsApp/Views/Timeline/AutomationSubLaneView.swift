@@ -152,6 +152,21 @@ struct AutomationSubLaneView: View {
     }
 }
 
+// MARK: - Equatable
+
+extension AutomationSubLaneView: Equatable {
+    static func == (lhs: AutomationSubLaneView, rhs: AutomationSubLaneView) -> Bool {
+        lhs.targetPath == rhs.targetPath &&
+        lhs.containers == rhs.containers &&
+        lhs.laneColorIndex == rhs.laneColorIndex &&
+        lhs.pixelsPerBar == rhs.pixelsPerBar &&
+        lhs.totalBars == rhs.totalBars &&
+        lhs.height == rhs.height &&
+        lhs.selectedBreakpointID == rhs.selectedBreakpointID &&
+        lhs.trackAutomationLane == rhs.trackAutomationLane
+    }
+}
+
 /// Renders one container's automation curve in a sub-lane with full interaction support.
 private struct AutomationSubLaneContainerView: View {
     let container: Container

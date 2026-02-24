@@ -104,6 +104,21 @@ public struct GridOverlayView: View {
         }
     }
 
+}
+
+// MARK: - Equatable
+
+extension GridOverlayView: Equatable {
+    public static func == (lhs: GridOverlayView, rhs: GridOverlayView) -> Bool {
+        lhs.totalBars == rhs.totalBars &&
+        lhs.pixelsPerBar == rhs.pixelsPerBar &&
+        lhs.timeSignature == rhs.timeSignature &&
+        lhs.height == rhs.height &&
+        lhs.gridMode == rhs.gridMode
+    }
+}
+
+extension GridOverlayView {
     private func drawFixedSubdivisions(context: inout GraphicsContext, barX: CGFloat, totalHeight: CGFloat, resolution: SnapResolution) {
         let beatsPerBar = Double(timeSignature.beatsPerBar)
         let subsPerBeat = resolution.subdivisionsPerBeat

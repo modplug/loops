@@ -500,6 +500,7 @@ public struct ContainerView: View {
                     .gesture(smartDragGesture(size: geo.size))
             }
         }
+        .drawingGroup()
         .clipped()
         .frame(width: displayWidth, height: height)
         .offset(x: displayOffset)

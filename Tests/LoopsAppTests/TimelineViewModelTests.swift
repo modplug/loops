@@ -488,4 +488,41 @@ struct TimelineViewModelTests {
         vm.zoomOut()
         #expect(vm.trackHeaderWidth == 250)
     }
+
+    // MARK: - Throttled Zoom (#137)
+
+    @Test("Throttled zoom applies on first call")
+    @MainActor
+    func throttledZoomFirstCall() {
+        let vm = TimelineViewModel()
+        let before = vm.pixelsPerBar
+        let applied = vm.throttledZoom(zoomIn: true)
+        #expect(applied)
+        #expect(vm.pixelsPerBar > before)
+    }
+
+    @Test("Throttled zoom skips rapid successive calls")
+    @MainActor
+    func throttledZoomSkipsRapidCalls() {
+        let vm = TimelineViewModel()
+        let _ = vm.throttledZoom(zoomIn: true)
+        let afterFirst = vm.pixelsPerBar
+        // Immediate second call should be throttled (skipped)
+        let applied = vm.throttledZoom(zoomIn: true)
+        #expect(!applied)
+        #expect(vm.pixelsPerBar == afterFirst)
+    }
+
+    @Test("Throttled zoom allows calls after threshold")
+    @MainActor
+    func throttledZoomAllowsAfterThreshold() {
+        let vm = TimelineViewModel()
+        let _ = vm.throttledZoom(zoomIn: true)
+        let afterFirst = vm.pixelsPerBar
+        // Wait slightly longer than 1/60s (~17ms)
+        Thread.sleep(forTimeInterval: 0.02)
+        let applied = vm.throttledZoom(zoomIn: true)
+        #expect(applied)
+        #expect(vm.pixelsPerBar > afterFirst)
+    }
 }

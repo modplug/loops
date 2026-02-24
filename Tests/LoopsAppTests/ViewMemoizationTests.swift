@@ -165,4 +165,91 @@ struct ViewMemoizationTests {
         let rhs = TrackLaneView(track: t2, pixelsPerBar: 60, totalBars: 32)
         #expect(lhs != rhs)
     }
+
+    // MARK: - GridOverlayView Equatable
+
+    @Test("GridOverlayView: identical inputs are equal")
+    func gridOverlayViewEqual() {
+        let ts = TimeSignature(beatsPerBar: 4, beatUnit: 4)
+        let lhs = GridOverlayView(totalBars: 64, pixelsPerBar: 120, timeSignature: ts, height: 300, gridMode: .adaptive)
+        let rhs = GridOverlayView(totalBars: 64, pixelsPerBar: 120, timeSignature: ts, height: 300, gridMode: .adaptive)
+        #expect(lhs == rhs)
+    }
+
+    @Test("GridOverlayView: different pixelsPerBar makes views unequal")
+    func gridOverlayViewUnequalZoom() {
+        let ts = TimeSignature(beatsPerBar: 4, beatUnit: 4)
+        let lhs = GridOverlayView(totalBars: 64, pixelsPerBar: 120, timeSignature: ts, height: 300)
+        let rhs = GridOverlayView(totalBars: 64, pixelsPerBar: 240, timeSignature: ts, height: 300)
+        #expect(lhs != rhs)
+    }
+
+    @Test("GridOverlayView: different totalBars makes views unequal")
+    func gridOverlayViewUnequalBars() {
+        let ts = TimeSignature(beatsPerBar: 4, beatUnit: 4)
+        let lhs = GridOverlayView(totalBars: 64, pixelsPerBar: 120, timeSignature: ts, height: 300)
+        let rhs = GridOverlayView(totalBars: 128, pixelsPerBar: 120, timeSignature: ts, height: 300)
+        #expect(lhs != rhs)
+    }
+
+    @Test("GridOverlayView: different gridMode makes views unequal")
+    func gridOverlayViewUnequalGridMode() {
+        let ts = TimeSignature(beatsPerBar: 4, beatUnit: 4)
+        let lhs = GridOverlayView(totalBars: 64, pixelsPerBar: 120, timeSignature: ts, height: 300, gridMode: .adaptive)
+        let rhs = GridOverlayView(totalBars: 64, pixelsPerBar: 120, timeSignature: ts, height: 300, gridMode: .fixed(.quarter))
+        #expect(lhs != rhs)
+    }
+
+    // MARK: - AutomationSubLaneView Equatable
+
+    @Test("AutomationSubLaneView: identical inputs are equal regardless of closures")
+    func automationSubLaneViewEqual() {
+        let trackID = ID<Track>()
+        let path = EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 0)
+        let container = Container(name: "C", startBar: 1, lengthBars: 4)
+        let lhs = AutomationSubLaneView(
+            targetPath: path, containers: [container], laneColorIndex: 0,
+            pixelsPerBar: 120, totalBars: 64, height: 40, selectedBreakpointID: nil,
+            onAddBreakpoint: { _, _, _ in }
+        )
+        let rhs = AutomationSubLaneView(
+            targetPath: path, containers: [container], laneColorIndex: 0,
+            pixelsPerBar: 120, totalBars: 64, height: 40, selectedBreakpointID: nil,
+            onDeleteBreakpoint: { _, _, _ in }
+        )
+        #expect(lhs == rhs)
+    }
+
+    @Test("AutomationSubLaneView: different containers makes views unequal")
+    func automationSubLaneViewUnequalContainers() {
+        let trackID = ID<Track>()
+        let path = EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 0)
+        let c1 = Container(name: "A", startBar: 1, lengthBars: 4)
+        let c2 = Container(name: "B", startBar: 5, lengthBars: 4)
+        let lhs = AutomationSubLaneView(
+            targetPath: path, containers: [c1], laneColorIndex: 0,
+            pixelsPerBar: 120, totalBars: 64, height: 40, selectedBreakpointID: nil
+        )
+        let rhs = AutomationSubLaneView(
+            targetPath: path, containers: [c1, c2], laneColorIndex: 0,
+            pixelsPerBar: 120, totalBars: 64, height: 40, selectedBreakpointID: nil
+        )
+        #expect(lhs != rhs)
+    }
+
+    @Test("AutomationSubLaneView: different selectedBreakpointID makes views unequal")
+    func automationSubLaneViewUnequalSelection() {
+        let trackID = ID<Track>()
+        let path = EffectPath(trackID: trackID, effectIndex: 0, parameterAddress: 0)
+        let bpID = ID<AutomationBreakpoint>()
+        let lhs = AutomationSubLaneView(
+            targetPath: path, containers: [], laneColorIndex: 0,
+            pixelsPerBar: 120, totalBars: 64, height: 40, selectedBreakpointID: nil
+        )
+        let rhs = AutomationSubLaneView(
+            targetPath: path, containers: [], laneColorIndex: 0,
+            pixelsPerBar: 120, totalBars: 64, height: 40, selectedBreakpointID: bpID
+        )
+        #expect(lhs != rhs)
+    }
 }

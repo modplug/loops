@@ -1,4 +1,5 @@
 import SwiftUI
+import QuartzCore
 import LoopsCore
 
 /// Manages timeline display state: zoom, scroll offset, and pixel calculations.
@@ -80,6 +81,12 @@ public final class TimelineViewModel {
 
     /// Zoom step multiplier for each zoom in/out action.
     private static let zoomFactor: CGFloat = 1.3
+
+    /// Minimum interval between zoom operations (one per display frame at 60fps).
+    private static let zoomThrottleInterval: CFTimeInterval = 1.0 / 60.0
+
+    /// Timestamp of the last applied zoom operation.
+    private var lastZoomTime: CFTimeInterval = 0
 
     public init() {}
 
@@ -173,6 +180,17 @@ public final class TimelineViewModel {
         let newX = xPosition(forBar: barUnderCursor)
         let oldX = CGFloat(barUnderCursor - 1.0) * oldPPB
         return newX - oldX
+    }
+
+    /// Throttled zoom for scroll wheel events. Returns `false` if the zoom was
+    /// skipped because it arrived within the same display frame as the previous one.
+    @discardableResult
+    public func throttledZoom(zoomIn: Bool) -> Bool {
+        let now = CACurrentMediaTime()
+        guard now - lastZoomTime >= Self.zoomThrottleInterval else { return false }
+        lastZoomTime = now
+        if zoomIn { self.zoomIn() } else { self.zoomOut() }
+        return true
     }
 
     /// Sets the track header column width, clamped to min/max bounds.

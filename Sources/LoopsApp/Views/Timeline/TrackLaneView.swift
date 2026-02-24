@@ -296,6 +296,8 @@ public struct TrackLaneView: View {
                         onReplaceBreakpoints: onReplaceBreakpoints,
                         onReplaceTrackBreakpoints: onReplaceTrackBreakpoints
                     )
+                    .equatable()
+                    .drawingGroup()
                     .overlay(
                         Rectangle()
                             .frame(height: 0.5)
