@@ -1083,7 +1083,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
         lock.unlock()
 
-        // Schedule containers only on changed tracks
+        // Schedule containers only on changed tracks, deferring play() for batch start
+        var scheduledPlayers: [AVAudioPlayerNode] = []
         for track in song.tracks {
             if track.kind == .master { continue }
             guard changedTrackIDs.contains(track.id) else { continue }
@@ -1102,7 +1103,22 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     }
                     continue
                 }
-                scheduleContainer(container: resolved, fromBar: fromBar, samplesPerBar: samplesPerBar)
+                if let player = scheduleContainer(
+                    container: resolved,
+                    fromBar: fromBar,
+                    samplesPerBar: samplesPerBar,
+                    deferPlay: true
+                ) {
+                    scheduledPlayers.append(player)
+                }
+            }
+        }
+
+        // Batch-start changed track players with a shared host-time anchor
+        if !scheduledPlayers.isEmpty {
+            let sharedStartTime = AVAudioTime(hostTime: Self.syncStartHostTime())
+            for player in scheduledPlayers {
+                player.play(at: sharedStartTime)
             }
         }
 
@@ -1191,6 +1207,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
         lock.unlock()
 
         print("[PLAY] play() fromBar=\(fromBar) subgraphs=\(containerSubgraphs.count) audioFiles=\(audioFiles.count)")
+
+        // Phase 1: Schedule all container segments with deferred play().
+        // Collect player nodes so we can batch-start them with a shared
+        // host-time anchor for sample-accurate multi-track sync.
+        var scheduledPlayers: [AVAudioPlayerNode] = []
+
         for track in song.tracks {
             // Master track has no playable containers
             if track.kind == .master { continue }
@@ -1215,12 +1237,26 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     continue
                 }
 
-                scheduleContainer(
+                if let player = scheduleContainer(
                     container: resolved,
                     fromBar: fromBar,
-                    samplesPerBar: samplesPerBar
-                )
+                    samplesPerBar: samplesPerBar,
+                    deferPlay: true
+                ) {
+                    scheduledPlayers.append(player)
+                }
             }
+        }
+
+        // Phase 2: Batch-start all player nodes with a shared host-time anchor.
+        // This ensures every track begins rendering at exactly the same sample,
+        // eliminating the inter-track drift caused by sequential play() calls.
+        if !scheduledPlayers.isEmpty {
+            let sharedStartTime = AVAudioTime(hostTime: Self.syncStartHostTime())
+            for player in scheduledPlayers {
+                player.play(at: sharedStartTime)
+            }
+            print("[PLAY] batch-started \(scheduledPlayers.count) player nodes at shared host time")
         }
 
         lock.lock()
@@ -1652,11 +1688,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
     // MARK: - Private
 
     /// Schedules a single container for playback, handling fades and looping.
+    /// When `deferPlay` is true, the player node is NOT started — the caller
+    /// must call `player.play(at:)` with a shared host-time anchor.
+    /// Returns the scheduled player node, or nil if the container was skipped.
+    @discardableResult
     private func scheduleContainer(
         container: Container,
         fromBar: Double,
-        samplesPerBar: Double
-    ) {
+        samplesPerBar: Double,
+        deferPlay: Bool = false
+    ) -> AVAudioPlayerNode? {
         lock.lock()
         let audioFile: AVAudioFile?
         let subgraph: ContainerSubgraph?
@@ -1675,7 +1716,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
         lock.unlock()
 
-        guard let audioFile, let subgraph else { return }
+        guard let audioFile, let subgraph else { return nil }
 
         // scheduleSegment interprets startingFrame/frameCount in the audio file's
         // native sample rate.  The caller computed samplesPerBar using the engine's
@@ -1699,7 +1740,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Skip containers that end before the playhead
         if containerEndSample <= playheadSample {
             print("[PLAY]   skipping '\(container.name)' — ends before playhead")
-            return
+            return nil
         }
 
         let startOffset: AVAudioFramePosition
@@ -1727,7 +1768,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         guard frameCount > 0 else {
             print("[PLAY]   '\(container.name)' frameCount=0, skipping")
-            return
+            return nil
         }
 
         // Build AVAudioTime for future containers (nil = play immediately)
@@ -1797,10 +1838,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Guard against concurrent cleanup detaching the node from the engine
         guard subgraph.playerNode.engine != nil else {
             print("[PLAY]   '\(container.name)' player NOT attached to engine!")
-            return
+            return nil
         }
-        subgraph.playerNode.play()
-        print("[PLAY]   '\(container.name)' player.play() called, isPlaying=\(subgraph.playerNode.isPlaying)")
+        if !deferPlay {
+            subgraph.playerNode.play()
+            print("[PLAY]   '\(container.name)' player.play() called, isPlaying=\(subgraph.playerNode.isPlaying)")
+        } else {
+            print("[PLAY]   '\(container.name)' scheduled (play deferred for batch start)")
+        }
 
         lock.lock()
         activeContainers.append(container)
@@ -1810,12 +1855,23 @@ public final class PlaybackScheduler: @unchecked Sendable {
         lock.unlock()
 
         actionDispatcher?.containerDidEnter(container)
+        return subgraph.playerNode
     }
 
     private func samplesPerBar(bpm: Double, timeSignature: TimeSignature, sampleRate: Double) -> Double {
         let beatsPerBar = Double(timeSignature.beatsPerBar)
         let secondsPerBeat = 60.0 / bpm
         return beatsPerBar * secondsPerBeat * sampleRate
+    }
+
+    /// Computes a host time ~1ms in the future for synchronized player starts.
+    /// All player nodes started with the same host-time anchor begin rendering
+    /// at exactly the same sample, eliminating inter-track timing drift.
+    private static func syncStartHostTime() -> UInt64 {
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let oneMillisecondTicks = UInt64(1_000_000) * UInt64(timebase.denom) / UInt64(timebase.numer)
+        return mach_absolute_time() + oneMillisecondTicks
     }
 
     // MARK: - Transport Declick

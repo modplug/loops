@@ -2872,4 +2872,312 @@ struct PlaybackSchedulerTests {
         scheduler.stop()
         scheduler.cleanup()
     }
+
+    // MARK: - Multi-Track Sample-Accurate Sync Tests
+
+    /// Creates a multi-track fixture where one track has a normal sine wave
+    /// and a second track has the inverted sine wave. If both are sample-accurate,
+    /// summing them produces silence (phase cancellation).
+    private static func makePhaseCancellationFixture(
+        sampleRate: Double = 44100
+    ) throws -> (
+        tempDir: URL,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording]
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let beatsPerBar = 4.0
+        let secondsPerBeat = 60.0 / 120.0
+        let samplesPerBar = beatsPerBar * secondsPerBeat * sampleRate
+        let sampleCount = AVAudioFrameCount(4.0 * samplesPerBar)
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+
+        // Create normal sine wave (440Hz, amplitude 0.5)
+        let normalBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        normalBuffer.frameLength = sampleCount
+        let invertedBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        invertedBuffer.frameLength = sampleCount
+
+        if let normalData = normalBuffer.floatChannelData,
+           let invertedData = invertedBuffer.floatChannelData {
+            let freq = Float(440.0 * 2.0 * Double.pi / sampleRate)
+            for frame in 0..<Int(sampleCount) {
+                let sample = sin(freq * Float(frame)) * 0.5
+                normalData[0][frame] = sample
+                invertedData[0][frame] = -sample
+            }
+        }
+
+        // Write audio files
+        let normalURL = tempDir.appendingPathComponent("normal.caf")
+        let normalFile = try AVAudioFile(forWriting: normalURL, settings: format.settings)
+        try normalFile.write(from: normalBuffer)
+
+        let invertedURL = tempDir.appendingPathComponent("inverted.caf")
+        let invertedFile = try AVAudioFile(forWriting: invertedURL, settings: format.settings)
+        try invertedFile.write(from: invertedBuffer)
+
+        // Set up recordings
+        let normalRecID = ID<SourceRecording>()
+        let invertedRecID = ID<SourceRecording>()
+        let normalRec = SourceRecording(
+            filename: "normal.caf",
+            sampleRate: sampleRate,
+            sampleCount: Int64(sampleCount)
+        )
+        let invertedRec = SourceRecording(
+            filename: "inverted.caf",
+            sampleRate: sampleRate,
+            sampleCount: Int64(sampleCount)
+        )
+
+        // Two tracks, same start position
+        let c1 = Container(name: "Normal", startBar: 1, lengthBars: 4, sourceRecordingID: normalRecID)
+        let c2 = Container(name: "Inverted", startBar: 1, lengthBars: 4, sourceRecordingID: invertedRecID)
+        let track1 = Track(name: "Track Normal", kind: .audio, containers: [c1])
+        let track2 = Track(name: "Track Inverted", kind: .audio, containers: [c2])
+        let song = Song(name: "Phase Cancel Test", tracks: [track1, track2])
+        let recordings: [ID<SourceRecording>: SourceRecording] = [
+            normalRecID: normalRec,
+            invertedRecID: invertedRec,
+        ]
+
+        return (tempDir, song, recordings)
+    }
+
+    /// Creates a multi-track fixture with identical audio on both tracks.
+    /// If both tracks are sample-accurate, summing should double the amplitude.
+    private static func makeIdenticalTrackFixture(
+        trackCount: Int = 2,
+        sampleRate: Double = 44100
+    ) throws -> (
+        tempDir: URL,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording]
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let beatsPerBar = 4.0
+        let secondsPerBeat = 60.0 / 120.0
+        let samplesPerBar = beatsPerBar * secondsPerBeat * sampleRate
+        let sampleCount = AVAudioFrameCount(4.0 * samplesPerBar)
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+
+        // Create sine wave (440Hz, amplitude 0.25)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        if let data = buffer.floatChannelData {
+            let freq = Float(440.0 * 2.0 * Double.pi / sampleRate)
+            for frame in 0..<Int(sampleCount) {
+                data[0][frame] = sin(freq * Float(frame)) * 0.25
+            }
+        }
+
+        var tracks: [Track] = []
+        var recordings: [ID<SourceRecording>: SourceRecording] = [:]
+
+        for i in 0..<trackCount {
+            let filename = "track\(i).caf"
+            let fileURL = tempDir.appendingPathComponent(filename)
+            let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+            try file.write(from: buffer)
+
+            let recID = ID<SourceRecording>()
+            recordings[recID] = SourceRecording(
+                filename: filename,
+                sampleRate: sampleRate,
+                sampleCount: Int64(sampleCount)
+            )
+            let container = Container(
+                name: "Container \(i)",
+                startBar: 1,
+                lengthBars: 4,
+                sourceRecordingID: recID
+            )
+            tracks.append(Track(name: "Track \(i)", kind: .audio, containers: [container]))
+        }
+
+        let song = Song(name: "Identical Track Test", tracks: tracks)
+        return (tempDir, song, recordings)
+    }
+
+    /// Renders frames from an offline engine into a single output buffer.
+    private static func renderToBuffer(
+        engine: AVAudioEngine,
+        frameCount: Int
+    ) throws -> AVAudioPCMBuffer {
+        let renderFormat = engine.manualRenderingFormat
+        let totalBuffer = AVAudioPCMBuffer(pcmFormat: renderFormat, frameCapacity: AVAudioFrameCount(frameCount))!
+        var offset = 0
+
+        while offset < frameCount {
+            let chunk = min(4096, frameCount - offset)
+            let buffer = AVAudioPCMBuffer(pcmFormat: renderFormat, frameCapacity: AVAudioFrameCount(chunk))!
+            let status = try engine.renderOffline(AVAudioFrameCount(chunk), to: buffer)
+            guard status == .success || status == .insufficientDataFromInputNode else { break }
+
+            if let outData = totalBuffer.floatChannelData, let chunkData = buffer.floatChannelData {
+                for ch in 0..<Int(renderFormat.channelCount) {
+                    memcpy(&outData[ch][offset], chunkData[ch], Int(buffer.frameLength) * MemoryLayout<Float>.size)
+                }
+            }
+            offset += Int(buffer.frameLength)
+            totalBuffer.frameLength = AVAudioFrameCount(offset)
+            if status == .insufficientDataFromInputNode { break }
+        }
+
+        return totalBuffer
+    }
+
+    @Test("Multi-track playback is sample-accurate — phase cancellation",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func multiTrackPhaseCancellation() async throws {
+        let fixture = try Self.makePhaseCancellationFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        scheduler.play(
+            song: fixture.song,
+            fromBar: 1.0,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+
+        // Render 4 bars of audio
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let totalFrames = Int(4.0 * samplesPerBar)
+        let output = try Self.renderToBuffer(engine: engine, frameCount: totalFrames)
+
+        // Analyze: find peak amplitude after the declick region (first 256 samples).
+        // If tracks are sample-accurate, normal + inverted = silence.
+        var maxAmplitude: Float = 0
+        let channelCount = Int(output.format.channelCount)
+        if let outData = output.floatChannelData {
+            // Skip declick fade-in region (256 frames)
+            for ch in 0..<channelCount {
+                for frame in 256..<Int(output.frameLength) {
+                    maxAmplitude = max(maxAmplitude, abs(outData[ch][frame]))
+                }
+            }
+        }
+
+        // Perfect phase cancellation produces silence. Allow small tolerance
+        // for floating-point arithmetic in mixer processing.
+        #expect(maxAmplitude < 0.01,
+                "Peak amplitude \(maxAmplitude) exceeds threshold — tracks are not sample-accurate")
+
+        scheduler.stop()
+        scheduler.cleanup()
+    }
+
+    @Test("Identical audio on multiple tracks sums constructively",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func multiTrackConstructiveInterference() async throws {
+        // Single-track reference
+        let singleFixture = try Self.makeIdenticalTrackFixture(trackCount: 1)
+        defer { try? FileManager.default.removeItem(at: singleFixture.tempDir) }
+
+        let engine1 = try Self.makeRunningEngine()
+        let scheduler1 = PlaybackScheduler(engine: engine1, audioDirURL: singleFixture.tempDir)
+        await scheduler1.prepare(song: singleFixture.song, sourceRecordings: singleFixture.recordings)
+        scheduler1.play(
+            song: singleFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let totalFrames = Int(4.0 * samplesPerBar)
+        let singleOutput = try Self.renderToBuffer(engine: engine1, frameCount: totalFrames)
+        scheduler1.stop()
+        scheduler1.cleanup()
+        engine1.stop()
+
+        // Two-track version
+        let dualFixture = try Self.makeIdenticalTrackFixture(trackCount: 2)
+        defer { try? FileManager.default.removeItem(at: dualFixture.tempDir) }
+
+        let engine2 = try Self.makeRunningEngine()
+        let scheduler2 = PlaybackScheduler(engine: engine2, audioDirURL: dualFixture.tempDir)
+        await scheduler2.prepare(song: dualFixture.song, sourceRecordings: dualFixture.recordings)
+        scheduler2.play(
+            song: dualFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let dualOutput = try Self.renderToBuffer(engine: engine2, frameCount: totalFrames)
+        scheduler2.stop()
+        scheduler2.cleanup()
+        engine2.stop()
+
+        // Compare peak amplitudes after declick region.
+        // Two identical tracks should produce ~2x the amplitude.
+        var singlePeak: Float = 0
+        var dualPeak: Float = 0
+        let startFrame = 256 // skip declick
+        let endFrame = min(Int(singleOutput.frameLength), Int(dualOutput.frameLength))
+
+        if let singleData = singleOutput.floatChannelData,
+           let dualData = dualOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                singlePeak = max(singlePeak, abs(singleData[0][frame]))
+                dualPeak = max(dualPeak, abs(dualData[0][frame]))
+            }
+        }
+
+        // The dual-track peak should be approximately 2x the single-track peak.
+        // Allow 10% tolerance for mixer arithmetic.
+        let ratio = singlePeak > 0 ? dualPeak / singlePeak : 0
+        #expect(ratio > 1.8 && ratio < 2.2,
+                "Expected ~2x amplitude ratio, got \(ratio) (single=\(singlePeak), dual=\(dualPeak))")
+    }
+
+    @Test("Phase cancellation with 48kHz sample rate",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func phaseCancellation48kHz() async throws {
+        let fixture = try Self.makePhaseCancellationFixture(sampleRate: 48000)
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine(sampleRate: 48000)
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        scheduler.play(
+            song: fixture.song,
+            fromBar: 1.0,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 48000
+        )
+
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 48000.0
+        let totalFrames = Int(4.0 * samplesPerBar)
+        let output = try Self.renderToBuffer(engine: engine, frameCount: totalFrames)
+
+        var maxAmplitude: Float = 0
+        if let outData = output.floatChannelData {
+            for ch in 0..<Int(output.format.channelCount) {
+                for frame in 256..<Int(output.frameLength) {
+                    maxAmplitude = max(maxAmplitude, abs(outData[ch][frame]))
+                }
+            }
+        }
+
+        #expect(maxAmplitude < 0.01,
+                "48kHz phase cancellation failed: peak \(maxAmplitude)")
+
+        scheduler.stop()
+        scheduler.cleanup()
+    }
 }
