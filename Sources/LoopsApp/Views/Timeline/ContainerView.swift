@@ -528,6 +528,13 @@ public struct ContainerView: View {
         .drawingGroup()
         .clipped()
         .frame(width: displayWidth, height: height)
+        .overlay {
+            // Pro Tools-style shadow overlay: selected container casts subtle
+            // gradient shadows extending left and right over adjacent containers.
+            if isSelected {
+                ContainerSelectionShadow(width: displayWidth, height: height)
+            }
+        }
         .offset(x: displayOffset)
         .onTapGesture(count: 2) { onDoubleClick?() }
         .onTapGesture { location in
@@ -1066,5 +1073,56 @@ struct FadeOverlayShape: Shape {
         }
 
         return path
+    }
+}
+
+// MARK: - Selection Shadow Overlay
+
+/// Pro Tools-style shadow that extends left and right beyond the selected container's bounds.
+/// Renders as two linear gradient wings (dark -> transparent) that overlay adjacent containers
+/// and empty space, making the selected container visually prominent.
+///
+/// - The shadow is ~24px wide on each side, fading from 12% opacity to transparent.
+/// - `allowsHitTesting(false)` ensures neighboring containers remain fully interactive.
+/// - Uses a fixed `drawingGroup()` so the gradient is rasterized once, avoiding per-frame
+///   recomputation when other state changes.
+private struct ContainerSelectionShadow: View {
+    let width: CGFloat
+    let height: CGFloat
+
+    /// How far the shadow extends beyond each edge of the container, in points.
+    private static let shadowSpread: CGFloat = 24
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Left shadow wing — extends leftward beyond the container
+            LinearGradient(
+                stops: [
+                    .init(color: Color.black.opacity(0.12), location: 1),
+                    .init(color: Color.black.opacity(0), location: 0)
+                ],
+                startPoint: .trailing,
+                endPoint: .leading
+            )
+            .frame(width: Self.shadowSpread, height: height)
+
+            // Gap for the container body itself
+            Color.clear.frame(width: width, height: height)
+
+            // Right shadow wing — extends rightward beyond the container
+            LinearGradient(
+                stops: [
+                    .init(color: Color.black.opacity(0.12), location: 0),
+                    .init(color: Color.black.opacity(0), location: 1)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: Self.shadowSpread, height: height)
+        }
+        .frame(width: width + Self.shadowSpread * 2, height: height)
+        .offset(x: 0) // centered on the container via overlay alignment
+        .drawingGroup() // rasterize once — no per-frame recomputation
+        .allowsHitTesting(false)
     }
 }
