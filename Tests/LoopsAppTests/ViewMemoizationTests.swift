@@ -20,7 +20,7 @@ struct ViewMemoizationTests {
             waveformPeaks: [0.1, 0.5, 0.3],
             isClone: false,
             overriddenFields: [],
-            onSelect: { /* different closure instance */ },
+            onSelect: { _ in /* different closure instance */ },
             onDelete: { /* different closure instance */ }
         )
         let rhs = ContainerView(
@@ -113,7 +113,7 @@ struct ViewMemoizationTests {
             pixelsPerBar: 60,
             totalBars: 32,
             height: 80,
-            onContainerSelect: { _ in },
+            onContainerSelect: { _, _ in },
             hasClipboard: false,
             isAutomationExpanded: false
         )

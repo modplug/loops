@@ -313,8 +313,44 @@ public struct TimelineView: View {
             recordingDurationBarsForContainer: { container in
                 projectViewModel.recordingDurationBars(for: container)
             },
-            onContainerSelect: { containerID in
-                selectionState.selectedContainerID = containerID
+            onContainerSelect: { containerID, modifiers in
+                if modifiers.contains(.command) {
+                    // Cmd+Click: toggle container in multi-selection
+                    if selectionState.selectedContainerIDs.isEmpty {
+                        // Promote current single selection to multi-set
+                        if let existing = selectionState.selectedContainerID {
+                            selectionState.selectedContainerIDs = [existing]
+                            selectionState.selectedContainerID = nil
+                        }
+                    }
+                    if selectionState.selectedContainerIDs.contains(containerID) {
+                        selectionState.selectedContainerIDs.remove(containerID)
+                    } else {
+                        selectionState.selectedContainerIDs.insert(containerID)
+                    }
+                    selectionState.lastSelectedContainerID = containerID
+                } else if modifiers.contains(.shift) {
+                    // Shift+Click: range selection between last-clicked and this container
+                    guard let song = projectViewModel.currentSong else {
+                        selectionState.selectedContainerID = containerID
+                        return
+                    }
+                    let allContainers = song.tracks.flatMap(\.containers).sorted { $0.startBar < $1.startBar }
+                    let anchorID = selectionState.lastSelectedContainerID ?? selectionState.selectedContainerID
+                    guard let anchor = anchorID,
+                          let anchorIdx = allContainers.firstIndex(where: { $0.id == anchor }),
+                          let clickIdx = allContainers.firstIndex(where: { $0.id == containerID }) else {
+                        selectionState.selectedContainerID = containerID
+                        return
+                    }
+                    let range = min(anchorIdx, clickIdx)...max(anchorIdx, clickIdx)
+                    selectionState.selectedContainerIDs = Set(allContainers[range].map(\.id))
+                    selectionState.selectedContainerID = nil
+                    selectionState.lastSelectedContainerID = containerID
+                } else {
+                    // Plain click: single selection
+                    selectionState.selectedContainerID = containerID
+                }
             },
             onContainerDelete: { containerID in
                 projectViewModel.removeContainer(trackID: track.id, containerID: containerID)
@@ -457,6 +493,35 @@ public struct TimelineView: View {
             },
             onSetCrossfadeCurveType: { crossfadeID, curveType in
                 projectViewModel.setCrossfadeCurveType(trackID: track.id, crossfadeID: crossfadeID, curveType: curveType)
+            },
+            multiSelectCount: selectionState.effectiveSelectedContainerIDs.count,
+            onDeleteSelected: {
+                let trackContainerIDs = Set(track.containers.map(\.id))
+                let toDelete = selectionState.effectiveSelectedContainerIDs.intersection(trackContainerIDs)
+                for id in toDelete {
+                    projectViewModel.removeContainer(trackID: track.id, containerID: id)
+                }
+                selectionState.deselectAll()
+            },
+            onDuplicateSelected: {
+                let trackContainerIDs = Set(track.containers.map(\.id))
+                let toDuplicate = selectionState.effectiveSelectedContainerIDs.intersection(trackContainerIDs)
+                for id in toDuplicate {
+                    _ = projectViewModel.duplicateContainer(trackID: track.id, containerID: id)
+                }
+            },
+            onCopySelected: {
+                if let lastID = selectionState.lastSelectedContainerID {
+                    projectViewModel.copyContainer(trackID: track.id, containerID: lastID)
+                }
+            },
+            onSplitSelected: {
+                let splitBar = viewModel.playheadBar
+                let trackContainerIDs = Set(track.containers.map(\.id))
+                let toSplit = selectionState.effectiveSelectedContainerIDs.intersection(trackContainerIDs)
+                for id in toSplit {
+                    _ = projectViewModel.splitContainer(trackID: track.id, containerID: id, atBar: splitBar)
+                }
             }
         )
     }

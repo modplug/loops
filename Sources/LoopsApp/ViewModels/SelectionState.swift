@@ -20,16 +20,21 @@ public final class SelectionState {
         }
     }
 
-    /// Set of all selected container IDs (populated by select-all; cleared on single-select or deselect).
+    /// Set of all selected container IDs (populated by multi-select, select-all; cleared on single-select or deselect).
     public var selectedContainerIDs: Set<ID<Container>> = []
 
+    /// The last container that was clicked (anchor for shift+click range selection).
+    public var lastSelectedContainerID: ID<Container>?
+
     /// The currently selected container ID.
-    /// Setting this clears selectedTrackID for mutual exclusion.
+    /// Setting this clears selectedTrackID and selectedContainerIDs for mutual exclusion.
     /// Guards avoid unnecessary @Observable mutation notifications when values are already nil.
     public var selectedContainerID: ID<Container>? {
         didSet {
             if selectedContainerID != nil {
                 if selectedTrackID != nil { selectedTrackID = nil }
+                if !selectedContainerIDs.isEmpty { selectedContainerIDs = [] }
+                lastSelectedContainerID = selectedContainerID
             }
         }
     }
@@ -41,10 +46,27 @@ public final class SelectionState {
     /// Bar values are absolute timeline positions.
     public var rangeSelection: RangeSelection?
 
+    /// Returns true if the container is part of the current selection (single or multi).
+    public func isContainerSelected(_ id: ID<Container>) -> Bool {
+        selectedContainerID == id || selectedContainerIDs.contains(id)
+    }
+
+    /// All effectively selected container IDs (union of single and multi-select).
+    public var effectiveSelectedContainerIDs: Set<ID<Container>> {
+        if !selectedContainerIDs.isEmpty {
+            return selectedContainerIDs
+        }
+        if let single = selectedContainerID {
+            return [single]
+        }
+        return []
+    }
+
     /// Clears all selection state (container, track, section, multi-select).
     public func deselectAll() {
         selectedContainerID = nil
         selectedContainerIDs = []
+        lastSelectedContainerID = nil
         selectedTrackID = nil
         selectedSectionID = nil
         rangeSelection = nil

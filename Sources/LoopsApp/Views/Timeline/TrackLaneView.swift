@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 import LoopsCore
 
@@ -14,7 +15,7 @@ public struct TrackLaneView: View {
     var waveformPeaksForContainer: ((_ container: Container) -> [Float]?)?
     /// Closure to look up the total recording duration in bars for a container.
     var recordingDurationBarsForContainer: ((_ container: Container) -> Double?)?
-    var onContainerSelect: ((_ containerID: ID<Container>) -> Void)?
+    var onContainerSelect: ((_ containerID: ID<Container>, _ modifiers: NSEvent.ModifierFlags) -> Void)?
     var onContainerDelete: ((_ containerID: ID<Container>) -> Void)?
     var onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Double) -> Bool)?
     var onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Double, _ newLength: Double) -> Bool)?
@@ -72,6 +73,13 @@ public struct TrackLaneView: View {
     var automationTimeSignature: TimeSignature?
     /// Grid mode for automation sub-lane grid lines.
     var automationGridMode: GridMode?
+    /// Number of containers in the current multi-selection.
+    var multiSelectCount: Int = 0
+    /// Batch operations for multi-selected containers.
+    var onDeleteSelected: (() -> Void)?
+    var onDuplicateSelected: (() -> Void)?
+    var onCopySelected: (() -> Void)?
+    var onSplitSelected: (() -> Void)?
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
@@ -88,7 +96,7 @@ public struct TrackLaneView: View {
         selectionState: SelectionState? = nil,
         waveformPeaksForContainer: ((_ container: Container) -> [Float]?)? = nil,
         recordingDurationBarsForContainer: ((_ container: Container) -> Double?)? = nil,
-        onContainerSelect: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onContainerSelect: ((_ containerID: ID<Container>, _ modifiers: NSEvent.ModifierFlags) -> Void)? = nil,
         onContainerDelete: ((_ containerID: ID<Container>) -> Void)? = nil,
         onContainerMove: ((_ containerID: ID<Container>, _ newStartBar: Double) -> Bool)? = nil,
         onContainerResizeLeft: ((_ containerID: ID<Container>, _ newStartBar: Double, _ newLength: Double) -> Bool)? = nil,
@@ -137,7 +145,12 @@ public struct TrackLaneView: View {
         onSetCrossfadeCurveType: ((_ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)? = nil,
         automationSnapResolution: SnapResolution? = nil,
         automationTimeSignature: TimeSignature? = nil,
-        automationGridMode: GridMode? = nil
+        automationGridMode: GridMode? = nil,
+        multiSelectCount: Int = 0,
+        onDeleteSelected: (() -> Void)? = nil,
+        onDuplicateSelected: (() -> Void)? = nil,
+        onCopySelected: (() -> Void)? = nil,
+        onSplitSelected: (() -> Void)? = nil
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
@@ -196,6 +209,11 @@ public struct TrackLaneView: View {
         self.automationSnapResolution = automationSnapResolution
         self.automationTimeSignature = automationTimeSignature
         self.automationGridMode = automationGridMode
+        self.multiSelectCount = multiSelectCount
+        self.onDeleteSelected = onDeleteSelected
+        self.onDuplicateSelected = onDuplicateSelected
+        self.onCopySelected = onCopySelected
+        self.onSplitSelected = onSplitSelected
     }
 
     private var baseHeight: CGFloat {
@@ -340,7 +358,7 @@ public struct TrackLaneView: View {
             overriddenFields: container.overriddenFields,
             resolvedMIDISequence: resolvedMIDISequenceForContainer?(container),
             recordingDurationBars: recordingDurationBarsForContainer?(container),
-            onSelect: { onContainerSelect?(container.id) },
+            onSelect: { modifiers in onContainerSelect?(container.id, modifiers) },
             onPlayheadTap: onPlayheadTap,
             onDelete: { onContainerDelete?(container.id) },
             onMove: { newStart in onContainerMove?(container.id, newStart) ?? false },
@@ -364,7 +382,12 @@ public struct TrackLaneView: View {
             onGlue: { onGlueContainers?() },
             snapToGrid: snapToGrid,
             crossfades: track.crossfades.filter { $0.containerAID == container.id || $0.containerBID == container.id },
-            onSetCrossfadeCurveType: onSetCrossfadeCurveType
+            onSetCrossfadeCurveType: onSetCrossfadeCurveType,
+            multiSelectCount: multiSelectCount,
+            onDeleteSelected: onDeleteSelected,
+            onDuplicateSelected: onDuplicateSelected,
+            onCopySelected: onCopySelected,
+            onSplitSelected: onSplitSelected
         )
     }
 
@@ -569,6 +592,7 @@ extension TrackLaneView: Equatable {
         lhs.selectedAutomationTool == rhs.selectedAutomationTool &&
         lhs.gridSpacingBars == rhs.gridSpacingBars &&
         lhs.otherSongs.count == rhs.otherSongs.count &&
-        zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name }
+        zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name } &&
+        lhs.multiSelectCount == rhs.multiSelectCount
     }
 }

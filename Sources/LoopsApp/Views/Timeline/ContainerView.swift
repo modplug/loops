@@ -31,7 +31,7 @@ public struct ContainerView: View {
     /// Total duration of the source recording in bars (nil if unknown or no recording).
     /// Used to compute waveform start/length fractions for cropped display.
     let recordingDurationBars: Double?
-    var onSelect: (() -> Void)?
+    var onSelect: ((_ modifiers: NSEvent.ModifierFlags) -> Void)?
     var onPlayheadTap: ((_ timelineX: CGFloat) -> Void)?
     var onDelete: (() -> Void)?
     var onMove: ((_ newStartBar: Double) -> Bool)?
@@ -59,6 +59,13 @@ public struct ContainerView: View {
     var crossfades: [Crossfade]
     /// Callback to change a crossfade's curve type.
     var onSetCrossfadeCurveType: ((_ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)?
+    /// Number of containers in the current multi-selection (0 or 1 = single selection).
+    var multiSelectCount: Int = 0
+    /// Batch operations for multi-selected containers.
+    var onDeleteSelected: (() -> Void)?
+    var onDuplicateSelected: (() -> Void)?
+    var onCopySelected: (() -> Void)?
+    var onSplitSelected: (() -> Void)?
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -96,7 +103,7 @@ public struct ContainerView: View {
         overriddenFields: Set<ContainerField> = [],
         resolvedMIDISequence: MIDISequence? = nil,
         recordingDurationBars: Double? = nil,
-        onSelect: (() -> Void)? = nil,
+        onSelect: ((_ modifiers: NSEvent.ModifierFlags) -> Void)? = nil,
         onPlayheadTap: ((_ timelineX: CGFloat) -> Void)? = nil,
         onDelete: (() -> Void)? = nil,
         onMove: ((_ newStartBar: Double) -> Bool)? = nil,
@@ -120,7 +127,12 @@ public struct ContainerView: View {
         onGlue: (() -> Void)? = nil,
         snapToGrid: ((_ bar: Double) -> Double)? = nil,
         crossfades: [Crossfade] = [],
-        onSetCrossfadeCurveType: ((_ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)? = nil
+        onSetCrossfadeCurveType: ((_ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)? = nil,
+        multiSelectCount: Int = 0,
+        onDeleteSelected: (() -> Void)? = nil,
+        onDuplicateSelected: (() -> Void)? = nil,
+        onCopySelected: (() -> Void)? = nil,
+        onSplitSelected: (() -> Void)? = nil
     ) {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
@@ -157,12 +169,17 @@ public struct ContainerView: View {
         self.snapToGrid = snapToGrid
         self.crossfades = crossfades
         self.onSetCrossfadeCurveType = onSetCrossfadeCurveType
+        self.multiSelectCount = multiSelectCount
+        self.onDeleteSelected = onDeleteSelected
+        self.onDuplicateSelected = onDuplicateSelected
+        self.onCopySelected = onCopySelected
+        self.onSplitSelected = onSplitSelected
     }
 
     /// Derived from SelectionState observable — only this ContainerView re-evaluates
     /// when selection changes, not the parent TrackLaneView or TimelineView.
     private var isSelected: Bool {
-        selectionState?.selectedContainerID == container.id
+        selectionState?.isContainerSelected(container.id) ?? false
     }
 
     private var containerWidth: CGFloat {
@@ -521,50 +538,63 @@ public struct ContainerView: View {
                 let timelineX = CGFloat(container.startBar - 1) * pixelsPerBar + location.x
                 onPlayheadTap?(timelineX)
             } else {
-                onSelect?()
+                onSelect?(NSEvent.modifierFlags)
             }
         }
         .contextMenu {
-            Button("Copy") { onCopy?() }
-            Button("Duplicate") { onDuplicate?() }
-            Button("Link (Create Clone)") { onLinkClone?() }
-            if isClone {
-                Button("Unlink (Consolidate)") { onUnlink?() }
-            }
-            if !otherSongs.isEmpty {
-                Menu("Copy to Song\u{2026}") {
-                    ForEach(otherSongs, id: \.id) { song in
-                        Button(song.name) { onCopyToSong?(song.id) }
+            if multiSelectCount > 1 && isSelected {
+                // Multi-selection context menu
+                Button("Copy \(multiSelectCount) Containers") { onCopySelected?() }
+                Button("Duplicate \(multiSelectCount) Containers") { onDuplicateSelected?() }
+                Divider()
+                Button("Split \(multiSelectCount) at Playhead") { onSplitSelected?() }
+                if let selection = selectionState, selection.selectedContainerIDs.count >= 2 {
+                    Button("Glue (Cmd+J)") { onGlue?() }
+                }
+                Divider()
+                Button("Delete \(multiSelectCount) Containers", role: .destructive) { onDeleteSelected?() }
+            } else {
+                Button("Copy") { onCopy?() }
+                Button("Duplicate") { onDuplicate?() }
+                Button("Link (Create Clone)") { onLinkClone?() }
+                if isClone {
+                    Button("Unlink (Consolidate)") { onUnlink?() }
+                }
+                if !otherSongs.isEmpty {
+                    Menu("Copy to Song\u{2026}") {
+                        ForEach(otherSongs, id: \.id) { song in
+                            Button(song.name) { onCopyToSong?(song.id) }
+                        }
                     }
                 }
-            }
-            if let selection = selectionState, selection.selectedContainerIDs.count >= 2 {
-                Button("Glue (Cmd+J)") { onGlue?() }
-            }
-            Divider()
-            Button("Split at Playhead") { onSplit?() }
-            Button("Edit...") { onDoubleClick?() }
-            Button("Arm/Disarm") { onArmToggle?() }
-            if !crossfades.isEmpty {
+                if let selection = selectionState, selection.selectedContainerIDs.count >= 2 {
+                    Button("Glue (Cmd+J)") { onGlue?() }
+                }
                 Divider()
-                ForEach(crossfades) { xfade in
-                    Menu("Crossfade Curve") {
-                        ForEach(CrossfadeCurveType.allCases, id: \.self) { curveType in
-                            Button {
-                                onSetCrossfadeCurveType?(xfade.id, curveType)
-                            } label: {
-                                if xfade.curveType == curveType {
-                                    Label(curveType.displayName, systemImage: "checkmark")
-                                } else {
-                                    Text(curveType.displayName)
+                Button("Split at Playhead") { onSplit?() }
+                Button("Edit...") { onDoubleClick?() }
+                Button("Arm/Disarm") { onArmToggle?() }
+                if !crossfades.isEmpty {
+                    Divider()
+                    ForEach(crossfades) { xfade in
+                        Menu("Crossfade Curve") {
+                            ForEach(CrossfadeCurveType.allCases, id: \.self) { curveType in
+                                Button {
+                                    onSetCrossfadeCurveType?(xfade.id, curveType)
+                                } label: {
+                                    if xfade.curveType == curveType {
+                                        Label(curveType.displayName, systemImage: "checkmark")
+                                    } else {
+                                        Text(curveType.displayName)
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                Divider()
+                Button("Delete", role: .destructive) { onDelete?() }
             }
-            Divider()
-            Button("Delete", role: .destructive) { onDelete?() }
         }
 
         // Alt-drag clone ghost preview
@@ -880,7 +910,7 @@ public struct ContainerView: View {
                         let startBar = container.startBar + max(0, round(startX / pixelsPerBar))
                         let endBar = container.startBar + min(container.lengthBars, round(endX / pixelsPerBar))
                         if endBar > startBar {
-                            onSelect?()
+                            onSelect?([])
                             onRangeSelect?(startBar, endBar)
                         }
                     }
@@ -961,7 +991,8 @@ extension ContainerView: Equatable {
         lhs.recordingDurationBars == rhs.recordingDurationBars &&
         lhs.crossfades == rhs.crossfades &&
         lhs.otherSongs.count == rhs.otherSongs.count &&
-        zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name }
+        zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name } &&
+        lhs.multiSelectCount == rhs.multiSelectCount
     }
 }
 
