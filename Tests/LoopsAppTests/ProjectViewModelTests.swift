@@ -4182,4 +4182,232 @@ struct ProjectViewModelTests {
         // Right: bars 12-14, offset = 2.0 + (12-5) = 9.0
         #expect(containers[2].audioStartOffset == 9.0)
     }
+
+    // MARK: - Glue / Consolidate Containers
+
+    @Test("Glue MIDI containers merges notes with correct beat offsets")
+    @MainActor
+    func glueMIDIContainers() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+
+        let c1 = Container(
+            name: "MIDI 1",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence(notes: [
+                MIDINoteEvent(pitch: 60, velocity: 100, startBeat: 0.0, duration: 1.0),
+                MIDINoteEvent(pitch: 64, velocity: 80, startBeat: 2.0, duration: 0.5),
+            ])
+        )
+        let c2 = Container(
+            name: "MIDI 2",
+            startBar: 5.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence(notes: [
+                MIDINoteEvent(pitch: 67, velocity: 90, startBeat: 0.0, duration: 2.0),
+                MIDINoteEvent(pitch: 72, velocity: 110, startBeat: 2.0, duration: 1.0),
+            ])
+        )
+
+        vm.project.songs[0].tracks[0].containers = [c1, c2]
+
+        let result = vm.glueContainers(containerIDs: Set([c1.id, c2.id]))
+        #expect(result != nil)
+
+        let containers = vm.project.songs[0].tracks[0].containers
+        #expect(containers.count == 1)
+
+        let merged = containers[0]
+        #expect(merged.startBar == 1.0)
+        #expect(merged.lengthBars == 8.0)
+        #expect(merged.midiSequence != nil)
+
+        let notes = merged.midiSequence!.notes.sorted { $0.startBeat < $1.startBeat }
+        #expect(notes.count == 4)
+
+        // c1 notes: bar offset 0, beat offset 0
+        #expect(notes[0].pitch == 60)
+        #expect(notes[0].startBeat == 0.0)
+        #expect(notes[1].pitch == 64)
+        #expect(notes[1].startBeat == 2.0)
+
+        // c2 notes: bar offset 4, beat offset 16 (4 bars * 4 beats)
+        #expect(notes[2].pitch == 67)
+        #expect(notes[2].startBeat == 16.0)
+        #expect(notes[3].pitch == 72)
+        #expect(notes[3].startBeat == 18.0)
+    }
+
+    @Test("Glue containers with gap spans full range including gap")
+    @MainActor
+    func glueContainersWithGap() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+
+        let c1 = Container(
+            name: "First",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence(notes: [
+                MIDINoteEvent(pitch: 60, startBeat: 0.0, duration: 1.0),
+            ])
+        )
+        // Gap: bars 5-7 (3 bars of silence)
+        let c2 = Container(
+            name: "Second",
+            startBar: 8.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence(notes: [
+                MIDINoteEvent(pitch: 72, startBeat: 0.0, duration: 1.0),
+            ])
+        )
+
+        vm.project.songs[0].tracks[0].containers = [c1, c2]
+
+        let result = vm.glueContainers(containerIDs: Set([c1.id, c2.id]))
+        #expect(result != nil)
+
+        let merged = vm.project.songs[0].tracks[0].containers[0]
+        // Should span bars 1 to 12 (start=1, length=11)
+        #expect(merged.startBar == 1.0)
+        #expect(merged.lengthBars == 11.0)
+
+        // Second container's note at bar 8 → beat offset (8-1)*4 = 28
+        let notes = merged.midiSequence!.notes.sorted { $0.startBeat < $1.startBeat }
+        #expect(notes[0].startBeat == 0.0)
+        #expect(notes[1].startBeat == 28.0)
+    }
+
+    @Test("Glue requires at least 2 containers")
+    @MainActor
+    func glueRequiresMultiple() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+
+        let c1 = Container(startBar: 1.0, midiSequence: MIDISequence())
+        vm.project.songs[0].tracks[0].containers = [c1]
+
+        let result = vm.glueContainers(containerIDs: Set([c1.id]))
+        #expect(result == nil)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+    }
+
+    @Test("Glue rejects containers on different tracks")
+    @MainActor
+    func glueRejectsCrossTrack() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        vm.addTrack(kind: .midi)
+
+        let c1 = Container(startBar: 1.0, midiSequence: MIDISequence())
+        let c2 = Container(startBar: 5.0, midiSequence: MIDISequence())
+
+        vm.project.songs[0].tracks[0].containers = [c1]
+        vm.project.songs[0].tracks[1].containers = [c2]
+
+        let result = vm.glueContainers(containerIDs: Set([c1.id, c2.id]))
+        #expect(result == nil)
+    }
+
+    @Test("Glue merges automation breakpoints with re-offset positions")
+    @MainActor
+    func glueAutomation() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+
+        let trackID = vm.project.songs[0].tracks[0].id
+        let c1ID = ID<Container>()
+        let c2ID = ID<Container>()
+
+        let targetPath1 = EffectPath(trackID: trackID, containerID: c1ID, effectIndex: 0, parameterAddress: 100)
+        let targetPath2 = EffectPath(trackID: trackID, containerID: c2ID, effectIndex: 0, parameterAddress: 100)
+
+        let c1 = Container(
+            id: c1ID,
+            startBar: 1.0,
+            lengthBars: 4.0,
+            automationLanes: [
+                AutomationLane(targetPath: targetPath1, breakpoints: [
+                    AutomationBreakpoint(position: 0.0, value: 0.0),
+                    AutomationBreakpoint(position: 2.0, value: 1.0),
+                ])
+            ],
+            midiSequence: MIDISequence()
+        )
+        let c2 = Container(
+            id: c2ID,
+            startBar: 5.0,
+            lengthBars: 4.0,
+            automationLanes: [
+                AutomationLane(targetPath: targetPath2, breakpoints: [
+                    AutomationBreakpoint(position: 0.0, value: 0.5),
+                    AutomationBreakpoint(position: 1.0, value: 0.8),
+                ])
+            ],
+            midiSequence: MIDISequence()
+        )
+
+        vm.project.songs[0].tracks[0].containers = [c1, c2]
+
+        let result = vm.glueContainers(containerIDs: Set([c1.id, c2.id]))
+        #expect(result != nil)
+
+        let merged = vm.project.songs[0].tracks[0].containers[0]
+        #expect(merged.automationLanes.count == 1)
+
+        let lane = merged.automationLanes[0]
+        // The merged lane should target the new container ID
+        #expect(lane.targetPath.containerID == merged.id)
+        #expect(lane.breakpoints.count == 4)
+
+        let bps = lane.breakpoints.sorted { $0.position < $1.position }
+        // c1 breakpoints: offset 0 (bar 1 - bar 1 = 0)
+        #expect(bps[0].position == 0.0)
+        #expect(bps[0].value == 0.0)
+        #expect(bps[1].position == 2.0)
+        #expect(bps[1].value == 1.0)
+        // c2 breakpoints: offset 4 (bar 5 - bar 1 = 4)
+        #expect(bps[2].position == 4.0)
+        #expect(bps[2].value == 0.5)
+        #expect(bps[3].position == 5.0)
+        #expect(bps[3].value == 0.8)
+    }
+
+    @Test("Glue supports undo restoring original containers")
+    @MainActor
+    func glueUndo() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+
+        let c1 = Container(
+            name: "A",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence()
+        )
+        let c2 = Container(
+            name: "B",
+            startBar: 5.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence()
+        )
+        let originalIDs = Set([c1.id, c2.id])
+        vm.project.songs[0].tracks[0].containers = [c1, c2]
+
+        vm.glueContainers(containerIDs: originalIDs)
+        #expect(vm.project.songs[0].tracks[0].containers.count == 1)
+
+        vm.undoManager?.undo()
+        let restored = vm.project.songs[0].tracks[0].containers
+        #expect(restored.count == 2)
+        let restoredIDs = Set(restored.map(\.id))
+        #expect(restoredIDs == originalIDs)
+    }
 }

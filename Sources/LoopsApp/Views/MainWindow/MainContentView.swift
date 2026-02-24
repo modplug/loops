@@ -426,6 +426,12 @@ public struct MainContentView: View {
             handleSplitAtRange()
             return .handled
         }
+        // Cmd+J: glue selected containers
+        .onKeyPress("j", phases: .down) { keyPress in
+            guard keyPress.modifiers.contains(.command) else { return .ignored }
+            projectViewModel.glueContainers(containerIDs: projectViewModel.selectedContainerIDs)
+            return .handled
+        }
         // Cmd+D: duplicate selected container (or track if no container selected)
         .onKeyPress("d", phases: .down) { keyPress in
             guard keyPress.modifiers.contains(.command) else { return .ignored }

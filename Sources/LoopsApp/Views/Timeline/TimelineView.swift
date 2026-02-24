@@ -426,6 +426,9 @@ public struct TimelineView: View {
                 let splitBar = viewModel.playheadBar
                 projectViewModel.splitContainer(trackID: track.id, containerID: containerID, atBar: splitBar)
             },
+            onGlueContainers: {
+                projectViewModel.glueContainers(containerIDs: projectViewModel.selectedContainerIDs)
+            },
             onPlayheadTap: { timelineX in
                 let bar = viewModel.snappedBar(forXPosition: timelineX, timeSignature: song.timeSignature)
                 onPlayheadPosition?(bar)

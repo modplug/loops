@@ -50,6 +50,7 @@ public struct TrackLaneView: View {
     var onContainerTrimLeft: ((_ containerID: ID<Container>, _ newAudioStartOffset: Double, _ newStartBar: Double, _ newLength: Double) -> Bool)?
     var onContainerTrimRight: ((_ containerID: ID<Container>, _ newLength: Double) -> Bool)?
     var onContainerSplit: ((_ containerID: ID<Container>) -> Void)?
+    var onGlueContainers: (() -> Void)?
     var onPlayheadTap: ((_ timelineX: CGFloat) -> Void)?
     var onTapBackground: ((_ xPosition: CGFloat) -> Void)?
     var onRangeSelect: ((_ containerID: ID<Container>, _ startBar: Double, _ endBar: Double) -> Void)?
@@ -109,6 +110,7 @@ public struct TrackLaneView: View {
         onContainerTrimLeft: ((_ containerID: ID<Container>, _ newAudioStartOffset: Double, _ newStartBar: Double, _ newLength: Double) -> Bool)? = nil,
         onContainerTrimRight: ((_ containerID: ID<Container>, _ newLength: Double) -> Bool)? = nil,
         onContainerSplit: ((_ containerID: ID<Container>) -> Void)? = nil,
+        onGlueContainers: (() -> Void)? = nil,
         onPlayheadTap: ((_ timelineX: CGFloat) -> Void)? = nil,
         onTapBackground: ((_ xPosition: CGFloat) -> Void)? = nil,
         onRangeSelect: ((_ containerID: ID<Container>, _ startBar: Double, _ endBar: Double) -> Void)? = nil,
@@ -157,6 +159,7 @@ public struct TrackLaneView: View {
         self.onContainerTrimLeft = onContainerTrimLeft
         self.onContainerTrimRight = onContainerTrimRight
         self.onContainerSplit = onContainerSplit
+        self.onGlueContainers = onGlueContainers
         self.onPlayheadTap = onPlayheadTap
         self.onTapBackground = onTapBackground
         self.onRangeSelect = onRangeSelect
@@ -301,6 +304,7 @@ public struct TrackLaneView: View {
             onSetExitFade: { fade in onSetExitFade?(container.id, fade) },
             onSplit: { onContainerSplit?(container.id) },
             onRangeSelect: { startBar, endBar in onRangeSelect?(container.id, startBar, endBar) },
+            onGlue: { onGlueContainers?() },
             snapToGrid: snapToGrid
         )
     }

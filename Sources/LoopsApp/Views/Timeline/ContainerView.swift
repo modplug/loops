@@ -52,6 +52,7 @@ public struct ContainerView: View {
     var onSetExitFade: ((FadeSettings?) -> Void)?
     var onSplit: (() -> Void)?
     var onRangeSelect: ((_ startBar: Double, _ endBar: Double) -> Void)?
+    var onGlue: (() -> Void)?
     /// Snaps a bar value to the current grid resolution. Falls back to whole-bar rounding if nil.
     var snapToGrid: ((_ bar: Double) -> Double)?
 
@@ -112,6 +113,7 @@ public struct ContainerView: View {
         onSetExitFade: ((FadeSettings?) -> Void)? = nil,
         onSplit: (() -> Void)? = nil,
         onRangeSelect: ((_ startBar: Double, _ endBar: Double) -> Void)? = nil,
+        onGlue: (() -> Void)? = nil,
         snapToGrid: ((_ bar: Double) -> Double)? = nil
     ) {
         self.container = container
@@ -145,6 +147,7 @@ public struct ContainerView: View {
         self.onSetExitFade = onSetExitFade
         self.onSplit = onSplit
         self.onRangeSelect = onRangeSelect
+        self.onGlue = onGlue
         self.snapToGrid = snapToGrid
     }
 
@@ -525,6 +528,9 @@ public struct ContainerView: View {
                         Button(song.name) { onCopyToSong?(song.id) }
                     }
                 }
+            }
+            if let selection = selectionState, selection.selectedContainerIDs.count >= 2 {
+                Button("Glue (Cmd+J)") { onGlue?() }
             }
             Divider()
             Button("Split at Playhead") { onSplit?() }

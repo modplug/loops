@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import LoopsCore
 import LoopsEngine
 
@@ -3137,6 +3138,213 @@ public final class ProjectViewModel {
     }
 
     // MARK: - Private
+
+    // MARK: - Glue / Consolidate Multiple Containers
+
+    /// Merges 2+ selected containers on the same track into a single container.
+    /// Audio containers: merged source recordings with silence for gaps, written to new CAF.
+    /// MIDI containers: merged note sequences with correct timing offsets.
+    /// Automation lanes are merged with breakpoint positions re-offset to the new container.
+    /// Returns the new merged container ID, or nil on failure.
+    @discardableResult
+    public func glueContainers(containerIDs: Set<ID<Container>>) -> ID<Container>? {
+        guard containerIDs.count >= 2 else { return nil }
+        guard !project.songs.isEmpty else { return nil }
+        let songIdx = currentSongIndex
+
+        // Find the track containing all selected containers
+        guard let trackIndex = project.songs[songIdx].tracks.firstIndex(where: { track in
+            containerIDs.allSatisfy { id in track.containers.contains(where: { $0.id == id }) }
+        }) else { return nil }
+
+        let track = project.songs[songIdx].tracks[trackIndex]
+
+        // Resolve all containers (handle clones)
+        let allContainers = project.songs[songIdx].tracks.flatMap(\.containers)
+        let lookup: (ID<Container>) -> Container? = { id in allContainers.first(where: { $0.id == id }) }
+        var selected = track.containers
+            .filter { containerIDs.contains($0.id) }
+            .map { $0.resolved(using: lookup) }
+        selected.sort { $0.startBar < $1.startBar }
+
+        guard selected.count >= 2 else { return nil }
+
+        let mergedStart = selected.map(\.startBar).min()!
+        let mergedEnd = selected.map(\.endBar).max()!
+        let mergedLength = mergedEnd - mergedStart
+        let song = project.songs[songIdx]
+        let beatsPerBar = Double(song.timeSignature.beatsPerBar)
+
+        // Determine if MIDI or audio merge
+        let isMIDI = selected.allSatisfy { $0.midiSequence != nil }
+
+        var mergedContainer = Container(
+            name: selected.first!.name + " (Glued)",
+            startBar: mergedStart,
+            lengthBars: mergedLength
+        )
+
+        if isMIDI {
+            // MIDI merge: combine note sequences with beat offsets
+            var mergedNotes: [MIDINoteEvent] = []
+            for container in selected {
+                guard let sequence = container.midiSequence else { continue }
+                let barOffset = container.startBar - mergedStart
+                let beatOffset = barOffset * beatsPerBar
+                for note in sequence.notes {
+                    mergedNotes.append(MIDINoteEvent(
+                        pitch: note.pitch,
+                        velocity: note.velocity,
+                        startBeat: note.startBeat + beatOffset,
+                        duration: note.duration,
+                        channel: note.channel
+                    ))
+                }
+            }
+            mergedContainer.midiSequence = MIDISequence(notes: mergedNotes)
+        } else {
+            // Audio merge: create a buffer spanning the full range, overlay each container's audio
+            let sampleRate = 44100.0
+            let spb = OfflineRenderer.samplesPerBar(
+                bpm: song.tempo.bpm,
+                timeSignature: song.timeSignature,
+                sampleRate: sampleRate
+            )
+            let totalSamples = Int(mergedLength * spb)
+
+            let format = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: sampleRate,
+                channels: 2,
+                interleaved: false
+            )!
+            let mergedBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(totalSamples))!
+            mergedBuffer.frameLength = AVAudioFrameCount(totalSamples)
+
+            // Zero-fill
+            if let data = mergedBuffer.floatChannelData {
+                for ch in 0..<2 {
+                    memset(data[ch], 0, totalSamples * MemoryLayout<Float>.size)
+                }
+            }
+
+            // Overlay each container's source audio
+            for container in selected {
+                guard let recID = container.sourceRecordingID,
+                      let recording = project.sourceRecordings[recID] else { continue }
+                let fileURL = audioDirectory.appendingPathComponent(recording.filename)
+                guard let audioFile = try? AVAudioFile(forReading: fileURL) else { continue }
+                let srcFmt = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: audioFile.fileFormat.sampleRate,
+                    channels: audioFile.fileFormat.channelCount,
+                    interleaved: false
+                )!
+                let srcBuf = AVAudioPCMBuffer(pcmFormat: srcFmt, frameCapacity: AVAudioFrameCount(audioFile.length))!
+                do { try audioFile.read(into: srcBuf) } catch { continue }
+
+                guard let srcData = srcBuf.floatChannelData,
+                      let outData = mergedBuffer.floatChannelData else { continue }
+                let srcChannels = Int(srcBuf.format.channelCount)
+                let srcFrames = Int(srcBuf.frameLength)
+
+                // Resample ratio (source sample rate → 44100)
+                let ratio = sampleRate / audioFile.fileFormat.sampleRate
+
+                let barOffset = container.startBar - mergedStart
+                let startSample = Int(barOffset * spb)
+                let audioStartSample = Int(container.audioStartOffset * spb)
+                let containerSamples = Int(container.lengthBars * spb)
+
+                for frame in 0..<containerSamples {
+                    let outIdx = startSample + frame
+                    guard outIdx < totalSamples else { break }
+                    let srcIdx = Int(Double(audioStartSample + frame) / ratio)
+                    let loopedIdx: Int
+                    if container.loopSettings.loopCount == .fill && srcFrames > 0 {
+                        loopedIdx = srcIdx % srcFrames
+                    } else {
+                        loopedIdx = srcIdx
+                    }
+                    guard loopedIdx >= 0 && loopedIdx < srcFrames else { continue }
+                    outData[0][outIdx] += srcData[0][loopedIdx]
+                    outData[1][outIdx] += srcChannels > 1 ? srcData[1][loopedIdx] : srcData[0][loopedIdx]
+                }
+            }
+
+            // Write merged buffer to a new CAF file
+            let filename = "glued-\(mergedContainer.id.rawValue.uuidString.prefix(8)).caf"
+            let fileURL = audioDirectory.appendingPathComponent(filename)
+            do {
+                let outFile = try AVAudioFile(
+                    forWriting: fileURL,
+                    settings: [
+                        AVFormatIDKey: kAudioFormatLinearPCM,
+                        AVSampleRateKey: sampleRate,
+                        AVNumberOfChannelsKey: 2,
+                        AVLinearPCMBitDepthKey: 32,
+                        AVLinearPCMIsFloatKey: true,
+                        AVLinearPCMIsNonInterleaved: true,
+                    ],
+                    commonFormat: .pcmFormatFloat32,
+                    interleaved: false
+                )
+                try outFile.write(from: mergedBuffer)
+            } catch {
+                return nil
+            }
+
+            // Generate waveform peaks
+            let peaks = try? WaveformGenerator().generatePeaks(from: fileURL)
+
+            let newRecording = SourceRecording(
+                filename: filename,
+                sampleRate: sampleRate,
+                sampleCount: Int64(totalSamples),
+                waveformPeaks: peaks
+            )
+            project.sourceRecordings[newRecording.id] = newRecording
+            mergedContainer.sourceRecordingID = newRecording.id
+            mergedContainer.loopSettings = LoopSettings(loopCount: .count(1))
+        }
+
+        // Merge automation lanes: collect breakpoints from all containers, re-offset
+        var mergedLanesByTarget: [EffectPath: [AutomationBreakpoint]] = [:]
+        for container in selected {
+            let barOffset = container.startBar - mergedStart
+            for lane in container.automationLanes {
+                var targetPath = lane.targetPath
+                targetPath.containerID = mergedContainer.id
+                let reOffsetBreakpoints = lane.breakpoints.map { bp in
+                    AutomationBreakpoint(
+                        position: bp.position + barOffset,
+                        value: bp.value,
+                        curve: bp.curve
+                    )
+                }
+                mergedLanesByTarget[targetPath, default: []].append(contentsOf: reOffsetBreakpoints)
+            }
+        }
+        mergedContainer.automationLanes = mergedLanesByTarget.map { targetPath, breakpoints in
+            AutomationLane(
+                targetPath: targetPath,
+                breakpoints: breakpoints.sorted { $0.position < $1.position }
+            )
+        }
+
+        registerUndo(actionName: "Glue Containers")
+
+        // Remove original containers
+        project.songs[songIdx].tracks[trackIndex].containers.removeAll { containerIDs.contains($0.id) }
+        // Add merged container
+        project.songs[songIdx].tracks[trackIndex].containers.append(mergedContainer)
+
+        selectedContainerID = mergedContainer.id
+        selectedContainerIDs = []
+        hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
+        return mergedContainer.id
+    }
 
     /// Checks if a container would overlap any existing container on the same track.
     private func hasOverlap(in track: Track, with container: Container, excluding excludeID: ID<Container>? = nil) -> Bool {
