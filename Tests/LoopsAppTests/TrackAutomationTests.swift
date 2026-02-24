@@ -340,10 +340,10 @@ struct TrackAutomationTests {
         let h1 = vm.trackHeight(for: track, baseHeight: baseHeight)
         #expect(h1 == baseHeight)
 
-        // Expanded → base + 2 sub-lane heights (volume + pan)
+        // Expanded → base + toolbar + 2 sub-lane heights (volume + pan)
         vm.automationExpanded.insert(track.id)
         let h2 = vm.trackHeight(for: track, baseHeight: baseHeight)
-        #expect(h2 == baseHeight + 2 * TimelineViewModel.automationSubLaneHeight)
+        #expect(h2 == baseHeight + TimelineViewModel.automationToolbarHeight + 2 * TimelineViewModel.automationSubLaneHeight)
     }
 
     // MARK: - DuplicateSong copies track automation

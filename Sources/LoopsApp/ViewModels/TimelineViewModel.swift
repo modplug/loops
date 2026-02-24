@@ -29,6 +29,12 @@ public final class TimelineViewModel {
     /// Height of each automation sub-lane row.
     public static let automationSubLaneHeight: CGFloat = 40
 
+    /// Height of the automation toolbar row.
+    public static let automationToolbarHeight: CGFloat = 26
+
+    /// Currently selected automation shape tool.
+    public var selectedAutomationTool: AutomationTool = .pointer
+
     /// Current playhead position in bars (1-based).
     public var playheadBar: Double = 1.0
 
@@ -212,12 +218,12 @@ public final class TimelineViewModel {
         trackHeights.removeValue(forKey: trackID)
     }
 
-    /// Returns the total height for a track including automation sub-lanes.
+    /// Returns the total height for a track including automation toolbar and sub-lanes.
     public func trackHeight(for track: Track, baseHeight: CGFloat) -> CGFloat {
         guard automationExpanded.contains(track.id) else { return baseHeight }
         let laneCount = automationLaneCount(for: track)
         guard laneCount > 0 else { return baseHeight }
-        return baseHeight + CGFloat(laneCount) * Self.automationSubLaneHeight
+        return baseHeight + Self.automationToolbarHeight + CGFloat(laneCount) * Self.automationSubLaneHeight
     }
 
     /// Minimum number of bars shown in the timeline.

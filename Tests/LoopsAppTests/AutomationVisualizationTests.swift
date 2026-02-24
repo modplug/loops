@@ -231,10 +231,10 @@ struct AutomationVisualizationTests {
         let h1 = vm.trackHeight(for: track, baseHeight: baseHeight)
         #expect(h1 == baseHeight)
 
-        // Expanded → base + sub-lane height
+        // Expanded → base + toolbar + sub-lane height
         vm.automationExpanded.insert(track.id)
         let h2 = vm.trackHeight(for: track, baseHeight: baseHeight)
-        #expect(h2 == baseHeight + TimelineViewModel.automationSubLaneHeight)
+        #expect(h2 == baseHeight + TimelineViewModel.automationToolbarHeight + TimelineViewModel.automationSubLaneHeight)
     }
 
     @Test("Track height with no automation lanes stays at base when expanded")

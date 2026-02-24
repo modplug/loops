@@ -28,6 +28,14 @@ struct AutomationSubLaneView: View {
     var timeSignature: TimeSignature?
     /// Grid mode for drawing grid lines in the sub-lane.
     var gridMode: GridMode?
+    /// Currently selected shape tool.
+    var selectedTool: AutomationTool = .pointer
+    /// Grid spacing in bars for shape generation breakpoint density.
+    var gridSpacingBars: Double = 0.25
+    /// Callback to replace breakpoints in a range on a container lane with shape-generated ones.
+    var onReplaceBreakpoints: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
+    /// Callback to replace breakpoints in a range on a track lane with shape-generated ones.
+    var onReplaceTrackBreakpoints: ((_ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -77,7 +85,12 @@ struct AutomationSubLaneView: View {
                     },
                     onSelectBreakpoint: onSelectBreakpoint,
                     snapResolution: snapResolution,
-                    timeSignature: timeSignature
+                    timeSignature: timeSignature,
+                    selectedTool: selectedTool,
+                    gridSpacingBars: gridSpacingBars,
+                    onReplaceBreakpoints: { startPos, endPos, breakpoints in
+                        onReplaceTrackBreakpoints?(lane.id, startPos, endPos, breakpoints)
+                    }
                 )
             }
 
@@ -103,7 +116,12 @@ struct AutomationSubLaneView: View {
                             },
                             onSelectBreakpoint: onSelectBreakpoint,
                             snapResolution: snapResolution,
-                            timeSignature: timeSignature
+                            timeSignature: timeSignature,
+                            selectedTool: selectedTool,
+                            gridSpacingBars: gridSpacingBars,
+                            onReplaceBreakpoints: { startPos, endPos, breakpoints in
+                                onReplaceBreakpoints?(container.id, lane.id, startPos, endPos, breakpoints)
+                            }
                         )
                         .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar)
                     }
@@ -128,10 +146,15 @@ private struct AutomationSubLaneContainerView: View {
     var onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)?
     var snapResolution: SnapResolution?
     var timeSignature: TimeSignature?
+    var selectedTool: AutomationTool = .pointer
+    var gridSpacingBars: Double = 0.25
+    var onReplaceBreakpoints: ((_ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
 
     @State private var hoveredBreakpointID: ID<AutomationBreakpoint>?
     @State private var draggedBreakpointID: ID<AutomationBreakpoint>?
     @State private var dragPosition: CGPoint?
+    @State private var shapeDragStart: CGPoint?
+    @State private var shapeDragEnd: CGPoint?
 
     private var containerWidth: CGFloat {
         CGFloat(container.lengthBars) * pixelsPerBar
@@ -152,6 +175,7 @@ private struct AutomationSubLaneContainerView: View {
             Canvas { context, size in
                 drawCurve(lane: lane, in: context, size: size)
                 drawBreakpoints(lane: lane, in: context, size: size)
+                drawShapePreview(in: context, size: size)
             }
             .frame(width: containerWidth, height: height)
 
@@ -182,8 +206,9 @@ private struct AutomationSubLaneContainerView: View {
                 .fill(Color.clear)
                 .contentShape(Rectangle())
                 .frame(width: containerWidth, height: height)
-                .gesture(clickGesture)
-                .overlay(breakpointDragOverlay)
+                .gesture(selectedTool == .pointer ? clickGesture : nil)
+                .gesture(selectedTool != .pointer ? shapeDrawGesture : nil)
+                .overlay(selectedTool == .pointer ? breakpointDragOverlay : nil)
         }
         .frame(width: containerWidth, height: height)
     }
@@ -258,6 +283,39 @@ private struct AutomationSubLaneContainerView: View {
         }
     }
 
+    private func drawShapePreview(in context: GraphicsContext, size: CGSize) {
+        guard let start = shapeDragStart, let end = shapeDragEnd else { return }
+        let startPos = AutomationCoordinateMapping.positionForX(start.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
+        let endPos = AutomationCoordinateMapping.positionForX(end.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
+        let startVal = AutomationCoordinateMapping.valueForY(start.y, height: height)
+        let endVal = AutomationCoordinateMapping.valueForY(end.y, height: height)
+        let minPos = min(startPos, endPos)
+        let maxPos = max(startPos, endPos)
+
+        let previewBreakpoints = AutomationShapeGenerator.generate(
+            tool: selectedTool,
+            startPosition: minPos,
+            endPosition: maxPos,
+            startValue: startPos <= endPos ? startVal : endVal,
+            endValue: startPos <= endPos ? endVal : startVal,
+            gridSpacing: gridSpacingBars
+        )
+        guard previewBreakpoints.count >= 2 else { return }
+
+        // Draw preview curve
+        var path = Path()
+        for (i, bp) in previewBreakpoints.enumerated() {
+            let x = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
+            let y = AutomationCoordinateMapping.yForValue(bp.value, height: size.height)
+            if i == 0 {
+                path.move(to: CGPoint(x: x, y: y))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+        context.stroke(path, with: .color(color.opacity(0.5)), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+    }
+
     // MARK: - Interaction
 
     private var clickGesture: some Gesture {
@@ -278,6 +336,41 @@ private struct AutomationSubLaneContainerView: View {
             }
     }
 
+    private var shapeDrawGesture: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                shapeDragStart = value.startLocation
+                shapeDragEnd = value.location
+            }
+            .onEnded { value in
+                defer {
+                    shapeDragStart = nil
+                    shapeDragEnd = nil
+                }
+                let start = value.startLocation
+                let end = value.location
+                let startPos = AutomationCoordinateMapping.positionForX(start.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
+                let endPos = AutomationCoordinateMapping.positionForX(end.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
+                let startVal = AutomationCoordinateMapping.valueForY(start.y, height: height)
+                let endVal = AutomationCoordinateMapping.valueForY(end.y, height: height)
+                let minPos = min(startPos, endPos)
+                let maxPos = max(startPos, endPos)
+                guard maxPos - minPos > 0.01 else { return }
+
+                let breakpoints = AutomationShapeGenerator.generate(
+                    tool: selectedTool,
+                    startPosition: minPos,
+                    endPosition: maxPos,
+                    startValue: startPos <= endPos ? startVal : endVal,
+                    endValue: startPos <= endPos ? endVal : startVal,
+                    gridSpacing: gridSpacingBars
+                )
+                guard !breakpoints.isEmpty else { return }
+                onReplaceBreakpoints?(minPos, maxPos, breakpoints)
+            }
+    }
+
+    @ViewBuilder
     private var breakpointDragOverlay: some View {
         ForEach(lane.breakpoints) { bp in
             let x = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
@@ -342,10 +435,15 @@ private struct TrackAutomationSubLaneView: View {
     var onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)?
     var snapResolution: SnapResolution?
     var timeSignature: TimeSignature?
+    var selectedTool: AutomationTool = .pointer
+    var gridSpacingBars: Double = 0.25
+    var onReplaceBreakpoints: ((_ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
 
     @State private var hoveredBreakpointID: ID<AutomationBreakpoint>?
     @State private var draggedBreakpointID: ID<AutomationBreakpoint>?
     @State private var dragPosition: CGPoint?
+    @State private var shapeDragStart: CGPoint?
+    @State private var shapeDragEnd: CGPoint?
 
     private var totalWidth: CGFloat {
         CGFloat(totalBars) * pixelsPerBar
@@ -379,6 +477,7 @@ private struct TrackAutomationSubLaneView: View {
             Canvas { context, size in
                 drawCurve(in: context, size: size)
                 drawBreakpoints(in: context, size: size)
+                drawShapePreview(in: context, size: size)
             }
             .frame(width: totalWidth, height: height)
 
@@ -401,8 +500,9 @@ private struct TrackAutomationSubLaneView: View {
                 .fill(Color.clear)
                 .contentShape(Rectangle())
                 .frame(width: totalWidth, height: height)
-                .gesture(clickGesture)
-                .overlay(breakpointDragOverlay)
+                .gesture(selectedTool == .pointer ? clickGesture : nil)
+                .gesture(selectedTool != .pointer ? shapeDrawGesture : nil)
+                .overlay(selectedTool == .pointer ? breakpointDragOverlay : nil)
         }
         .frame(width: totalWidth, height: height)
     }
@@ -457,6 +557,38 @@ private struct TrackAutomationSubLaneView: View {
         }
     }
 
+    private func drawShapePreview(in context: GraphicsContext, size: CGSize) {
+        guard let start = shapeDragStart, let end = shapeDragEnd else { return }
+        let startPos = AutomationCoordinateMapping.positionForX(start.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
+        let endPos = AutomationCoordinateMapping.positionForX(end.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
+        let startVal = AutomationCoordinateMapping.valueForY(start.y, height: height)
+        let endVal = AutomationCoordinateMapping.valueForY(end.y, height: height)
+        let minPos = min(startPos, endPos)
+        let maxPos = max(startPos, endPos)
+
+        let previewBreakpoints = AutomationShapeGenerator.generate(
+            tool: selectedTool,
+            startPosition: minPos,
+            endPosition: maxPos,
+            startValue: startPos <= endPos ? startVal : endVal,
+            endValue: startPos <= endPos ? endVal : startVal,
+            gridSpacing: gridSpacingBars
+        )
+        guard previewBreakpoints.count >= 2 else { return }
+
+        var path = Path()
+        for (i, bp) in previewBreakpoints.enumerated() {
+            let x = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
+            let y = AutomationCoordinateMapping.yForValue(bp.value, height: size.height)
+            if i == 0 {
+                path.move(to: CGPoint(x: x, y: y))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+        context.stroke(path, with: .color(color.opacity(0.5)), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+    }
+
     private var clickGesture: some Gesture {
         SpatialTapGesture()
             .onEnded { value in
@@ -473,6 +605,41 @@ private struct TrackAutomationSubLaneView: View {
             }
     }
 
+    private var shapeDrawGesture: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                shapeDragStart = value.startLocation
+                shapeDragEnd = value.location
+            }
+            .onEnded { value in
+                defer {
+                    shapeDragStart = nil
+                    shapeDragEnd = nil
+                }
+                let start = value.startLocation
+                let end = value.location
+                let startPos = AutomationCoordinateMapping.positionForX(start.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
+                let endPos = AutomationCoordinateMapping.positionForX(end.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
+                let startVal = AutomationCoordinateMapping.valueForY(start.y, height: height)
+                let endVal = AutomationCoordinateMapping.valueForY(end.y, height: height)
+                let minPos = min(startPos, endPos)
+                let maxPos = max(startPos, endPos)
+                guard maxPos - minPos > 0.01 else { return }
+
+                let breakpoints = AutomationShapeGenerator.generate(
+                    tool: selectedTool,
+                    startPosition: minPos,
+                    endPosition: maxPos,
+                    startValue: startPos <= endPos ? startVal : endVal,
+                    endValue: startPos <= endPos ? endVal : startVal,
+                    gridSpacing: gridSpacingBars
+                )
+                guard !breakpoints.isEmpty else { return }
+                onReplaceBreakpoints?(minPos, maxPos, breakpoints)
+            }
+    }
+
+    @ViewBuilder
     private var breakpointDragOverlay: some View {
         ForEach(lane.breakpoints) { bp in
             let x = AutomationCoordinateMapping.xForPosition(bp.position, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)

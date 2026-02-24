@@ -407,8 +407,8 @@ struct TimelineViewModelTests {
         track.trackAutomationLanes = [lane]
         vm.setTrackHeight(100, for: track.id)
         vm.automationExpanded.insert(track.id)
-        // base 100 + 1 lane * 40 = 140
-        #expect(vm.trackHeight(for: track, baseHeight: vm.baseTrackHeight(for: track.id)) == 140)
+        // base 100 + toolbar 26 + 1 lane * 40 = 166
+        #expect(vm.trackHeight(for: track, baseHeight: vm.baseTrackHeight(for: track.id)) == 166)
     }
 
     @Test("TimelineView totalContentHeight uses per-track heights")

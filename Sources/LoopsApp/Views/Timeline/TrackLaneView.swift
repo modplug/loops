@@ -45,6 +45,11 @@ public struct TrackLaneView: View {
     var onAddTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onUpdateTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
+    var onReplaceBreakpoints: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
+    var onReplaceTrackBreakpoints: ((_ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
+    var selectedAutomationTool: AutomationTool = .pointer
+    var gridSpacingBars: Double = 0.25
+    var onAutomationToolChange: ((_ tool: AutomationTool) -> Void)?
     var onSetEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
     var onSetExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
     var onContainerTrimLeft: ((_ containerID: ID<Container>, _ newAudioStartOffset: Double, _ newStartBar: Double, _ newLength: Double) -> Bool)?
@@ -111,6 +116,11 @@ public struct TrackLaneView: View {
         onAddTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
         onUpdateTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)? = nil,
         onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)? = nil,
+        onReplaceBreakpoints: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)? = nil,
+        onReplaceTrackBreakpoints: ((_ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)? = nil,
+        selectedAutomationTool: AutomationTool = .pointer,
+        gridSpacingBars: Double = 0.25,
+        onAutomationToolChange: ((_ tool: AutomationTool) -> Void)? = nil,
         onSetEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)? = nil,
         onSetExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)? = nil,
         onContainerTrimLeft: ((_ containerID: ID<Container>, _ newAudioStartOffset: Double, _ newStartBar: Double, _ newLength: Double) -> Bool)? = nil,
@@ -163,6 +173,11 @@ public struct TrackLaneView: View {
         self.onAddTrackBreakpoint = onAddTrackBreakpoint
         self.onUpdateTrackBreakpoint = onUpdateTrackBreakpoint
         self.onDeleteTrackBreakpoint = onDeleteTrackBreakpoint
+        self.onReplaceBreakpoints = onReplaceBreakpoints
+        self.onReplaceTrackBreakpoints = onReplaceTrackBreakpoints
+        self.selectedAutomationTool = selectedAutomationTool
+        self.gridSpacingBars = gridSpacingBars
+        self.onAutomationToolChange = onAutomationToolChange
         self.onSetEnterFade = onSetEnterFade
         self.onSetExitFade = onSetExitFade
         self.onContainerTrimLeft = onContainerTrimLeft
@@ -181,7 +196,8 @@ public struct TrackLaneView: View {
 
     private var baseHeight: CGFloat {
         let subLaneCount = isAutomationExpanded ? automationSubLanePaths.count : 0
-        return height - CGFloat(subLaneCount) * TimelineViewModel.automationSubLaneHeight
+        let toolbarHeight = isAutomationExpanded && subLaneCount > 0 ? TimelineViewModel.automationToolbarHeight : 0
+        return height - CGFloat(subLaneCount) * TimelineViewModel.automationSubLaneHeight - toolbarHeight
     }
 
     public var body: some View {
@@ -242,7 +258,18 @@ public struct TrackLaneView: View {
             .coordinateSpace(name: "trackLane")
             .frame(width: CGFloat(totalBars) * pixelsPerBar, height: baseHeight)
 
-            // Automation sub-lanes (when expanded)
+            // Automation toolbar + sub-lanes (when expanded)
+            if isAutomationExpanded && !automationSubLanePaths.isEmpty {
+                automationToolbar
+                    .frame(width: CGFloat(totalBars) * pixelsPerBar, height: TimelineViewModel.automationToolbarHeight)
+                    .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
+                    .overlay(
+                        Rectangle()
+                            .frame(height: 0.5)
+                            .foregroundStyle(Color.secondary.opacity(0.15)),
+                        alignment: .bottom
+                    )
+            }
             if isAutomationExpanded {
                 ForEach(Array(automationSubLanePaths.enumerated()), id: \.element) { index, targetPath in
                     AutomationSubLaneView(
@@ -263,7 +290,11 @@ public struct TrackLaneView: View {
                         onDeleteTrackBreakpoint: onDeleteTrackBreakpoint,
                         snapResolution: automationSnapResolution,
                         timeSignature: automationTimeSignature,
-                        gridMode: automationGridMode
+                        gridMode: automationGridMode,
+                        selectedTool: selectedAutomationTool,
+                        gridSpacingBars: gridSpacingBars,
+                        onReplaceBreakpoints: onReplaceBreakpoints,
+                        onReplaceTrackBreakpoints: onReplaceTrackBreakpoints
                     )
                     .overlay(
                         Rectangle()
@@ -356,6 +387,32 @@ public struct TrackLaneView: View {
 
                 onCreateContainer?(startBar, lengthBars)
             }
+    }
+
+    private var automationToolbar: some View {
+        HStack(spacing: 8) {
+            Text("Automation")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            ForEach(AutomationTool.allCases, id: \.self) { tool in
+                Button(action: { onAutomationToolChange?(tool) }) {
+                    Image(systemName: tool.iconName)
+                        .font(.system(size: 10))
+                        .foregroundStyle(selectedAutomationTool == tool ? .white : .secondary)
+                        .frame(width: 20, height: 20)
+                        .background(selectedAutomationTool == tool ? Color.purple.opacity(0.8) : Color.clear)
+                        .cornerRadius(3)
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .help(tool.label)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
     }
 
     private var trackColor: Color {
@@ -456,6 +513,8 @@ extension TrackLaneView: Equatable {
         lhs.automationSnapResolution == rhs.automationSnapResolution &&
         lhs.automationTimeSignature == rhs.automationTimeSignature &&
         lhs.automationGridMode == rhs.automationGridMode &&
+        lhs.selectedAutomationTool == rhs.selectedAutomationTool &&
+        lhs.gridSpacingBars == rhs.gridSpacingBars &&
         lhs.otherSongs.count == rhs.otherSongs.count &&
         zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name }
     }
