@@ -56,6 +56,9 @@ public struct MainContentView: View {
     @State private var pendingTrackAutomationLane: PendingEffectSelection?
     @State private var pianoRollEditorState = PianoRollEditorState()
     @State private var scrollSynchronizer = HorizontalScrollSynchronizer()
+    @State private var ghostDropState = GhostTrackDropState()
+    @State private var showTempoImportAlert = false
+    @State private var pendingTempoImport: PendingTempoImport?
     @FocusState private var focusedField: FocusedField?
     @Namespace private var inspectorNamespace
     // isMIDILearning and midiLearnTargetPath are on projectViewModel.midiLearnState
@@ -250,6 +253,22 @@ public struct MainContentView: View {
                 },
                 onCancel: { pendingTrackAutomationLane = nil }
             )
+        }
+        .alert("Import Tempo", isPresented: $showTempoImportAlert) {
+            Button("Keep Current", role: .cancel) {
+                pendingTempoImport = nil
+            }
+            Button("Import Tempo") {
+                if let pending = pendingTempoImport,
+                   let songID = projectViewModel.currentSong?.id {
+                    projectViewModel.setBPM(songID: songID, bpm: pending.bpm)
+                }
+                pendingTempoImport = nil
+            }
+        } message: {
+            if let pending = pendingTempoImport {
+                Text("This MIDI file contains tempo information (\(Int(pending.bpm)) BPM). Import tempo?")
+            }
         }
         .alert("Delete Track", isPresented: .init(
             get: { trackToDelete != nil },
@@ -708,10 +727,24 @@ public struct MainContentView: View {
                                 }
                             ))
                         }
-                        // Empty space at bottom for context menu target (at least one track height)
+                        // Ghost track headers (shown during file drop over empty space)
+                        if ghostDropState.isActive {
+                            ForEach(ghostDropState.ghostTracks) { ghost in
+                                ghostTrackHeader(ghost: ghost)
+                            }
+                        }
+                        // Empty space at bottom for context menu target and file drop zone
                         Color.clear
                             .frame(height: max(80, geo.size.height - regularTrackListContentHeight(song: song)))
                             .contentShape(Rectangle())
+                            .onDrop(of: [.fileURL], delegate: EmptyAreaFileDropDelegate(
+                                ghostDropState: ghostDropState,
+                                timelineViewModel: timelineViewModel,
+                                projectViewModel: projectViewModel,
+                                onPerformDrop: { urls, bar in
+                                    handleEmptyAreaDrop(urls: urls, startBar: bar, song: song)
+                                }
+                            ))
                             .contextMenu {
                                 ForEach(TrackKind.creatableKinds, id: \.self) { kind in
                                     Button("Insert \(kind.displayName) Track") {
@@ -737,6 +770,10 @@ public struct MainContentView: View {
                             tracks: regularTracks,
                             minHeight: geo.size.height,
                             pianoRollState: pianoRollEditorState,
+                            ghostDropState: ghostDropState,
+                            onDropFilesToNewTracks: { urls, bar in
+                                handleEmptyAreaDrop(urls: urls, startBar: bar, song: song)
+                            },
                             onContainerDoubleClick: {
                                 openContainerEditor()
                             },
@@ -1508,6 +1545,176 @@ public struct MainContentView: View {
         song.tracks.filter { $0.kind != .master }.reduce(CGFloat(0)) { total, track in
             let trackH = timelineViewModel.trackHeight(for: track, baseHeight: timelineViewModel.baseTrackHeight(for: track.id))
             return total + trackH + pianoRollEditorState.extraHeight(forTrackID: track.id)
+        }
+    }
+
+    // MARK: - Ghost Track Header
+
+    @ViewBuilder
+    private func ghostTrackHeader(ghost: GhostTrackInfo) -> some View {
+        HStack {
+            Image(systemName: ghost.trackKind == .audio ? "waveform" : "pianokeys")
+                .foregroundStyle(ghost.trackColor)
+            Text(ghost.fileName)
+                .font(.caption)
+                .lineLimit(1)
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .frame(height: TimelineViewModel.defaultTrackHeight)
+        .background(ghost.trackColor.opacity(0.06))
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(ghost.trackColor.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [6, 3]))
+        )
+        .opacity(0.7)
+    }
+
+    // MARK: - Empty Area Drop Handler
+
+    private func handleEmptyAreaDrop(urls: [URL], startBar: Double, song: Song) {
+        // Check for MIDI files with tempo info — prompt before importing
+        let midiURLs = urls.filter { ["mid", "midi"].contains($0.pathExtension.lowercased()) }
+        if let firstMIDI = midiURLs.first {
+            let importer = MIDIFileImporter()
+            if let result = try? importer.importFile(at: firstMIDI),
+               let micros = result.tempoMicrosPerQuarterNote {
+                let bpm = 60_000_000.0 / Double(micros)
+                pendingTempoImport = PendingTempoImport(bpm: bpm, urls: urls, startBar: startBar)
+                showTempoImportAlert = true
+                // Import will happen after alert response — but for simplicity,
+                // proceed with importing tracks now (tempo can be applied separately)
+            }
+        }
+
+        projectViewModel.importFilesToNewTracks(urls: urls, startBar: startBar)
+    }
+}
+
+// MARK: - Pending Tempo Import
+
+private struct PendingTempoImport {
+    let bpm: Double
+    let urls: [URL]
+    let startBar: Double
+}
+
+// MARK: - Empty Area File Drop Delegate
+
+private struct EmptyAreaFileDropDelegate: DropDelegate {
+    let ghostDropState: GhostTrackDropState
+    let timelineViewModel: TimelineViewModel
+    let projectViewModel: ProjectViewModel
+    let onPerformDrop: ([URL], Double) -> Void
+
+    private static let supportedAudioExtensions: Set<String> = ["wav", "aiff", "aif", "caf", "mp3", "m4a"]
+    private static let supportedMIDIExtensions: Set<String> = ["mid", "midi"]
+
+    func dropEntered(info: DropInfo) {
+        if ghostDropState.activate() {
+            resolveGhostTracks(from: info)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        return DropProposal(operation: .copy)
+    }
+
+    func dropExited(info: DropInfo) {
+        ghostDropState.deactivate()
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let providers = info.itemProviders(for: [.fileURL])
+        guard !providers.isEmpty else {
+            ghostDropState.reset()
+            return false
+        }
+
+        var resolvedURLs: [URL] = []
+        let group = DispatchGroup()
+
+        for provider in providers {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url {
+                    let ext = url.pathExtension.lowercased()
+                    if Self.supportedMIDIExtensions.contains(ext) || Self.supportedAudioExtensions.contains(ext) {
+                        resolvedURLs.append(url)
+                    }
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            let bar = ghostDropState.dropBar
+            ghostDropState.reset()
+            if !resolvedURLs.isEmpty {
+                onPerformDrop(resolvedURLs, bar)
+            }
+        }
+
+        return true
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.fileURL])
+    }
+
+    private func resolveGhostTracks(from info: DropInfo) {
+        let song = projectViewModel.currentSong
+        let beatsPerBar = Double(song?.timeSignature.beatsPerBar ?? 4)
+        let tempo = song?.tempo ?? Tempo()
+        let timeSignature = song?.timeSignature ?? TimeSignature()
+        let state = ghostDropState
+
+        let providers = info.itemProviders(for: [.fileURL])
+        for provider in providers {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                let ext = url.pathExtension.lowercased()
+
+                if Self.supportedMIDIExtensions.contains(ext) {
+                    let importer = MIDIFileImporter()
+                    if let result = try? importer.importFile(at: url) {
+                        let baseName = url.deletingPathExtension().lastPathComponent
+                        DispatchQueue.main.async {
+                            for (index, sequence) in result.sequences.enumerated() {
+                                let totalBeats = sequence.durationBeats
+                                let lengthBars = max(1.0, ceil(totalBeats / beatsPerBar))
+                                let name = result.sequences.count > 1
+                                    ? "\(baseName) - Track \(index + 1)"
+                                    : baseName
+                                state.ghostTracks.append(GhostTrackInfo(
+                                    fileName: name,
+                                    lengthBars: lengthBars,
+                                    trackKind: .midi,
+                                    url: url
+                                ))
+                            }
+                        }
+                    }
+                } else if Self.supportedAudioExtensions.contains(ext) {
+                    let baseName = url.deletingPathExtension().lastPathComponent
+                    var lengthBars: Double?
+                    if let metadata = try? AudioImporter.readMetadata(from: url) {
+                        lengthBars = AudioImporter.barsForDuration(
+                            metadata.durationSeconds,
+                            tempo: tempo,
+                            timeSignature: timeSignature
+                        )
+                    }
+                    DispatchQueue.main.async {
+                        state.ghostTracks.append(GhostTrackInfo(
+                            fileName: baseName,
+                            lengthBars: lengthBars,
+                            trackKind: .audio,
+                            url: url
+                        ))
+                    }
+                }
+            }
         }
     }
 }

@@ -2726,6 +2726,173 @@ public final class ProjectViewModel {
         onPlaybackGraphChanged?()
     }
 
+    /// Imports a MIDI file, creating one new MIDI track per sequence.
+    /// Returns the IDs of the created tracks.
+    @discardableResult
+    public func importMIDIFileToNewTracks(url: URL, startBar: Double) -> [ID<Track>] {
+        guard !project.songs.isEmpty else { return [] }
+
+        let importer = MIDIFileImporter()
+        guard let result = try? importer.importFile(at: url) else { return [] }
+        guard !result.sequences.isEmpty else { return [] }
+
+        registerUndo(actionName: "Import MIDI File")
+
+        let beatsPerBar = Double(project.songs[currentSongIndex].timeSignature.beatsPerBar)
+        let baseName = url.deletingPathExtension().lastPathComponent
+        var createdTrackIDs: [ID<Track>] = []
+
+        for (index, sequence) in result.sequences.enumerated() {
+            let totalBeats = sequence.durationBeats
+            let lengthBars = max(1.0, ceil(totalBeats / beatsPerBar))
+
+            let trackName: String
+            if result.sequences.count > 1 {
+                trackName = "\(baseName) - Track \(index + 1)"
+            } else {
+                trackName = baseName
+            }
+
+            let insertIndex = project.songs[currentSongIndex].tracks
+                .filter { $0.kind != .master }.count
+            let track = Track(name: trackName, kind: .midi, orderIndex: insertIndex)
+            project.songs[currentSongIndex].tracks.insert(track, at: insertIndex)
+            project.songs[currentSongIndex].ensureMasterTrackLast()
+
+            let container = Container(
+                name: baseName,
+                startBar: startBar,
+                lengthBars: lengthBars,
+                midiSequence: sequence
+            )
+
+            if let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == track.id }) {
+                project.songs[currentSongIndex].tracks[trackIndex].containers.append(container)
+            }
+
+            createdTrackIDs.append(track.id)
+        }
+
+        reindexTracks()
+        hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
+        return createdTrackIDs
+    }
+
+    /// Imports files (audio and/or MIDI) by creating new tracks for each.
+    /// A single undo operation covers the entire batch.
+    public func importFilesToNewTracks(urls: [URL], startBar: Double) {
+        guard !project.songs.isEmpty else { return }
+        guard !urls.isEmpty else { return }
+
+        registerUndo(actionName: "Import Files")
+
+        for url in urls {
+            let ext = url.pathExtension.lowercased()
+
+            if ext == "mid" || ext == "midi" {
+                // MIDI file — create tracks per sequence (without double undo)
+                let importer = MIDIFileImporter()
+                guard let result = try? importer.importFile(at: url) else { continue }
+                guard !result.sequences.isEmpty else { continue }
+
+                let beatsPerBar = Double(project.songs[currentSongIndex].timeSignature.beatsPerBar)
+                let baseName = url.deletingPathExtension().lastPathComponent
+
+                for (index, sequence) in result.sequences.enumerated() {
+                    let totalBeats = sequence.durationBeats
+                    let lengthBars = max(1.0, ceil(totalBeats / beatsPerBar))
+
+                    let trackName: String
+                    if result.sequences.count > 1 {
+                        trackName = "\(baseName) - Track \(index + 1)"
+                    } else {
+                        trackName = baseName
+                    }
+
+                    let insertIndex = project.songs[currentSongIndex].tracks
+                        .filter { $0.kind != .master }.count
+                    let track = Track(name: trackName, kind: .midi, orderIndex: insertIndex)
+                    project.songs[currentSongIndex].tracks.insert(track, at: insertIndex)
+                    project.songs[currentSongIndex].ensureMasterTrackLast()
+
+                    let container = Container(
+                        name: baseName,
+                        startBar: startBar,
+                        lengthBars: lengthBars,
+                        midiSequence: sequence
+                    )
+
+                    if let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == track.id }) {
+                        project.songs[currentSongIndex].tracks[trackIndex].containers.append(container)
+                    }
+                }
+            } else if AudioImporter.isSupportedAudioFile(url) {
+                // Audio file — create audio track + import
+                let insertIndex = project.songs[currentSongIndex].tracks
+                    .filter { $0.kind != .master }.count
+                let existingCount = project.songs[currentSongIndex].tracks
+                    .filter { $0.kind == .audio }.count
+                let trackName = url.deletingPathExtension().lastPathComponent
+                let track = Track(name: trackName.isEmpty ? "Audio \(existingCount + 1)" : trackName, kind: .audio, orderIndex: insertIndex)
+                project.songs[currentSongIndex].tracks.insert(track, at: insertIndex)
+                project.songs[currentSongIndex].ensureMasterTrackLast()
+
+                // Import audio to the new track (inline, no separate undo)
+                guard let metadata = try? AudioImporter.readMetadata(from: url) else { continue }
+                guard let song = currentSong else { continue }
+
+                let lengthBars = AudioImporter.barsForDuration(
+                    metadata.durationSeconds,
+                    tempo: song.tempo,
+                    timeSignature: song.timeSignature
+                )
+
+                let generator = WaveformGenerator()
+                let peaks = try? generator.generatePeaks(from: url)
+
+                let recordingID = ID<SourceRecording>()
+                let recording = SourceRecording(
+                    id: recordingID,
+                    filename: "",
+                    sampleRate: metadata.sampleRate,
+                    sampleCount: metadata.sampleCount,
+                    waveformPeaks: peaks
+                )
+
+                let container = Container(
+                    name: url.deletingPathExtension().lastPathComponent,
+                    startBar: max(startBar, 1.0),
+                    lengthBars: Double(lengthBars),
+                    sourceRecordingID: recordingID,
+                    loopSettings: LoopSettings(loopCount: .count(1))
+                )
+
+                project.sourceRecordings[recordingID] = recording
+
+                if let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == track.id }) {
+                    project.songs[currentSongIndex].tracks[trackIndex].containers.append(container)
+                }
+
+                // Background: file copy
+                let dir = audioDirectory
+                let viewModel = self
+                Task.detached {
+                    let audioImporter = AudioImporter()
+                    guard let imported = try? audioImporter.importAudioFile(from: url, to: dir) else { return }
+                    await MainActor.run {
+                        viewModel.project.sourceRecordings[recordingID]?.filename = imported.filename
+                        viewModel.hasUnsavedChanges = true
+                    }
+                }
+            }
+        }
+
+        reindexTracks()
+        hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
+    }
+
     // MARK: - Split & Trim
 
     /// Splits a container at the given bar boundary, creating two independent containers.

@@ -14,6 +14,8 @@ public struct TimelineView: View {
     let trackHeight: CGFloat
     let minHeight: CGFloat
     var pianoRollState: PianoRollEditorState?
+    var ghostDropState: GhostTrackDropState?
+    var onDropFilesToNewTracks: ((_ urls: [URL], _ startBar: Double) -> Void)?
     var onContainerDoubleClick: (() -> Void)?
     var onPlayheadPosition: ((Double) -> Void)?
     var onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)?
@@ -21,7 +23,7 @@ public struct TimelineView: View {
 
     @State private var selectedBreakpointID: ID<AutomationBreakpoint>?
 
-    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, selectionState: SelectionState, clipboardState: ClipboardState? = nil, song: Song, tracks: [Track]? = nil, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, pianoRollState: PianoRollEditorState? = nil, onContainerDoubleClick: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil, onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)? = nil, onOpenPianoRollSheet: (() -> Void)? = nil) {
+    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, selectionState: SelectionState, clipboardState: ClipboardState? = nil, song: Song, tracks: [Track]? = nil, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, pianoRollState: PianoRollEditorState? = nil, ghostDropState: GhostTrackDropState? = nil, onDropFilesToNewTracks: ((_ urls: [URL], _ startBar: Double) -> Void)? = nil, onContainerDoubleClick: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil, onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)? = nil, onOpenPianoRollSheet: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.projectViewModel = projectViewModel
         self.selectionState = selectionState
@@ -31,6 +33,8 @@ public struct TimelineView: View {
         self.trackHeight = trackHeight
         self.minHeight = minHeight
         self.pianoRollState = pianoRollState
+        self.ghostDropState = ghostDropState
+        self.onDropFilesToNewTracks = onDropFilesToNewTracks
         self.onContainerDoubleClick = onContainerDoubleClick
         self.onPlayheadPosition = onPlayheadPosition
         self.onNotePreview = onNotePreview
@@ -72,6 +76,13 @@ public struct TimelineView: View {
                 ForEach(tracks) { track in
                     trackLaneSection(track: track, song: song)
                 }
+
+                // Ghost track lanes (shown during file drop over empty space)
+                if let ghostState = ghostDropState, ghostState.isActive {
+                    ForEach(ghostState.ghostTracks) { ghost in
+                        ghostTrackLane(ghost: ghost, dropBar: ghostState.dropBar)
+                    }
+                }
             }
 
             // Range selection overlay
@@ -108,6 +119,12 @@ public struct TimelineView: View {
             width: viewModel.totalWidth,
             height: displayHeight
         )
+        .onDrop(of: [.fileURL], delegate: TimelineEmptyAreaDropDelegate(
+            ghostDropState: ghostDropState,
+            viewModel: viewModel,
+            song: song,
+            onPerformDrop: onDropFilesToNewTracks
+        ))
         .onKeyPress("+") {
             viewModel.zoomIn()
             return .handled
@@ -248,6 +265,38 @@ public struct TimelineView: View {
                     .fill(Color.secondary.opacity(0.3))
                     .frame(height: 1)
             }
+        }
+    }
+
+    // MARK: - Ghost Track Lane
+
+    @ViewBuilder
+    private func ghostTrackLane(ghost: GhostTrackInfo, dropBar: Double) -> some View {
+        let laneHeight = TimelineViewModel.defaultTrackHeight
+        let trackColor = ghost.trackColor
+        let lengthBars = ghost.lengthBars ?? 4.0
+        let previewWidth = viewModel.pixelsPerBar * CGFloat(lengthBars)
+        let previewX = CGFloat(dropBar - 1.0) * viewModel.pixelsPerBar
+
+        ZStack(alignment: .topLeading) {
+            // Semi-transparent background
+            Rectangle()
+                .fill(trackColor.opacity(0.04))
+                .frame(width: viewModel.totalWidth, height: laneHeight)
+
+            // Dashed container preview at drop position
+            RoundedRectangle(cornerRadius: 4)
+                .fill(trackColor.opacity(0.12))
+                .strokeBorder(trackColor.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [6, 3]))
+                .frame(width: previewWidth, height: laneHeight - 4)
+                .offset(x: previewX, y: 2)
+        }
+        .frame(width: viewModel.totalWidth, height: laneHeight)
+        .opacity(0.7)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.secondary.opacity(0.3))
+                .frame(height: 1)
         }
     }
 
@@ -425,5 +474,131 @@ public struct TimelineView: View {
             }
         }
         return result
+    }
+}
+
+// MARK: - Timeline Empty Area Drop Delegate
+
+/// Handles file drops on the timeline grid area below existing tracks.
+/// Activates ghost track previews and handles the actual file import on drop.
+private struct TimelineEmptyAreaDropDelegate: DropDelegate {
+    let ghostDropState: GhostTrackDropState?
+    let viewModel: TimelineViewModel
+    let song: Song
+    let onPerformDrop: ((_ urls: [URL], _ startBar: Double) -> Void)?
+
+    private static let supportedAudioExtensions: Set<String> = ["wav", "aiff", "aif", "caf", "mp3", "m4a"]
+    private static let supportedMIDIExtensions: Set<String> = ["mid", "midi"]
+
+    func dropEntered(info: DropInfo) {
+        guard let ghostState = ghostDropState else { return }
+        if ghostState.activate() {
+            resolveGhostTracks(from: info, into: ghostState)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        if let ghostState = ghostDropState {
+            let bar = viewModel.snappedBar(forXPosition: info.location.x, timeSignature: song.timeSignature)
+            ghostState.dropBar = max(1.0, bar)
+        }
+        return DropProposal(operation: .copy)
+    }
+
+    func dropExited(info: DropInfo) {
+        ghostDropState?.deactivate()
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let ghostState = ghostDropState, let onPerformDrop else { return false }
+        let providers = info.itemProviders(for: [.fileURL])
+        guard !providers.isEmpty else {
+            ghostState.reset()
+            return false
+        }
+
+        var resolvedURLs: [URL] = []
+        let group = DispatchGroup()
+
+        for provider in providers {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url {
+                    let ext = url.pathExtension.lowercased()
+                    if Self.supportedMIDIExtensions.contains(ext) || Self.supportedAudioExtensions.contains(ext) {
+                        resolvedURLs.append(url)
+                    }
+                }
+                group.leave()
+            }
+        }
+
+        let dropBar = ghostState.dropBar
+        group.notify(queue: .main) {
+            ghostState.reset()
+            if !resolvedURLs.isEmpty {
+                onPerformDrop(resolvedURLs, dropBar)
+            }
+        }
+
+        return true
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.fileURL])
+    }
+
+    private func resolveGhostTracks(from info: DropInfo, into state: GhostTrackDropState) {
+        let beatsPerBar = Double(song.timeSignature.beatsPerBar)
+        let tempo = song.tempo
+        let timeSignature = song.timeSignature
+
+        let providers = info.itemProviders(for: [.fileURL])
+        for provider in providers {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                let ext = url.pathExtension.lowercased()
+
+                if Self.supportedMIDIExtensions.contains(ext) {
+                    let importer = MIDIFileImporter()
+                    if let result = try? importer.importFile(at: url) {
+                        let baseName = url.deletingPathExtension().lastPathComponent
+                        DispatchQueue.main.async {
+                            for (index, sequence) in result.sequences.enumerated() {
+                                let totalBeats = sequence.durationBeats
+                                let lengthBars = max(1.0, ceil(totalBeats / beatsPerBar))
+                                let name = result.sequences.count > 1
+                                    ? "\(baseName) - Track \(index + 1)"
+                                    : baseName
+                                state.ghostTracks.append(GhostTrackInfo(
+                                    fileName: name,
+                                    lengthBars: lengthBars,
+                                    trackKind: .midi,
+                                    url: url
+                                ))
+                            }
+                        }
+                    }
+                } else if Self.supportedAudioExtensions.contains(ext) {
+                    let baseName = url.deletingPathExtension().lastPathComponent
+                    var lengthBars: Double?
+                    if let metadata = try? AudioImporter.readMetadata(from: url) {
+                        lengthBars = AudioImporter.barsForDuration(
+                            metadata.durationSeconds,
+                            tempo: tempo,
+                            timeSignature: timeSignature
+                        )
+                    }
+                    DispatchQueue.main.async {
+                        state.ghostTracks.append(GhostTrackInfo(
+                            fileName: baseName,
+                            lengthBars: lengthBars,
+                            trackKind: .audio,
+                            url: url
+                        ))
+                    }
+                }
+            }
+        }
     }
 }
