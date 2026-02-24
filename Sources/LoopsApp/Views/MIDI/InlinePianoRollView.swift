@@ -24,6 +24,8 @@ struct InlinePianoRollView: View {
 
     @State private var resizeDragStartHeight: CGFloat = 0
     @State private var resizePreviewHeight: CGFloat?
+    @State private var scrollOffset: CGFloat = 0
+    @State private var viewportWidth: CGFloat = 0
 
     // MARK: - Computed Properties
 
@@ -90,8 +92,18 @@ struct InlinePianoRollView: View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
                 inlineToolbar
+                    .frame(width: viewportWidth > 0 ? viewportWidth : nil)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .offset(x: viewportWidth > 0 ? scrollOffset : 0)
                 Divider()
             }
+            .background(
+                HorizontalScrollObserver { offset, width in
+                    scrollOffset = offset
+                    viewportWidth = width
+                }
+                .frame(width: 0, height: 0)
+            )
             .background(
                 GeometryReader { geo in
                     Color.clear.onAppear {
@@ -287,5 +299,89 @@ struct InlinePianoRollView: View {
             .help("Go to Parent Container")
         }
         .foregroundStyle(.orange)
+    }
+}
+
+// MARK: - Horizontal Scroll Observer
+
+/// Observes the horizontal scroll offset and visible width of the nearest
+/// horizontally-scrollable NSScrollView in the view hierarchy.
+private struct HorizontalScrollObserver: NSViewRepresentable {
+    let onScrollChanged: (_ offset: CGFloat, _ visibleWidth: CGFloat) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            context.coordinator.attach(to: view)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.reattachIfNeeded(from: nsView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onScrollChanged: onScrollChanged)
+    }
+
+    final class Coordinator: NSObject {
+        let onScrollChanged: (_ offset: CGFloat, _ visibleWidth: CGFloat) -> Void
+        private var boundsObservation: NSObjectProtocol?
+        private var frameObservation: NSObjectProtocol?
+        private weak var observedScrollView: NSScrollView?
+
+        init(onScrollChanged: @escaping (_ offset: CGFloat, _ visibleWidth: CGFloat) -> Void) {
+            self.onScrollChanged = onScrollChanged
+        }
+
+        func attach(to view: NSView) {
+            var candidate: NSView? = view.superview
+            while let current = candidate {
+                if let sv = current as? NSScrollView,
+                   let docWidth = sv.documentView?.frame.width,
+                   docWidth > sv.frame.width + 1 {
+                    observe(scrollView: sv)
+                    return
+                }
+                candidate = current.superview
+            }
+        }
+
+        func reattachIfNeeded(from view: NSView) {
+            if observedScrollView == nil {
+                attach(to: view)
+            }
+        }
+
+        private func report() {
+            guard let sv = observedScrollView else { return }
+            onScrollChanged(sv.contentView.bounds.origin.x, sv.contentView.bounds.width)
+        }
+
+        private func observe(scrollView: NSScrollView) {
+            guard observedScrollView !== scrollView else { return }
+            if let boundsObservation { NotificationCenter.default.removeObserver(boundsObservation) }
+            if let frameObservation { NotificationCenter.default.removeObserver(frameObservation) }
+            observedScrollView = scrollView
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            scrollView.contentView.postsFrameChangedNotifications = true
+            report()
+            boundsObservation = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView,
+                queue: .main
+            ) { [weak self] _ in self?.report() }
+            frameObservation = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: scrollView.contentView,
+                queue: .main
+            ) { [weak self] _ in self?.report() }
+        }
+
+        deinit {
+            if let boundsObservation { NotificationCenter.default.removeObserver(boundsObservation) }
+            if let frameObservation { NotificationCenter.default.removeObserver(frameObservation) }
+        }
     }
 }
