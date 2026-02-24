@@ -104,4 +104,48 @@ enum AutomationCoordinateMapping {
         let value = Float(1.0 - y / height)
         return max(0, min(value, 1))
     }
+
+    // MARK: - Snap Helpers
+
+    /// Snaps a breakpoint position (0-based bar offset) to the given snap resolution.
+    static func snappedPosition(_ position: Double, snapResolution: SnapResolution, timeSignature: TimeSignature) -> Double {
+        let beatsPerBar = Double(timeSignature.beatsPerBar)
+        let totalBeats = position * beatsPerBar
+        let snappedBeats = snapResolution.snap(totalBeats)
+        return max(snappedBeats / beatsPerBar, 0)
+    }
+
+    /// Snaps a normalized automation value (0–1) to sensible increments based on parameter metadata.
+    ///
+    /// Strategy by unit:
+    /// - dB: 0.5 dB steps
+    /// - %: 1% steps
+    /// - pan: integer steps (e.g., -100 to 100 → 1-unit steps)
+    /// - generic/nil: 5% of the total range
+    static func snappedValue(_ value: Float, parameterMin: Float?, parameterMax: Float?, parameterUnit: String?) -> Float {
+        guard let pMin = parameterMin, let pMax = parameterMax, pMax > pMin else {
+            // No metadata — snap to 0.05 increments (5% of 0–1 range)
+            return (value / 0.05).rounded() * 0.05
+        }
+
+        let range = pMax - pMin
+        let realValue = pMin + value * range
+
+        let increment: Float
+        switch parameterUnit?.lowercased() {
+        case "db", "decibels":
+            increment = 0.5
+        case "%", "percent", "pct":
+            increment = 1.0
+        case "pan":
+            increment = 1.0
+        default:
+            // 5% of the parameter range
+            increment = range * 0.05
+        }
+
+        let snappedReal = (realValue / increment).rounded() * increment
+        let snappedNormalized = (snappedReal - pMin) / range
+        return max(0, min(snappedNormalized, 1))
+    }
 }

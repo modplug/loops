@@ -59,6 +59,12 @@ public struct TrackLaneView: View {
     var onResolveAudioFileBars: ((_ url: URL) -> Double?)?
     /// Snaps a bar value to the current grid resolution.
     var snapToGrid: ((_ bar: Double) -> Double)?
+    /// Snap resolution for automation breakpoints (nil = snap disabled).
+    var automationSnapResolution: SnapResolution?
+    /// Time signature for automation snap calculations.
+    var automationTimeSignature: TimeSignature?
+    /// Grid mode for automation sub-lane grid lines.
+    var automationGridMode: GridMode?
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
@@ -115,7 +121,10 @@ public struct TrackLaneView: View {
         onTapBackground: ((_ xPosition: CGFloat) -> Void)? = nil,
         onRangeSelect: ((_ containerID: ID<Container>, _ startBar: Double, _ endBar: Double) -> Void)? = nil,
         onResolveAudioFileBars: ((_ url: URL) -> Double?)? = nil,
-        snapToGrid: ((_ bar: Double) -> Double)? = nil
+        snapToGrid: ((_ bar: Double) -> Double)? = nil,
+        automationSnapResolution: SnapResolution? = nil,
+        automationTimeSignature: TimeSignature? = nil,
+        automationGridMode: GridMode? = nil
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
@@ -165,6 +174,9 @@ public struct TrackLaneView: View {
         self.onRangeSelect = onRangeSelect
         self.onResolveAudioFileBars = onResolveAudioFileBars
         self.snapToGrid = snapToGrid
+        self.automationSnapResolution = automationSnapResolution
+        self.automationTimeSignature = automationTimeSignature
+        self.automationGridMode = automationGridMode
     }
 
     private var baseHeight: CGFloat {
@@ -248,7 +260,10 @@ public struct TrackLaneView: View {
                         trackAutomationLane: track.trackAutomationLanes.first(where: { $0.targetPath == targetPath }),
                         onAddTrackBreakpoint: onAddTrackBreakpoint,
                         onUpdateTrackBreakpoint: onUpdateTrackBreakpoint,
-                        onDeleteTrackBreakpoint: onDeleteTrackBreakpoint
+                        onDeleteTrackBreakpoint: onDeleteTrackBreakpoint,
+                        snapResolution: automationSnapResolution,
+                        timeSignature: automationTimeSignature,
+                        gridMode: automationGridMode
                     )
                     .overlay(
                         Rectangle()
@@ -438,6 +453,9 @@ extension TrackLaneView: Equatable {
         lhs.isAutomationExpanded == rhs.isAutomationExpanded &&
         lhs.automationSubLanePaths == rhs.automationSubLanePaths &&
         lhs.selectedBreakpointID == rhs.selectedBreakpointID &&
+        lhs.automationSnapResolution == rhs.automationSnapResolution &&
+        lhs.automationTimeSignature == rhs.automationTimeSignature &&
+        lhs.automationGridMode == rhs.automationGridMode &&
         lhs.otherSongs.count == rhs.otherSongs.count &&
         zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name }
     }

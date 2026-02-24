@@ -269,4 +269,131 @@ struct AutomationVisualizationTests {
         let count = vm.automationLaneCount(for: track)
         #expect(count == 2)
     }
+
+    // MARK: - Automation Snap Position Tests
+
+    @Test("Snap position to quarter note resolution in 4/4")
+    func snapPositionQuarter4_4() {
+        let ts = TimeSignature(beatsPerBar: 4, beatUnit: 4)
+
+        // Position 0.3 bars → 0.3 * 4 beats = 1.2 beats → snaps to 1.0 beat → 0.25 bars
+        let snapped = AutomationCoordinateMapping.snappedPosition(0.3, snapResolution: .quarter, timeSignature: ts)
+        #expect(abs(snapped - 0.25) < 0.001)
+
+        // Position 0.0 → stays at 0.0
+        let snapZero = AutomationCoordinateMapping.snappedPosition(0.0, snapResolution: .quarter, timeSignature: ts)
+        #expect(abs(snapZero - 0.0) < 0.001)
+
+        // Position 1.0 → stays at 1.0 (exactly on bar boundary)
+        let snapOne = AutomationCoordinateMapping.snappedPosition(1.0, snapResolution: .quarter, timeSignature: ts)
+        #expect(abs(snapOne - 1.0) < 0.001)
+    }
+
+    @Test("Snap position to eighth note resolution in 4/4")
+    func snapPositionEighth4_4() {
+        let ts = TimeSignature(beatsPerBar: 4, beatUnit: 4)
+
+        // Position 0.15 bars → 0.6 beats → snaps to 0.5 beats → 0.125 bars
+        let snapped = AutomationCoordinateMapping.snappedPosition(0.15, snapResolution: .eighth, timeSignature: ts)
+        #expect(abs(snapped - 0.125) < 0.001)
+
+        // Position 0.5 → 2.0 beats → snaps to 2.0 → 0.5 bars
+        let snapHalf = AutomationCoordinateMapping.snappedPosition(0.5, snapResolution: .eighth, timeSignature: ts)
+        #expect(abs(snapHalf - 0.5) < 0.001)
+    }
+
+    @Test("Snap position to whole note resolution in 4/4")
+    func snapPositionWhole4_4() {
+        let ts = TimeSignature(beatsPerBar: 4, beatUnit: 4)
+
+        // Position 0.6 bars → 2.4 beats → snaps to 4.0 beats (1 whole) → 1.0 bar
+        let snapped = AutomationCoordinateMapping.snappedPosition(0.6, snapResolution: .whole, timeSignature: ts)
+        #expect(abs(snapped - 1.0) < 0.001)
+
+        // Position 0.1 bars → 0.4 beats → snaps to 0.0 → 0.0 bars
+        let snapNear0 = AutomationCoordinateMapping.snappedPosition(0.1, snapResolution: .whole, timeSignature: ts)
+        #expect(abs(snapNear0 - 0.0) < 0.001)
+    }
+
+    @Test("Snap position to sixteenth note resolution in 3/4")
+    func snapPositionSixteenth3_4() {
+        let ts = TimeSignature(beatsPerBar: 3, beatUnit: 4)
+
+        // Position 0.1 bars → 0.3 beats → snaps to 0.25 beats → 0.25/3 ≈ 0.0833 bars
+        let snapped = AutomationCoordinateMapping.snappedPosition(0.1, snapResolution: .sixteenth, timeSignature: ts)
+        #expect(abs(snapped - 0.25 / 3.0) < 0.001)
+    }
+
+    @Test("Snap position never goes negative")
+    func snapPositionNonNegative() {
+        let ts = TimeSignature(beatsPerBar: 4, beatUnit: 4)
+
+        let snapped = AutomationCoordinateMapping.snappedPosition(-0.1, snapResolution: .quarter, timeSignature: ts)
+        #expect(snapped >= 0.0)
+    }
+
+    // MARK: - Automation Snap Value Tests
+
+    @Test("Snap value with dB unit — 0.5 dB increments")
+    func snapValueDB() {
+        // Range -60 to 0 dB, normalized value
+        // Normalized 0.5 → -30 dB → stays at -30 (already on 0.5 increment)
+        let snapped = AutomationCoordinateMapping.snappedValue(0.5, parameterMin: -60, parameterMax: 0, parameterUnit: "dB")
+        #expect(abs(snapped - 0.5) < 0.001)
+
+        // Normalized 0.342 → -60 + 0.342 * 60 = -39.48 dB → snaps to -39.5 dB → ((-39.5 + 60) / 60) = 0.3417
+        let snapped2 = AutomationCoordinateMapping.snappedValue(0.342, parameterMin: -60, parameterMax: 0, parameterUnit: "dB")
+        let expected = Float((-39.5 + 60.0) / 60.0)
+        #expect(abs(snapped2 - expected) < 0.01)
+    }
+
+    @Test("Snap value with percent unit — 1% increments")
+    func snapValuePercent() {
+        // Range 0 to 100%, value 0.555 → 55.5% → snaps to 56% → 0.56
+        let snapped = AutomationCoordinateMapping.snappedValue(0.555, parameterMin: 0, parameterMax: 100, parameterUnit: "%")
+        #expect(abs(snapped - 0.56) < 0.01)
+    }
+
+    @Test("Snap value with no metadata — 5% increments of 0–1 range")
+    func snapValueNoMetadata() {
+        // 0.33 → snaps to 0.35 (nearest 0.05)
+        let snapped = AutomationCoordinateMapping.snappedValue(0.33, parameterMin: nil, parameterMax: nil, parameterUnit: nil)
+        #expect(abs(snapped - 0.35) < 0.01)
+
+        // 0.0 → stays at 0.0
+        let snapZero = AutomationCoordinateMapping.snappedValue(0.0, parameterMin: nil, parameterMax: nil, parameterUnit: nil)
+        #expect(abs(snapZero - 0.0) < 0.001)
+
+        // 1.0 → stays at 1.0
+        let snapOne = AutomationCoordinateMapping.snappedValue(1.0, parameterMin: nil, parameterMax: nil, parameterUnit: nil)
+        #expect(abs(snapOne - 1.0) < 0.001)
+    }
+
+    @Test("Snap value with generic unit — 5% of range")
+    func snapValueGenericUnit() {
+        // Range 20 to 20000 Hz, 5% = 999 Hz increment
+        // Normalized 0.5 → 10010 Hz → snaps to nearest 999 multiple
+        let snapped = AutomationCoordinateMapping.snappedValue(0.5, parameterMin: 20, parameterMax: 20000, parameterUnit: "Hz")
+        // 10010 / 999 = 10.02 → 10 * 999 = 9990 → normalized: (9990 - 20) / 19980 ≈ 0.4995
+        #expect(abs(snapped - 0.5) < 0.02)
+    }
+
+    @Test("Snap value clamps to 0–1 range")
+    func snapValueClamps() {
+        // Extreme values should be clamped
+        let snappedHigh = AutomationCoordinateMapping.snappedValue(1.0, parameterMin: 0, parameterMax: 100, parameterUnit: "%")
+        #expect(snappedHigh <= 1.0)
+        #expect(snappedHigh >= 0.0)
+
+        let snappedLow = AutomationCoordinateMapping.snappedValue(0.0, parameterMin: 0, parameterMax: 100, parameterUnit: "%")
+        #expect(snappedLow >= 0.0)
+        #expect(snappedLow <= 1.0)
+    }
+
+    @Test("Snap value with pan unit — integer increments")
+    func snapValuePan() {
+        // Pan range -1 to 1, normalized 0.35 → -1 + 0.35 * 2 = -0.3 → snaps to 0 → normalized (0 + 1)/2 = 0.5
+        let snapped = AutomationCoordinateMapping.snappedValue(0.35, parameterMin: -1, parameterMax: 1, parameterUnit: "pan")
+        #expect(abs(snapped - 0.5) < 0.01) // snaps to center (0 pan)
+    }
 }

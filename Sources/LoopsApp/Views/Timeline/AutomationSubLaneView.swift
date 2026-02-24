@@ -22,6 +22,12 @@ struct AutomationSubLaneView: View {
     var onAddTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onUpdateTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onDeleteTrackBreakpoint: ((_ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
+    /// Snap resolution for horizontal position snapping (nil = snap disabled).
+    var snapResolution: SnapResolution?
+    /// Time signature for beat-based snap calculations.
+    var timeSignature: TimeSignature?
+    /// Grid mode for drawing grid lines in the sub-lane.
+    var gridMode: GridMode?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -29,6 +35,19 @@ struct AutomationSubLaneView: View {
             Rectangle()
                 .fill(AutomationColors.color(at: laneColorIndex).opacity(0.05))
                 .frame(width: CGFloat(totalBars) * pixelsPerBar, height: height)
+
+            // Grid lines reflecting current snap resolution
+            if let ts = timeSignature, let gm = gridMode {
+                GridOverlayView(
+                    totalBars: totalBars,
+                    pixelsPerBar: pixelsPerBar,
+                    timeSignature: ts,
+                    height: height,
+                    gridMode: gm
+                )
+                .opacity(0.5)
+                .allowsHitTesting(false)
+            }
 
             // Horizontal guide lines at 25%, 50%, 75%
             ForEach([0.25, 0.5, 0.75], id: \.self) { fraction in
@@ -56,7 +75,9 @@ struct AutomationSubLaneView: View {
                     onDeleteBreakpoint: { breakpointID in
                         onDeleteTrackBreakpoint?(lane.id, breakpointID)
                     },
-                    onSelectBreakpoint: onSelectBreakpoint
+                    onSelectBreakpoint: onSelectBreakpoint,
+                    snapResolution: snapResolution,
+                    timeSignature: timeSignature
                 )
             }
 
@@ -80,7 +101,9 @@ struct AutomationSubLaneView: View {
                             onDeleteBreakpoint: { breakpointID in
                                 onDeleteBreakpoint?(container.id, lane.id, breakpointID)
                             },
-                            onSelectBreakpoint: onSelectBreakpoint
+                            onSelectBreakpoint: onSelectBreakpoint,
+                            snapResolution: snapResolution,
+                            timeSignature: timeSignature
                         )
                         .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar)
                     }
@@ -103,6 +126,8 @@ private struct AutomationSubLaneContainerView: View {
     var onUpdateBreakpoint: ((_ breakpoint: AutomationBreakpoint) -> Void)?
     var onDeleteBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>) -> Void)?
     var onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)?
+    var snapResolution: SnapResolution?
+    var timeSignature: TimeSignature?
 
     @State private var hoveredBreakpointID: ID<AutomationBreakpoint>?
     @State private var draggedBreakpointID: ID<AutomationBreakpoint>?
@@ -163,11 +188,29 @@ private struct AutomationSubLaneContainerView: View {
         .frame(width: containerWidth, height: height)
     }
 
+    /// Returns whether snapping should be applied (respects Cmd key to invert).
+    private var shouldSnap: Bool {
+        let cmdHeld = NSEvent.modifierFlags.contains(.command)
+        return cmdHeld ? (snapResolution == nil) : (snapResolution != nil)
+    }
+
+    /// Snaps a position (0-based bar offset) if snap is active.
+    private func snapPosition(_ position: Double) -> Double {
+        guard shouldSnap, let res = snapResolution, let ts = timeSignature else { return position }
+        return AutomationCoordinateMapping.snappedPosition(position, snapResolution: res, timeSignature: ts)
+    }
+
+    /// Snaps a normalized value (0–1) if snap is active.
+    private func snapValue(_ value: Float) -> Float {
+        guard shouldSnap else { return value }
+        return AutomationCoordinateMapping.snappedValue(value, parameterMin: lane.parameterMin, parameterMax: lane.parameterMax, parameterUnit: lane.parameterUnit)
+    }
+
     private var tooltipBreakpoint: AutomationBreakpoint? {
         if let dragID = draggedBreakpointID, let pos = dragPosition {
-            let value = AutomationCoordinateMapping.valueForY(pos.y, height: height)
-            let position = AutomationCoordinateMapping.positionForX(pos.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
-            return AutomationBreakpoint(id: dragID, position: position, value: value)
+            let rawValue = AutomationCoordinateMapping.valueForY(pos.y, height: height)
+            let rawPosition = AutomationCoordinateMapping.positionForX(pos.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
+            return AutomationBreakpoint(id: dragID, position: snapPosition(rawPosition), value: snapValue(rawValue))
         }
         if let hoverID = hoveredBreakpointID {
             return lane.breakpoints.first { $0.id == hoverID }
@@ -220,8 +263,8 @@ private struct AutomationSubLaneContainerView: View {
     private var clickGesture: some Gesture {
         SpatialTapGesture()
             .onEnded { value in
-                let position = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
-                let val = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
+                let rawPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
+                let rawVal = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
 
                 // Check if click is near an existing breakpoint
                 if let nearBP = nearestBreakpoint(to: value.location, threshold: 8) {
@@ -229,8 +272,8 @@ private struct AutomationSubLaneContainerView: View {
                     return
                 }
 
-                // Add new breakpoint at click position
-                let bp = AutomationBreakpoint(position: position, value: val)
+                // Add new breakpoint at click position (snapped)
+                let bp = AutomationBreakpoint(position: snapPosition(rawPosition), value: snapValue(rawVal))
                 onAddBreakpoint?(bp)
             }
     }
@@ -254,11 +297,11 @@ private struct AutomationSubLaneContainerView: View {
                             dragPosition = value.location
                         }
                         .onEnded { value in
-                            let newPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
-                            let newValue = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
+                            let rawPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: container.lengthBars, pixelsPerBar: pixelsPerBar)
+                            let rawValue = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
                             var updated = bp
-                            updated.position = newPosition
-                            updated.value = newValue
+                            updated.position = snapPosition(rawPosition)
+                            updated.value = snapValue(rawValue)
                             onUpdateBreakpoint?(updated)
                             draggedBreakpointID = nil
                             dragPosition = nil
@@ -297,6 +340,8 @@ private struct TrackAutomationSubLaneView: View {
     var onUpdateBreakpoint: ((_ breakpoint: AutomationBreakpoint) -> Void)?
     var onDeleteBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>) -> Void)?
     var onSelectBreakpoint: ((_ breakpointID: ID<AutomationBreakpoint>?) -> Void)?
+    var snapResolution: SnapResolution?
+    var timeSignature: TimeSignature?
 
     @State private var hoveredBreakpointID: ID<AutomationBreakpoint>?
     @State private var draggedBreakpointID: ID<AutomationBreakpoint>?
@@ -308,6 +353,24 @@ private struct TrackAutomationSubLaneView: View {
 
     private var color: Color {
         AutomationColors.color(at: laneColorIndex)
+    }
+
+    /// Returns whether snapping should be applied (respects Cmd key to invert).
+    private var shouldSnap: Bool {
+        let cmdHeld = NSEvent.modifierFlags.contains(.command)
+        return cmdHeld ? (snapResolution == nil) : (snapResolution != nil)
+    }
+
+    /// Snaps a position (0-based bar offset) if snap is active.
+    private func snapPosition(_ position: Double) -> Double {
+        guard shouldSnap, let res = snapResolution, let ts = timeSignature else { return position }
+        return AutomationCoordinateMapping.snappedPosition(position, snapResolution: res, timeSignature: ts)
+    }
+
+    /// Snaps a normalized value (0–1) if snap is active.
+    private func snapValue(_ value: Float) -> Float {
+        guard shouldSnap else { return value }
+        return AutomationCoordinateMapping.snappedValue(value, parameterMin: lane.parameterMin, parameterMax: lane.parameterMax, parameterUnit: lane.parameterUnit)
     }
 
     var body: some View {
@@ -346,9 +409,9 @@ private struct TrackAutomationSubLaneView: View {
 
     private var tooltipBreakpoint: AutomationBreakpoint? {
         if let dragID = draggedBreakpointID, let pos = dragPosition {
-            let value = AutomationCoordinateMapping.valueForY(pos.y, height: height)
-            let position = AutomationCoordinateMapping.positionForX(pos.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
-            return AutomationBreakpoint(id: dragID, position: position, value: value)
+            let rawValue = AutomationCoordinateMapping.valueForY(pos.y, height: height)
+            let rawPosition = AutomationCoordinateMapping.positionForX(pos.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
+            return AutomationBreakpoint(id: dragID, position: snapPosition(rawPosition), value: snapValue(rawValue))
         }
         if let hoverID = hoveredBreakpointID {
             return lane.breakpoints.first { $0.id == hoverID }
@@ -397,15 +460,15 @@ private struct TrackAutomationSubLaneView: View {
     private var clickGesture: some Gesture {
         SpatialTapGesture()
             .onEnded { value in
-                let position = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
-                let val = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
+                let rawPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
+                let rawVal = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
 
                 if let nearBP = nearestBreakpoint(to: value.location, threshold: 8) {
                     onSelectBreakpoint?(nearBP.id)
                     return
                 }
 
-                let bp = AutomationBreakpoint(position: position, value: val)
+                let bp = AutomationBreakpoint(position: snapPosition(rawPosition), value: snapValue(rawVal))
                 onAddBreakpoint?(bp)
             }
     }
@@ -429,11 +492,11 @@ private struct TrackAutomationSubLaneView: View {
                             dragPosition = value.location
                         }
                         .onEnded { value in
-                            let newPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
-                            let newValue = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
+                            let rawPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: Double(totalBars), pixelsPerBar: pixelsPerBar)
+                            let rawValue = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
                             var updated = bp
-                            updated.position = newPosition
-                            updated.value = newValue
+                            updated.position = snapPosition(rawPosition)
+                            updated.value = snapValue(rawValue)
                             onUpdateBreakpoint?(updated)
                             draggedBreakpointID = nil
                             dragPosition = nil
