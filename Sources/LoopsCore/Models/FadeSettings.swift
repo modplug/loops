@@ -5,6 +5,7 @@ public enum CurveType: String, Codable, Sendable, CaseIterable {
     case linear
     case exponential
     case sCurve
+    case equalPower
 
     /// Returns gain value for a normalized position in `0...1`.
     /// For fade-in the position goes 0 → 1 and so does the gain.
@@ -19,6 +20,8 @@ public enum CurveType: String, Codable, Sendable, CaseIterable {
         case .sCurve:
             // Hermite smoothstep: 3t² − 2t³
             return 3 * clamped * clamped - 2 * clamped * clamped * clamped
+        case .equalPower:
+            return sin(clamped * .pi / 2)
         }
     }
 }

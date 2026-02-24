@@ -55,6 +55,10 @@ public struct ContainerView: View {
     var onGlue: (() -> Void)?
     /// Snaps a bar value to the current grid resolution. Falls back to whole-bar rounding if nil.
     var snapToGrid: ((_ bar: Double) -> Double)?
+    /// Crossfades this container participates in (for context menu).
+    var crossfades: [Crossfade]
+    /// Callback to change a crossfade's curve type.
+    var onSetCrossfadeCurveType: ((_ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)?
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -114,7 +118,9 @@ public struct ContainerView: View {
         onSplit: (() -> Void)? = nil,
         onRangeSelect: ((_ startBar: Double, _ endBar: Double) -> Void)? = nil,
         onGlue: (() -> Void)? = nil,
-        snapToGrid: ((_ bar: Double) -> Double)? = nil
+        snapToGrid: ((_ bar: Double) -> Double)? = nil,
+        crossfades: [Crossfade] = [],
+        onSetCrossfadeCurveType: ((_ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)? = nil
     ) {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
@@ -149,6 +155,8 @@ public struct ContainerView: View {
         self.onRangeSelect = onRangeSelect
         self.onGlue = onGlue
         self.snapToGrid = snapToGrid
+        self.crossfades = crossfades
+        self.onSetCrossfadeCurveType = onSetCrossfadeCurveType
     }
 
     /// Derived from SelectionState observable — only this ContainerView re-evaluates
@@ -537,6 +545,24 @@ public struct ContainerView: View {
             Button("Split at Playhead") { onSplit?() }
             Button("Edit...") { onDoubleClick?() }
             Button("Arm/Disarm") { onArmToggle?() }
+            if !crossfades.isEmpty {
+                Divider()
+                ForEach(crossfades) { xfade in
+                    Menu("Crossfade Curve") {
+                        ForEach(CrossfadeCurveType.allCases, id: \.self) { curveType in
+                            Button {
+                                onSetCrossfadeCurveType?(xfade.id, curveType)
+                            } label: {
+                                if xfade.curveType == curveType {
+                                    Label(curveType.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(curveType.displayName)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Divider()
             Button("Delete", role: .destructive) { onDelete?() }
         }
@@ -933,6 +959,7 @@ extension ContainerView: Equatable {
         lhs.overriddenFields == rhs.overriddenFields &&
         lhs.resolvedMIDISequence == rhs.resolvedMIDISequence &&
         lhs.recordingDurationBars == rhs.recordingDurationBars &&
+        lhs.crossfades == rhs.crossfades &&
         lhs.otherSongs.count == rhs.otherSongs.count &&
         zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name }
     }

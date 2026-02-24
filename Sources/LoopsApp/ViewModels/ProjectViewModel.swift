@@ -974,6 +974,10 @@ public final class ProjectViewModel {
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         registerUndo(actionName: "Remove Container")
         project.songs[currentSongIndex].tracks[trackIndex].containers.removeAll { $0.id == containerID }
+        // Remove crossfades involving the deleted container
+        project.songs[currentSongIndex].tracks[trackIndex].crossfades.removeAll {
+            $0.containerAID == containerID || $0.containerBID == containerID
+        }
         if selectedContainerID == containerID {
             selectedContainerID = nil
         }
@@ -985,36 +989,24 @@ public final class ProjectViewModel {
     public func moveContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Double) -> Bool {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
-        guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
+        guard project.songs[currentSongIndex].tracks[trackIndex].containers.contains(where: { $0.id == containerID }) else { return false }
         registerUndo(actionName: "Move Container")
 
         let clampedStart = max(newStartBar, 1.0)
-        var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
-        proposed.startBar = clampedStart
-
-        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: proposed, excluding: containerID) {
-            return false
-        }
-
-        project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].startBar = clampedStart
+        project.songs[currentSongIndex].tracks[trackIndex].containers[
+            project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID })!
+        ].startBar = clampedStart
+        updateCrossfades(trackIndex: trackIndex)
         hasUnsavedChanges = true
         return true
     }
 
-    /// Resizes a container. Returns false if it would overlap.
+    /// Resizes a container. Allows overlaps and auto-creates crossfades.
     public func resizeContainer(trackID: ID<Track>, containerID: ID<Container>, newStartBar: Double? = nil, newLengthBars: Double? = nil) -> Bool {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
         registerUndo(actionName: "Resize Container")
-
-        var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
-        if let start = newStartBar { proposed.startBar = max(start, 1.0) }
-        if let length = newLengthBars { proposed.lengthBars = max(length, 1.0) }
-
-        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: proposed, excluding: containerID) {
-            return false
-        }
 
         if let start = newStartBar {
             project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].startBar = max(start, 1.0)
@@ -1022,6 +1014,7 @@ public final class ProjectViewModel {
         if let length = newLengthBars {
             project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].lengthBars = max(length, 1.0)
         }
+        updateCrossfades(trackIndex: trackIndex)
         hasUnsavedChanges = true
         return true
     }
@@ -2959,6 +2952,7 @@ public final class ProjectViewModel {
         )
 
         project.songs[currentSongIndex].tracks[trackIndex].containers.append(rightContainer)
+        updateCrossfades(trackIndex: trackIndex)
         hasUnsavedChanges = true
         onPlaybackGraphChanged?()
         return rightContainer.id
@@ -3091,7 +3085,7 @@ public final class ProjectViewModel {
     }
 
     /// Trims a container's left edge, adjusting startBar, lengthBars, and audioStartOffset atomically.
-    /// Returns false if the trim would cause an overlap or invalid state.
+    /// Returns false if the trim would cause invalid state.
     public func trimContainerLeft(trackID: ID<Track>, containerID: ID<Container>,
                                   newStartBar: Double, newLength: Double, newAudioStartOffset: Double) -> Bool {
         guard !project.songs.isEmpty else { return false }
@@ -3099,42 +3093,109 @@ public final class ProjectViewModel {
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
         guard newStartBar >= 1.0 && newLength >= 1.0 && newAudioStartOffset >= 0 else { return false }
 
-        var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
-        proposed.startBar = newStartBar
-        proposed.lengthBars = newLength
-        proposed.audioStartOffset = newAudioStartOffset
-
-        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: proposed, excluding: containerID) {
-            return false
-        }
-
         registerUndoCoalesced(actionName: "Trim Container")
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].startBar = newStartBar
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].lengthBars = newLength
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].audioStartOffset = newAudioStartOffset
+        updateCrossfades(trackIndex: trackIndex)
         hasUnsavedChanges = true
         return true
     }
 
     /// Trims a container's right edge, adjusting only lengthBars.
-    /// Returns false if the trim would cause an overlap.
     public func trimContainerRight(trackID: ID<Track>, containerID: ID<Container>, newLength: Double) -> Bool {
         guard !project.songs.isEmpty else { return false }
         guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return false }
         guard let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) else { return false }
         guard newLength >= 1.0 else { return false }
 
-        var proposed = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex]
-        proposed.lengthBars = newLength
-
-        if hasOverlap(in: project.songs[currentSongIndex].tracks[trackIndex], with: proposed, excluding: containerID) {
-            return false
-        }
-
         registerUndoCoalesced(actionName: "Trim Container")
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].lengthBars = newLength
+        updateCrossfades(trackIndex: trackIndex)
         hasUnsavedChanges = true
         return true
+    }
+
+    // MARK: - Crossfade Management
+
+    /// Updates crossfades for a track by detecting overlapping container pairs.
+    /// Creates crossfades for new overlaps and removes crossfades for separated containers.
+    /// Also sets appropriate enter/exit fades on the overlapping containers.
+    private func updateCrossfades(trackIndex: Int) {
+        guard !project.songs.isEmpty else { return }
+        let track = project.songs[currentSongIndex].tracks[trackIndex]
+        let containers = track.containers
+        var existingCrossfades = track.crossfades
+
+        // Find all overlapping pairs (sorted by startBar for deterministic pairing)
+        let sorted = containers.sorted { $0.startBar < $1.startBar }
+        var overlappingPairs: [(ID<Container>, ID<Container>)] = []
+
+        for i in 0..<sorted.count {
+            for j in (i + 1)..<sorted.count {
+                let a = sorted[i]
+                let b = sorted[j]
+                // a starts before b; overlap if a's end > b's start
+                if a.endBar > b.startBar {
+                    overlappingPairs.append((a.id, b.id))
+                }
+            }
+        }
+
+        // Remove crossfades for pairs that no longer overlap
+        existingCrossfades.removeAll { xfade in
+            !overlappingPairs.contains(where: { $0.0 == xfade.containerAID && $0.1 == xfade.containerBID })
+        }
+
+        // Add crossfades for new overlapping pairs
+        for (aID, bID) in overlappingPairs {
+            if !existingCrossfades.contains(where: { $0.containerAID == aID && $0.containerBID == bID }) {
+                existingCrossfades.append(Crossfade(containerAID: aID, containerBID: bID))
+            }
+        }
+
+        project.songs[currentSongIndex].tracks[trackIndex].crossfades = existingCrossfades
+
+        // Update container enter/exit fades to match crossfades
+        applyCrossfadeFades(trackIndex: trackIndex)
+    }
+
+    /// Sets enter/exit fades on containers participating in crossfades.
+    private func applyCrossfadeFades(trackIndex: Int) {
+        let track = project.songs[currentSongIndex].tracks[trackIndex]
+        let containerLookup = Dictionary(uniqueKeysWithValues: track.containers.map { ($0.id, $0) })
+
+        for xfade in track.crossfades {
+            guard let containerA = containerLookup[xfade.containerAID],
+                  let containerB = containerLookup[xfade.containerBID] else { continue }
+
+            let overlap = xfade.duration(containerA: containerA, containerB: containerB)
+            guard overlap > 0 else { continue }
+
+            let curve = xfade.curveType.toCurveType
+
+            // Set exit fade on container A (the one fading out)
+            if let aIndex = track.containers.firstIndex(where: { $0.id == xfade.containerAID }) {
+                project.songs[currentSongIndex].tracks[trackIndex].containers[aIndex].exitFade =
+                    FadeSettings(duration: overlap, curve: curve)
+            }
+            // Set enter fade on container B (the one fading in)
+            if let bIndex = track.containers.firstIndex(where: { $0.id == xfade.containerBID }) {
+                project.songs[currentSongIndex].tracks[trackIndex].containers[bIndex].enterFade =
+                    FadeSettings(duration: overlap, curve: curve)
+            }
+        }
+    }
+
+    /// Sets the crossfade curve type for a specific crossfade.
+    public func setCrossfadeCurveType(trackID: ID<Track>, crossfadeID: ID<Crossfade>, curveType: CrossfadeCurveType) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let xfadeIndex = project.songs[currentSongIndex].tracks[trackIndex].crossfades.firstIndex(where: { $0.id == crossfadeID }) else { return }
+        registerUndo(actionName: "Change Crossfade Curve")
+        project.songs[currentSongIndex].tracks[trackIndex].crossfades[xfadeIndex].curveType = curveType
+        applyCrossfadeFades(trackIndex: trackIndex)
+        hasUnsavedChanges = true
     }
 
     // MARK: - Private

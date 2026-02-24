@@ -1049,6 +1049,7 @@ extension CurveType {
         case .linear: return "Linear"
         case .exponential: return "Exponential"
         case .sCurve: return "S-Curve"
+        case .equalPower: return "Equal Power"
         }
     }
 }

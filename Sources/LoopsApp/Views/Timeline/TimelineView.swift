@@ -454,6 +454,9 @@ public struct TimelineView: View {
             },
             snapToGrid: { bar in
                 viewModel.snapToGrid(bar, timeSignature: song.timeSignature)
+            },
+            onSetCrossfadeCurveType: { crossfadeID, curveType in
+                projectViewModel.setCrossfadeCurveType(trackID: track.id, crossfadeID: crossfadeID, curveType: curveType)
             }
         )
     }

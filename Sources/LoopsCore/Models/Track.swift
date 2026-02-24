@@ -53,6 +53,8 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
     public var expressionPedalCC: UInt8?
     /// Expression pedal target (nil = track volume, set = specific effect parameter).
     public var expressionPedalTarget: EffectPath?
+    /// Crossfades between overlapping containers on this track.
+    public var crossfades: [Crossfade]
     public var orderIndex: Int
 
     public init(
@@ -77,6 +79,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         trackAutomationLanes: [AutomationLane] = [],
         expressionPedalCC: UInt8? = nil,
         expressionPedalTarget: EffectPath? = nil,
+        crossfades: [Crossfade] = [],
         orderIndex: Int = 0
     ) {
         self.id = id
@@ -100,6 +103,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         self.trackAutomationLanes = trackAutomationLanes
         self.expressionPedalCC = expressionPedalCC
         self.expressionPedalTarget = expressionPedalTarget
+        self.crossfades = crossfades
         self.orderIndex = orderIndex
     }
 
@@ -117,6 +121,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         case trackAutomationLanes
         case expressionPedalCC
         case expressionPedalTarget
+        case crossfades
         case orderIndex
         // Legacy key
         case inputDeviceUID
@@ -144,6 +149,7 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         trackAutomationLanes = try c.decodeIfPresent([AutomationLane].self, forKey: .trackAutomationLanes) ?? []
         expressionPedalCC = try c.decodeIfPresent(UInt8.self, forKey: .expressionPedalCC)
         expressionPedalTarget = try c.decodeIfPresent(EffectPath.self, forKey: .expressionPedalTarget)
+        crossfades = try c.decodeIfPresent([Crossfade].self, forKey: .crossfades) ?? []
         orderIndex = try c.decode(Int.self, forKey: .orderIndex)
 
         // Migrate legacy inputDeviceUID → inputPortID
@@ -181,6 +187,9 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
         }
         try c.encodeIfPresent(expressionPedalCC, forKey: .expressionPedalCC)
         try c.encodeIfPresent(expressionPedalTarget, forKey: .expressionPedalTarget)
+        if !crossfades.isEmpty {
+            try c.encode(crossfades, forKey: .crossfades)
+        }
         try c.encode(orderIndex, forKey: .orderIndex)
     }
 }

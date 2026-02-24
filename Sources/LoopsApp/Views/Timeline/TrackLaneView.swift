@@ -64,6 +64,8 @@ public struct TrackLaneView: View {
     var onResolveAudioFileBars: ((_ url: URL) -> Double?)?
     /// Snaps a bar value to the current grid resolution.
     var snapToGrid: ((_ bar: Double) -> Double)?
+    /// Callback to change crossfade curve type.
+    var onSetCrossfadeCurveType: ((_ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)?
     /// Snap resolution for automation breakpoints (nil = snap disabled).
     var automationSnapResolution: SnapResolution?
     /// Time signature for automation snap calculations.
@@ -132,6 +134,7 @@ public struct TrackLaneView: View {
         onRangeSelect: ((_ containerID: ID<Container>, _ startBar: Double, _ endBar: Double) -> Void)? = nil,
         onResolveAudioFileBars: ((_ url: URL) -> Double?)? = nil,
         snapToGrid: ((_ bar: Double) -> Double)? = nil,
+        onSetCrossfadeCurveType: ((_ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)? = nil,
         automationSnapResolution: SnapResolution? = nil,
         automationTimeSignature: TimeSignature? = nil,
         automationGridMode: GridMode? = nil
@@ -189,6 +192,7 @@ public struct TrackLaneView: View {
         self.onRangeSelect = onRangeSelect
         self.onResolveAudioFileBars = onResolveAudioFileBars
         self.snapToGrid = snapToGrid
+        self.onSetCrossfadeCurveType = onSetCrossfadeCurveType
         self.automationSnapResolution = automationSnapResolution
         self.automationTimeSignature = automationTimeSignature
         self.automationGridMode = automationGridMode
@@ -253,6 +257,11 @@ public struct TrackLaneView: View {
                     containerView(for: container)
                         .equatable()
                         .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
+                }
+
+                // Crossfade overlays
+                ForEach(track.crossfades) { xfade in
+                    crossfadeOverlay(for: xfade)
                 }
             }
             .coordinateSpace(name: "trackLane")
@@ -353,7 +362,9 @@ public struct TrackLaneView: View {
             onSplit: { onContainerSplit?(container.id) },
             onRangeSelect: { startBar, endBar in onRangeSelect?(container.id, startBar, endBar) },
             onGlue: { onGlueContainers?() },
-            snapToGrid: snapToGrid
+            snapToGrid: snapToGrid,
+            crossfades: track.crossfades.filter { $0.containerAID == container.id || $0.containerBID == container.id },
+            onSetCrossfadeCurveType: onSetCrossfadeCurveType
         )
     }
 
@@ -417,6 +428,30 @@ public struct TrackLaneView: View {
         .padding(.vertical, 3)
     }
 
+    @ViewBuilder
+    private func crossfadeOverlay(for xfade: Crossfade) -> some View {
+        let containerA = track.containers.first(where: { $0.id == xfade.containerAID })
+        let containerB = track.containers.first(where: { $0.id == xfade.containerBID })
+        if let a = containerA, let b = containerB {
+            let overlap = xfade.duration(containerA: a, containerB: b)
+            if overlap > 0 {
+                let xStart = CGFloat(b.startBar - 1) * pixelsPerBar
+                let width = CGFloat(overlap) * pixelsPerBar
+                ZStack {
+                    // Semi-transparent background
+                    Rectangle()
+                        .fill(Color.white.opacity(0.08))
+                    // X-pattern
+                    CrossfadeXShape()
+                        .stroke(Color.white.opacity(0.7), lineWidth: 1.5)
+                }
+                .frame(width: width, height: baseHeight - 4)
+                .offset(x: xStart, y: 2)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
     private var trackColor: Color {
         switch track.kind {
         case .audio: return .blue
@@ -425,6 +460,22 @@ public struct TrackLaneView: View {
         case .backing: return .orange
         case .master: return .gray
         }
+    }
+}
+
+// MARK: - Crossfade X-Pattern Shape
+
+/// Draws an X pattern within the crossfade region to indicate a crossfade between two containers.
+private struct CrossfadeXShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        // Draw X: top-left to bottom-right
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        // Draw X: bottom-left to top-right
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        return path
     }
 }
 

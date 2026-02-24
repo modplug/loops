@@ -269,7 +269,7 @@ struct ProjectViewModelTests {
         #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 5)
     }
 
-    @Test("Move container prevents overlap")
+    @Test("Move container with overlap creates crossfade")
     @MainActor
     func moveContainerOverlap() {
         let vm = ProjectViewModel()
@@ -280,10 +280,14 @@ struct ProjectViewModelTests {
         let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
         let firstID = vm.project.songs[0].tracks[0].containers[0].id
 
-        // Try to move first container to bar 4 — would overlap with second
+        // Move first container to bar 4 — overlaps with second, creates crossfade
         let result = vm.moveContainer(trackID: trackID, containerID: firstID, newStartBar: 4)
-        #expect(!result)
-        #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 1)
+        #expect(result)
+        #expect(vm.project.songs[0].tracks[0].containers[0].startBar == 4)
+        // Overlap creates a crossfade
+        #expect(vm.project.songs[0].tracks[0].crossfades.count == 1)
+        let xfade = vm.project.songs[0].tracks[0].crossfades[0]
+        #expect(xfade.curveType == .equalPower)
     }
 
     @Test("Resize container")
@@ -301,7 +305,7 @@ struct ProjectViewModelTests {
         #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 8)
     }
 
-    @Test("Resize container prevents overlap")
+    @Test("Resize container with overlap creates crossfade")
     @MainActor
     func resizeContainerOverlap() {
         let vm = ProjectViewModel()
@@ -312,10 +316,23 @@ struct ProjectViewModelTests {
         let _ = vm.addContainer(trackID: trackID, startBar: 5, lengthBars: 4)
         let firstID = vm.project.songs[0].tracks[0].containers[0].id
 
-        // Try to extend first container to 6 bars — would overlap
+        // Extend first container to 6 bars — overlaps with second, creates crossfade
         let result = vm.resizeContainer(trackID: trackID, containerID: firstID, newLengthBars: 6)
-        #expect(!result)
-        #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 4)
+        #expect(result)
+        #expect(vm.project.songs[0].tracks[0].containers[0].lengthBars == 6)
+        // Overlap creates a crossfade with equal-power default
+        #expect(vm.project.songs[0].tracks[0].crossfades.count == 1)
+        let xfade = vm.project.songs[0].tracks[0].crossfades[0]
+        #expect(xfade.curveType == .equalPower)
+        // Container A (first) gets exit fade, Container B (second) gets enter fade
+        let containerA = vm.project.songs[0].tracks[0].containers[0]
+        let containerB = vm.project.songs[0].tracks[0].containers[1]
+        #expect(containerA.exitFade != nil)
+        #expect(containerA.exitFade?.curve == .equalPower)
+        #expect(containerA.exitFade?.duration == 2.0) // overlap = 7 - 5 = 2 bars
+        #expect(containerB.enterFade != nil)
+        #expect(containerB.enterFade?.curve == .equalPower)
+        #expect(containerB.enterFade?.duration == 2.0)
     }
 
     @Test("Container startBar clamps to minimum 1")
