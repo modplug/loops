@@ -91,12 +91,15 @@ final class TimelineTextOverlayLayer: CALayer {
     override func draw(in ctx: CGContext) {
         guard showRulerAndSections else { return }
 
+        ctx.saveGState()
+        // Normalize to a top-left, +Y-down drawing space regardless of incoming layer context.
+        if ctx.ctm.d > 0 {
+            ctx.translateBy(x: 0, y: bounds.height)
+            ctx.scaleBy(x: 1, y: -1)
+        }
+
         let rulerHeight = TimelineCanvasView.rulerHeight
         let sectionLaneHeight = TimelineCanvasView.sectionLaneHeight
-
-        // Layer geometry is flipped (origin top-left, +Y down), matching AppKit.
-        // Draw ruler at y=0 and section lane directly below it.
-
         let vpMinX = viewportOrigin.x
         let vpMaxX = viewportOrigin.x + bounds.width
 
@@ -106,7 +109,10 @@ final class TimelineTextOverlayLayer: CALayer {
         let firstVisibleBar = max(1, Int(floor(vpMinX / pixelsPerBar)) + 1)
         let lastVisibleBar = min(totalBars + 1, Int(ceil(vpMaxX / pixelsPerBar)) + 2)
 
-        guard firstVisibleBar <= lastVisibleBar else { return }
+        guard firstVisibleBar <= lastVisibleBar else {
+            ctx.restoreGState()
+            return
+        }
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9),
@@ -208,6 +214,8 @@ final class TimelineTextOverlayLayer: CALayer {
                 ctx.restoreGState()
             }
         }
+
+        ctx.restoreGState()
     }
 
     // MARK: - Helpers

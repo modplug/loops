@@ -146,7 +146,9 @@ public final class TimelineViewModel {
     /// Extra points rendered beyond the viewport on each side.
     public static let viewportBuffer: CGFloat = 500
 
-    public init() {}
+    public init() {
+        syncQuantizedFrameWidth()
+    }
 
     /// Updates the visible X range unconditionally (no dead zone).
     /// Use during zoom so the range is correct in the same @Observable transaction as pixelsPerBar.
@@ -425,12 +427,14 @@ public final class TimelineViewModel {
         let maxEndBar = tracks.flatMap(\.containers).map(\.endBar).max() ?? 0
         contentEndBar = Int(ceil(maxEndBar))
         manualMinBars = 0
+        syncQuantizedFrameWidth()
     }
 
     /// Sets the visible viewport width.
     public func setViewportWidth(_ width: CGFloat) {
         guard abs(viewportWidth - width) > 1 else { return }
         viewportWidth = width
+        syncQuantizedFrameWidth()
     }
 
     /// Returns the number of unique automation lanes across all containers and track-level automation.

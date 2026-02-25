@@ -55,7 +55,8 @@ public struct MainContentView: View {
     @State private var headerDragStartWidth: CGFloat = 0
     @State private var pendingTrackAutomationLane: PendingEffectSelection?
     @State private var pianoRollEditorState = PianoRollEditorState()
-    @State private var scrollSynchronizer = HorizontalScrollSynchronizer()
+    @State private var horizontalScrollCoordinator = TimelineHorizontalScrollCoordinator()
+    @State private var verticalScrollCoordinator = TimelineVerticalScrollCoordinator()
     @State private var ghostDropState = GhostTrackDropState()
     @State private var showTempoImportAlert = false
     @State private var pendingTempoImport: PendingTempoImport?
@@ -610,166 +611,222 @@ public struct MainContentView: View {
 
     @ViewBuilder
     private func timelineContent(song: Song) -> some View {
-        // Track area — grid fills available space, scrollbar at bottom.
-        // Ruler and section lane are docked at the top (outside the vertical scroll).
-        // All tracks (including master) share a single grid and horizontal ScrollView.
+        // New baseline layout:
+        // 1) One horizontal scroll source for the entire timeline canvas.
+        // 2) Master dock fixed at bottom.
+        // 3) Header lanes and grid lanes vertically synchronized.
         let regularTracks = song.tracks.filter { $0.kind != .master }
-        // Ensure canvas and header column use identical track order:
-        // regular tracks first, master always last.
         let masterTrack = song.tracks.first { $0.kind == .master }
-        let allTracksOrdered = regularTracks + (masterTrack.map { [$0] } ?? [])
-
-        // Fixed ruler + section header — not vertically scrollable.
-        // When Metal rendering is active, the ruler is drawn inside the Metal view
-        // (via TimelineTextOverlayLayer) to eliminate scroll synchronization drift.
-        let metalActive = timelineViewModel.useNSViewTimeline && timelineViewModel.useMetalTimeline
-        if !metalActive {
-            rulerHeader(song: song)
-        }
+        let masterHeight: CGFloat = {
+            guard let masterTrack else { return TimelineViewModel.defaultTrackHeight }
+            let base = timelineViewModel.baseTrackHeight(for: masterTrack.id)
+            return timelineViewModel.trackHeight(for: masterTrack, baseHeight: base)
+        }()
+        let metalActive = true
 
         GeometryReader { geo in
-            ScrollView(.vertical, showsIndicators: true) {
+            let timelineViewportWidth = max(200, geo.size.width - timelineViewModel.trackHeaderWidth - 4)
+            let topViewportHeight = max(120, geo.size.height - (masterTrack == nil ? 0 : (masterHeight + 1)))
+            let regularHeadersHeight = trackListContentHeight(regularTracks)
+            let timelineContentWidth = max(timelineViewportWidth, timelineViewModel.totalWidth)
+
+            VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: 0) {
-                    // Track headers — fixed width, scroll vertically with tracks (lazy)
-                    // When Metal rendering is active, the ruler is drawn inside the Metal
-                    // view (pinned to viewport top). A matching pinned Section header keeps
-                    // the sidebar's "Sections" label aligned with the Metal ruler.
-                    LazyVStack(spacing: 0, pinnedViews: metalActive ? [.sectionHeaders] : []) {
-                      Section {
-                        ForEach(regularTracks) { track in
+                    VStack(spacing: 0) {
+                        ScrollView(.vertical, showsIndicators: false) {
                             VStack(spacing: 0) {
-                                trackHeaderWithActions(track: track)
-                                // Extra space to match inline piano roll height on timeline side
-                                let prExtra = pianoRollEditorState.extraHeight(forTrackID: track.id)
-                                if prExtra > 0 {
-                                    inlinePianoRollKeyboardLabels
-                                        .frame(height: prExtra)
+                                ScrollViewIntrospector { sv in
+                                    verticalScrollCoordinator.attachHeaderScrollView(sv)
                                 }
-                            }
-                            .opacity(draggingTrackID == track.id ? 0.4 : 1.0)
-                            .onDrag {
-                                draggingTrackID = track.id
-                                return NSItemProvider(object: track.id.rawValue.uuidString as NSString)
-                            }
-                            .onDrop(of: [.text], delegate: TrackDropDelegate(
-                                targetTrack: track,
-                                draggingTrackID: $draggingTrackID,
-                                song: song,
-                                onReorder: { source, destination in
-                                    projectViewModel.moveTrack(from: source, to: destination)
-                                }
-                            ))
-                        }
-                        // Master track header — always at bottom, not draggable
-                        if let master = song.tracks.first(where: { $0.kind == .master }) {
-                            trackHeaderWithActions(track: master)
-                        }
-                        // Ghost track headers (shown during file drop over empty space)
-                        if ghostDropState.isActive {
-                            ForEach(ghostDropState.ghostTracks) { ghost in
-                                ghostTrackHeader(ghost: ghost)
-                            }
-                        }
-                        // Empty space at bottom for context menu target and file drop zone
-                        Color.clear
-                            .frame(height: max(80, geo.size.height - regularTrackListContentHeight(song: song)))
-                            .contentShape(Rectangle())
-                            .onDrop(of: [.fileURL], delegate: EmptyAreaFileDropDelegate(
-                                ghostDropState: ghostDropState,
-                                timelineViewModel: timelineViewModel,
-                                projectViewModel: projectViewModel,
-                                onPerformDrop: { urls, bar in
-                                    handleEmptyAreaDrop(urls: urls, startBar: bar, song: song)
-                                }
-                            ))
-                            .contextMenu {
-                                ForEach(TrackKind.creatableKinds, id: \.self) { kind in
-                                    Button("Insert \(kind.displayName) Track") {
-                                        let insertIndex = song.tracks.filter({ $0.kind != .master }).count
-                                        projectViewModel.insertTrack(kind: kind, atIndex: insertIndex)
+                                .frame(height: 0)
+
+                                LazyVStack(spacing: 0, pinnedViews: metalActive ? [.sectionHeaders] : []) {
+                                    Section {
+                                        ForEach(regularTracks) { track in
+                                            VStack(spacing: 0) {
+                                                trackHeaderWithActions(track: track)
+                                                let prExtra = pianoRollEditorState.extraHeight(forTrackID: track.id)
+                                                if prExtra > 0 {
+                                                    inlinePianoRollKeyboardLabels
+                                                        .frame(height: prExtra)
+                                                }
+                                            }
+                                            .opacity(draggingTrackID == track.id ? 0.4 : 1.0)
+                                            .onDrag {
+                                                draggingTrackID = track.id
+                                                return NSItemProvider(object: track.id.rawValue.uuidString as NSString)
+                                            }
+                                            .onDrop(of: [.text], delegate: TrackDropDelegate(
+                                                targetTrack: track,
+                                                draggingTrackID: $draggingTrackID,
+                                                song: song,
+                                                onReorder: { source, destination in
+                                                    projectViewModel.moveTrack(from: source, to: destination)
+                                                }
+                                            ))
+                                        }
+                                        if ghostDropState.isActive {
+                                            ForEach(ghostDropState.ghostTracks) { ghost in
+                                                ghostTrackHeader(ghost: ghost)
+                                            }
+                                        }
+                                        Color.clear
+                                            .frame(height: max(80, topViewportHeight - regularHeadersHeight))
+                                            .contentShape(Rectangle())
+                                            .onDrop(of: [.fileURL], delegate: EmptyAreaFileDropDelegate(
+                                                ghostDropState: ghostDropState,
+                                                timelineViewModel: timelineViewModel,
+                                                projectViewModel: projectViewModel,
+                                                onPerformDrop: { urls, bar in
+                                                    handleEmptyAreaDrop(urls: urls, startBar: bar, song: song)
+                                                }
+                                            ))
+                                            .contextMenu {
+                                                ForEach(TrackKind.creatableKinds, id: \.self) { kind in
+                                                    Button("Insert \(kind.displayName) Track") {
+                                                        let insertIndex = song.tracks.filter({ $0.kind != .master }).count
+                                                        projectViewModel.insertTrack(kind: kind, atIndex: insertIndex)
+                                                    }
+                                                }
+                                            }
+                                    } header: {
+                                        if metalActive {
+                                            VStack(spacing: 0) {
+                                                Color.clear.frame(height: TimelineCanvasView.rulerHeight)
+                                                Text("Sections")
+                                                    .font(.system(size: 9))
+                                                    .foregroundStyle(.secondary)
+                                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                            }
+                                            .frame(height: TimelineCanvasView.trackAreaTop)
+                                            .background(Color(nsColor: .controlBackgroundColor))
+                                        }
                                     }
                                 }
                             }
-                      } header: {
-                        // Pinned sidebar header when Metal is active — matches the
-                        // pinned Metal ruler so track headers stay vertically aligned.
-                        if metalActive {
-                            VStack(spacing: 0) {
-                                Color.clear.frame(height: TimelineCanvasView.rulerHeight)
-                                Text("Sections")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            }
-                            .frame(height: TimelineCanvasView.trackAreaTop)
-                            .background(Color(nsColor: .controlBackgroundColor))
                         }
-                      }
+                        .frame(height: topViewportHeight)
+
+                        if let masterTrack {
+                            Divider()
+                            trackHeaderWithActions(track: masterTrack)
+                                .frame(height: masterHeight)
+                        }
                     }
                     .frame(width: timelineViewModel.trackHeaderWidth)
-                    .frame(minHeight: geo.size.height)
                     .background(Color(nsColor: .controlBackgroundColor))
 
                     headerColumnResizeHandle
 
-                    // Timeline — all tracks in one canvas, one horizontal ScrollView.
-                    // Scrollbar is at the very bottom.
                     ScrollView(.horizontal, showsIndicators: true) {
-                        TimelineView(
-                            viewModel: timelineViewModel,
-                            projectViewModel: projectViewModel,
-                            selectionState: selectionState,
-                            song: song,
-                            tracks: allTracksOrdered,
-                            minHeight: geo.size.height,
-                            pianoRollState: pianoRollEditorState,
-                            ghostDropState: ghostDropState,
-                            showRulerAndSections: metalActive,
-                            onDropFilesToNewTracks: { urls, bar in
-                                handleEmptyAreaDrop(urls: urls, startBar: bar, song: song)
-                            },
-                            onContainerDoubleClick: {
-                                openContainerEditor()
-                            },
-                            onPlayheadPosition: { bar in
-                                pianoRollEditorState.isFocused = false
-                                transportViewModel?.seek(toBar: bar)
-                            },
-                            onNotePreview: { pitch, isNoteOn in
-                                guard let trackID = pianoRollEditorState.trackID else { return }
-                                let message: MIDIActionMessage = isNoteOn
-                                    ? .noteOn(channel: 0, note: pitch, velocity: 100)
-                                    : .noteOff(channel: 0, note: pitch, velocity: 0)
-                                transportViewModel?.sendVirtualNote(trackID: trackID, message: message)
-                            },
-                            onOpenPianoRollSheet: {
-                                openPianoRollSheet()
-                            },
-                            onSectionSelect: { sectionID in
-                                selectionState.selectedSectionID = sectionID
-                            },
-                            onRangeSelect: { range in
-                                timelineViewModel.selectedRange = range
-                            },
-                            onRangeDeselect: {
-                                timelineViewModel.clearSelectedRange()
+                        VStack(alignment: .leading, spacing: 0) {
+                            ScrollViewIntrospector { sv in
+                                horizontalScrollCoordinator.attachScrollView(sv)
                             }
-                        )
+                            .frame(height: 0)
+
+                            ScrollView(.vertical, showsIndicators: true) {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ScrollViewIntrospector { sv in
+                                        verticalScrollCoordinator.attachGridScrollView(sv)
+                                    }
+                                    .frame(height: 0)
+
+                                    PlaybackGridView(
+                                        viewModel: timelineViewModel,
+                                        projectViewModel: projectViewModel,
+                                        selectionState: selectionState,
+                                        song: song,
+                                        tracks: regularTracks,
+                                        minHeight: topViewportHeight,
+                                        pianoRollState: pianoRollEditorState,
+                                        ghostDropState: ghostDropState,
+                                        showRulerAndSections: metalActive,
+                                        bottomPadding: 0,
+                                        onDropFilesToNewTracks: { urls, bar in
+                                            handleEmptyAreaDrop(urls: urls, startBar: bar, song: song)
+                                        },
+                                        onContainerDoubleClick: {
+                                            openContainerEditor()
+                                        },
+                                        onPlayheadPosition: { bar in
+                                            pianoRollEditorState.isFocused = false
+                                            transportViewModel?.seek(toBar: bar)
+                                        },
+                                        onNotePreview: { pitch, isNoteOn in
+                                            guard let trackID = pianoRollEditorState.trackID else { return }
+                                            let message: MIDIActionMessage = isNoteOn
+                                                ? .noteOn(channel: 0, note: pitch, velocity: 100)
+                                                : .noteOff(channel: 0, note: pitch, velocity: 0)
+                                            transportViewModel?.sendVirtualNote(trackID: trackID, message: message)
+                                        },
+                                        onOpenPianoRollSheet: {
+                                            openPianoRollSheet()
+                                        },
+                                        onSectionSelect: { sectionID in
+                                            selectionState.selectedSectionID = sectionID
+                                        },
+                                    onRangeSelect: { range in
+                                        timelineViewModel.selectedRange = range
+                                    },
+                                    onRangeDeselect: {
+                                        timelineViewModel.clearSelectedRange()
+                                    },
+                                    debugLabel: "top"
+                                )
+                            }
+                            }
+                            .frame(width: timelineContentWidth, height: topViewportHeight, alignment: .topLeading)
+
+                            if let masterTrack {
+                                Divider()
+                                PlaybackGridView(
+                                    viewModel: timelineViewModel,
+                                    projectViewModel: projectViewModel,
+                                    selectionState: selectionState,
+                                    song: song,
+                                    tracks: [masterTrack],
+                                    minHeight: masterHeight,
+                                    pianoRollState: nil,
+                                    ghostDropState: nil,
+                                    showRulerAndSections: false,
+                                    bottomPadding: 0,
+                                    onDropFilesToNewTracks: nil,
+                                    onContainerDoubleClick: {
+                                        openContainerEditor()
+                                    },
+                                    onPlayheadPosition: { bar in
+                                        transportViewModel?.seek(toBar: bar)
+                                    },
+                                    onNotePreview: nil,
+                                    onOpenPianoRollSheet: nil,
+                                    onSectionSelect: nil,
+                                    onRangeSelect: { range in
+                                        timelineViewModel.selectedRange = range
+                                    },
+                                    onRangeDeselect: {
+                                        timelineViewModel.clearSelectedRange()
+                                    },
+                                    debugLabel: "master"
+                                )
+                                .frame(height: masterHeight)
+                            }
+                        }
+                        .frame(width: timelineContentWidth, alignment: .topLeading)
                     }
                 }
-                .frame(minHeight: geo.size.height)
-                .onAppear {
-                    timelineViewModel.setViewportWidth(geo.size.width - timelineViewModel.trackHeaderWidth - 4)
-                }
-                .onChange(of: geo.size.width) { _, newWidth in
-                    timelineViewModel.setViewportWidth(newWidth - timelineViewModel.trackHeaderWidth - 4)
-                }
+            }
+            .onAppear {
+                timelineViewModel.setViewportWidth(timelineViewportWidth)
+            }
+            .onChange(of: geo.size.width) { _, newWidth in
+                timelineViewModel.setViewportWidth(max(200, newWidth - timelineViewModel.trackHeaderWidth - 4))
             }
         }
         .scrollWheelHandler(
             onCmdScroll: { delta, mouseXInWindow in
                 let zoomingIn = delta > 0
-                guard let scrollView = findTimelineScrollView() else {
+                guard let scrollView = horizontalScrollCoordinator.scrollView else {
                     if zoomingIn { timelineViewModel.zoomIn() } else { timelineViewModel.zoomOut() }
                     return
                 }
@@ -793,19 +850,10 @@ public struct MainContentView: View {
                     mouseXRelativeToTimeline: mouseXRelativeToTimeline,
                     viewportWidth: viewportWidth
                 )
-                scrollSynchronizer.isZooming = true
-                scrollSynchronizer.setAllScrollOffsets(newScrollOffset)
-                // Clear isZooming asynchronously: the document view resize
-                // happens in the next SwiftUI layout pass, which can trigger
-                // boundsDidChange → syncFrom() with a clamped offset.
-                // pendingZoomOffset in syncFrom() re-applies the correct offset.
-                DispatchQueue.main.async {
-                    scrollSynchronizer.isZooming = false
-                    scrollSynchronizer.pendingZoomOffset = nil
-                }
+                horizontalScrollCoordinator.setOffset(newScrollOffset)
             },
             onMagnify: { magnification, mouseXInWindow in
-                guard let scrollView = findTimelineScrollView() else { return }
+                guard let scrollView = horizontalScrollCoordinator.scrollView else { return }
                 let scrollViewOriginX = scrollView.convert(NSPoint.zero, to: nil).x
                 let mouseXRelativeToTimeline = mouseXInWindow - scrollViewOriginX
                 guard mouseXRelativeToTimeline > 0 else { return }
@@ -821,12 +869,7 @@ public struct MainContentView: View {
                     mouseXRelativeToTimeline: mouseXRelativeToTimeline,
                     viewportWidth: viewportWidth
                 )
-                scrollSynchronizer.isZooming = true
-                scrollSynchronizer.setAllScrollOffsets(newScrollOffset)
-                DispatchQueue.main.async {
-                    scrollSynchronizer.isZooming = false
-                    scrollSynchronizer.pendingZoomOffset = nil
-                }
+                horizontalScrollCoordinator.setOffset(newScrollOffset)
             }
         )
 
@@ -840,24 +883,40 @@ public struct MainContentView: View {
             Spacer()
         }
         .onAppear {
-            scrollSynchronizer.onScroll = { [timelineViewModel] offsetX, viewportWidth in
+            horizontalScrollCoordinator.onScroll = { [timelineViewModel] offsetX, viewportWidth in
                 timelineViewModel.updateVisibleXRange(scrollOffsetX: offsetX, viewportWidth: viewportWidth)
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                scrollSynchronizer.setup(expectedWidth: timelineViewModel.quantizedFrameWidth)
-                scrollSynchronizer.setAllScrollOffsets(0)
-                scrollSynchronizer.reportCurrentPosition()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                resetTimelineScrollToStart()
+                verticalScrollCoordinator.resetToTop()
+                horizontalScrollCoordinator.reportCurrentPosition()
             }
         }
         .onDisappear {
-            scrollSynchronizer.teardown()
+            horizontalScrollCoordinator.detach()
+            verticalScrollCoordinator.detach()
         }
-        .onChange(of: timelineViewModel.quantizedFrameWidth) {
-            guard !scrollSynchronizer.hasScrollViews else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                scrollSynchronizer.setup(expectedWidth: timelineViewModel.quantizedFrameWidth)
+        .onChange(of: timelineViewModel.pixelsPerBar) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                horizontalScrollCoordinator.reportCurrentPosition()
             }
         }
+        .onChange(of: song.id) { _, _ in
+            DispatchQueue.main.async {
+                resetTimelineScrollToStart()
+                verticalScrollCoordinator.resetToTop()
+                horizontalScrollCoordinator.reportCurrentPosition()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                resetTimelineScrollToStart()
+                verticalScrollCoordinator.resetToTop()
+                horizontalScrollCoordinator.reportCurrentPosition()
+            }
+        }
+    }
+
+    private func resetTimelineScrollToStart() {
+        horizontalScrollCoordinator.setOffset(0)
     }
 
     // MARK: - Ruler Header (Docked at Top)
@@ -1670,8 +1729,8 @@ public struct MainContentView: View {
         return "\(trackName) FX\(path.effectIndex)"
     }
 
-    private func regularTrackListContentHeight(song: Song) -> CGFloat {
-        song.tracks.filter { $0.kind != .master }.reduce(CGFloat(0)) { total, track in
+    private func trackListContentHeight(_ tracks: [Track]) -> CGFloat {
+        tracks.reduce(CGFloat(0)) { total, track in
             let trackH = timelineViewModel.trackHeight(for: track, baseHeight: timelineViewModel.baseTrackHeight(for: track.id))
             return total + trackH + pianoRollEditorState.extraHeight(forTrackID: track.id)
         }
@@ -2165,168 +2224,266 @@ extension View {
     }
 }
 
-/// Finds the NSScrollView backing the timeline's horizontal scroll.
-/// Walks the NSApp key window's view hierarchy looking for the timeline scroll view.
-private func findTimelineScrollView() -> NSScrollView? {
-    guard let window = NSApp.keyWindow else { return nil }
-    let candidates = collectTimelineScrollViews(in: window.contentView)
-    guard !candidates.isEmpty else { return nil }
-    return candidates.max { lhs, rhs in
-        let lhsDoc = lhs.documentView?.frame.width ?? 0
-        let rhsDoc = rhs.documentView?.frame.width ?? 0
-        if lhsDoc == rhsDoc {
-            return lhs.contentView.bounds.width < rhs.contentView.bounds.width
+private struct ScrollViewIntrospector: NSViewRepresentable {
+    let onResolve: (NSScrollView) -> Void
+
+    func makeNSView(context: Context) -> ProbeView {
+        ProbeView(onResolve: onResolve)
+    }
+
+    func updateNSView(_ nsView: ProbeView, context: Context) {
+        nsView.onResolve = onResolve
+        nsView.resolveScrollViewIfNeeded()
+    }
+
+    final class ProbeView: NSView {
+        var onResolve: (NSScrollView) -> Void
+        weak var resolvedScrollView: NSScrollView?
+
+        init(onResolve: @escaping (NSScrollView) -> Void) {
+            self.onResolve = onResolve
+            super.init(frame: .zero)
         }
-        return lhsDoc < rhsDoc
-    }
-}
 
-private func collectTimelineScrollViews(in view: NSView?) -> [NSScrollView] {
-    guard let view else { return [] }
-    var result: [NSScrollView] = []
-    if let scrollView = view as? NSScrollView,
-       let documentWidth = scrollView.documentView?.frame.width,
-       documentWidth > 1000,
-       (scrollView.hasHorizontalScroller || scrollView.horizontalScroller != nil) {
-        result.append(scrollView)
-    }
-    for subview in view.subviews {
-        result.append(contentsOf: collectTimelineScrollViews(in: subview))
-    }
-    return result
-}
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
 
-// MARK: - Horizontal Scroll Synchronization
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            resolveScrollViewIfNeeded()
+        }
 
-/// Synchronizes horizontal scroll views whose document width matches
-/// the timeline's total width. With ruler and section lane now drawn
-/// inside the canvas, this only syncs the track timeline and master track.
-final class HorizontalScrollSynchronizer {
-    private var observers: [NSObjectProtocol] = []
-    private var scrollViews: [NSScrollView] = []
-    private var isSyncing = false
-    /// Set during zoom to suppress re-entrant boundsDidChange callbacks.
-    var isZooming = false
-    /// Offset to re-apply when NSScrollView fires boundsDidChange during zoom layout.
-    var pendingZoomOffset: CGFloat?
-    /// Whether scroll views have been discovered and are being tracked.
-    var hasScrollViews: Bool { !scrollViews.isEmpty }
-    var onScroll: ((_ offsetX: CGFloat, _ viewportWidth: CGFloat) -> Void)?
-    /// Current scroll offset snapshot — read by ruler Canvas for viewport culling.
-    /// Not @Observable: reading this does NOT cause SwiftUI re-evaluation.
-    private(set) var currentScrollOffset: CGFloat = 0
-    /// Current viewport width snapshot.
-    private(set) var currentViewportWidth: CGFloat = 1400
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            resolveScrollViewIfNeeded()
+        }
 
-    func setup(expectedWidth: CGFloat) {
-        teardown()
-        guard let window = NSApp.keyWindow else { return }
-        scrollViews = Self.findTimelineScrollViews(in: window.contentView, expectedWidth: expectedWidth)
-        guard !scrollViews.isEmpty else { return }
+        override func layout() {
+            super.layout()
+            resolveScrollViewIfNeeded()
+        }
 
-        for sv in scrollViews {
-            sv.contentView.postsBoundsChangedNotifications = true
-            let observer = NotificationCenter.default.addObserver(
-                forName: NSView.boundsDidChangeNotification,
-                object: sv.contentView,
-                queue: .main
-            ) { [weak self] notification in
-                guard let self, !self.isSyncing, !self.isZooming,
-                      let clipView = notification.object as? NSClipView,
-                      let source = clipView.enclosingScrollView else {
-                    return
+        func resolveScrollViewIfNeeded() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard let scrollView = self.enclosingScrollView else { return }
+                if self.resolvedScrollView !== scrollView {
+                    self.resolvedScrollView = scrollView
+                    self.onResolve(scrollView)
                 }
-                self.syncFrom(source)
             }
-            observers.append(observer)
         }
     }
+}
 
-    func teardown() {
-        for observer in observers {
+final class TimelineHorizontalScrollCoordinator {
+    weak var scrollView: NSScrollView?
+    var onScroll: ((_ offsetX: CGFloat, _ viewportWidth: CGFloat) -> Void)?
+
+    private var observer: NSObjectProtocol?
+    private var isApplyingProgrammaticOffset = false
+    private static let debugLogsEnabled = true
+
+    func attachScrollView(_ scrollView: NSScrollView) {
+        if self.scrollView === scrollView { return }
+        detach()
+
+        self.scrollView = scrollView
+        scrollView.hasVerticalScroller = false
+        scrollView.verticalScroller = nil
+        scrollView.verticalScrollElasticity = .none
+        if scrollView.contentView.bounds.origin.y != 0 {
+            scrollView.contentView.setBoundsOrigin(NSPoint(x: scrollView.contentView.bounds.origin.x, y: 0))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        if Self.debugLogsEnabled {
+            let b = scrollView.contentView.bounds
+            print("[GRIDDBG][H] attach bounds=\(NSStringFromRect(b)) doc=\(NSStringFromRect(scrollView.documentView?.frame ?? .zero))")
+        }
+        observer = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, !self.isApplyingProgrammaticOffset else { return }
+            self.reportCurrentPosition()
+        }
+        reportCurrentPosition()
+    }
+
+    func setOffset(_ offsetX: CGFloat) {
+        guard let scrollView else { return }
+        let x = max(0, offsetX)
+        isApplyingProgrammaticOffset = true
+        scrollView.contentView.setBoundsOrigin(NSPoint(x: x, y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        isApplyingProgrammaticOffset = false
+        if Self.debugLogsEnabled {
+            print("[GRIDDBG][H] setOffset x=\(String(format: "%.1f", x)) docW=\(String(format: "%.1f", scrollView.documentView?.frame.width ?? 0)) viewW=\(String(format: "%.1f", scrollView.contentView.bounds.width))")
+        }
+        reportCurrentPosition()
+    }
+
+    func reportCurrentPosition() {
+        guard let scrollView else { return }
+        let x = scrollView.contentView.bounds.origin.x
+        let width = scrollView.contentView.bounds.width
+        onScroll?(x, width)
+    }
+
+    func detach() {
+        if let observer {
             NotificationCenter.default.removeObserver(observer)
         }
-        observers.removeAll()
-        scrollViews.removeAll()
+        observer = nil
+        scrollView = nil
+    }
+}
+
+final class TimelineVerticalScrollCoordinator {
+    weak var headerScrollView: NSScrollView?
+    weak var gridScrollView: NSScrollView?
+
+    private var headerObserver: NSObjectProtocol?
+    private var gridObserver: NSObjectProtocol?
+    private var isSyncing = false
+    private static let debugLogsEnabled = true
+
+    func attachHeaderScrollView(_ scrollView: NSScrollView) {
+        if headerScrollView === scrollView { return }
+        detachHeaderObserver()
+
+        headerScrollView = scrollView
+        scrollView.hasHorizontalScroller = false
+        scrollView.horizontalScroller = nil
+        scrollView.horizontalScrollElasticity = .none
+        setXOffset(0, for: scrollView)
+        if scrollView.contentView.bounds.origin.y != 0 {
+            setYOffset(0, for: scrollView)
+        }
+        if Self.debugLogsEnabled {
+            print("[GRIDDBG][V] attach header bounds=\(NSStringFromRect(scrollView.contentView.bounds)) doc=\(NSStringFromRect(scrollView.documentView?.frame ?? .zero))")
+        }
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        headerObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.sync(fromHeader: true)
+        }
+        alignInitialPosition()
     }
 
-    private func syncFrom(_ source: NSScrollView) {
-        // During zoom, the document view resize triggers boundsDidChange with a
-        // clamped offset. Re-apply the pending zoom offset instead.
-        if let pending = pendingZoomOffset {
-            isSyncing = true
-            for sv in scrollViews {
-                if abs(sv.contentView.bounds.origin.x - pending) > 0.5 {
-                    sv.contentView.setBoundsOrigin(NSPoint(x: pending, y: sv.contentView.bounds.origin.y))
-                    sv.reflectScrolledClipView(sv.contentView)
-                }
-            }
-            currentScrollOffset = pending
-            if let sv = scrollViews.first {
-                currentViewportWidth = sv.contentView.bounds.width
-                onScroll?(pending, currentViewportWidth)
-            }
-            isSyncing = false
-            return
+    func attachGridScrollView(_ scrollView: NSScrollView) {
+        if gridScrollView === scrollView { return }
+        detachGridObserver()
+
+        gridScrollView = scrollView
+        scrollView.hasHorizontalScroller = false
+        scrollView.horizontalScroller = nil
+        scrollView.horizontalScrollElasticity = .none
+        setXOffset(0, for: scrollView)
+        if scrollView.contentView.bounds.origin.y != 0 {
+            setYOffset(0, for: scrollView)
         }
+        if Self.debugLogsEnabled {
+            print("[GRIDDBG][V] attach grid bounds=\(NSStringFromRect(scrollView.contentView.bounds)) doc=\(NSStringFromRect(scrollView.documentView?.frame ?? .zero))")
+        }
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        gridObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.sync(fromHeader: false)
+        }
+        alignInitialPosition()
+    }
+
+    func resetToTop() {
+        setVerticalOffset(0)
+    }
+
+    func detach() {
+        detachHeaderObserver()
+        detachGridObserver()
+        headerScrollView = nil
+        gridScrollView = nil
+    }
+
+    private func sync(fromHeader: Bool) {
+        guard !isSyncing else { return }
+        guard let headerScrollView, let gridScrollView else { return }
 
         isSyncing = true
-        let offsetX = source.contentView.bounds.origin.x
-        for sv in scrollViews where sv !== source {
-            if abs(sv.contentView.bounds.origin.x - offsetX) > 0.5 {
-                sv.contentView.setBoundsOrigin(NSPoint(x: offsetX, y: sv.contentView.bounds.origin.y))
-                sv.reflectScrolledClipView(sv.contentView)
-            }
+        if fromHeader {
+            let y = headerScrollView.contentView.bounds.origin.y
+            setXOffset(0, for: headerScrollView)
+            setYOffset(y, for: gridScrollView)
+        } else {
+            let y = gridScrollView.contentView.bounds.origin.y
+            setXOffset(0, for: gridScrollView)
+            setYOffset(y, for: headerScrollView)
         }
-        let viewportWidth = source.contentView.bounds.width
-        currentScrollOffset = offsetX
-        currentViewportWidth = viewportWidth
-        onScroll?(offsetX, viewportWidth)
         isSyncing = false
     }
 
-    /// Sets all tracked scroll views to the given horizontal offset.
-    /// Used during zoom to keep ruler, section, timeline, and master in sync.
-    func setAllScrollOffsets(_ offsetX: CGFloat) {
-        pendingZoomOffset = offsetX
-        isSyncing = true
-        for sv in scrollViews {
-            if abs(sv.contentView.bounds.origin.x - offsetX) > 0.5 {
-                sv.contentView.setBoundsOrigin(NSPoint(x: offsetX, y: sv.contentView.bounds.origin.y))
-                sv.reflectScrolledClipView(sv.contentView)
-            }
-        }
-        currentScrollOffset = offsetX
-        if let sv = scrollViews.first {
-            let viewportWidth = sv.contentView.bounds.width
-            currentViewportWidth = viewportWidth
-            onScroll?(offsetX, viewportWidth)
-        }
-        isSyncing = false
+    private func alignInitialPosition() {
+        guard let headerScrollView, let gridScrollView else { return }
+        let y = gridScrollView.contentView.bounds.origin.y
+        setXOffset(0, for: headerScrollView)
+        setXOffset(0, for: gridScrollView)
+        setYOffset(y, for: headerScrollView)
     }
 
-    /// Reports the current scroll position. Call after setup to populate initial visible range.
-    func reportCurrentPosition() {
-        guard let sv = scrollViews.first else { return }
-        let offsetX = sv.contentView.bounds.origin.x
-        let width = sv.contentView.bounds.width
-        currentScrollOffset = offsetX
-        currentViewportWidth = width
-        onScroll?(offsetX, width)
+    private func setVerticalOffset(_ y: CGFloat) {
+        if let headerScrollView {
+            setXOffset(0, for: headerScrollView)
+            setYOffset(y, for: headerScrollView)
+        }
+        if let gridScrollView {
+            setXOffset(0, for: gridScrollView)
+            setYOffset(y, for: gridScrollView)
+        }
     }
 
-    /// Finds all horizontal NSScrollViews whose document width is close to expectedWidth.
-    private static func findTimelineScrollViews(in view: NSView?, expectedWidth: CGFloat) -> [NSScrollView] {
-        guard let view else { return [] }
-        var result: [NSScrollView] = []
-        if let sv = view as? NSScrollView,
-           let docWidth = sv.documentView?.frame.width,
-           abs(docWidth - expectedWidth) < 20 {
-            result.append(sv)
+    private func setYOffset(_ y: CGFloat, for scrollView: NSScrollView) {
+        let x = scrollView.contentView.bounds.origin.x
+        if x != 0 {
+            scrollView.contentView.setBoundsOrigin(NSPoint(x: 0, y: max(0, y)))
+        } else {
+            scrollView.contentView.setBoundsOrigin(NSPoint(x: x, y: max(0, y)))
         }
-        for subview in view.subviews {
-            result.append(contentsOf: findTimelineScrollViews(in: subview, expectedWidth: expectedWidth))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func setXOffset(_ x: CGFloat, for scrollView: NSScrollView) {
+        let currentX = scrollView.contentView.bounds.origin.x
+        if currentX == x { return }
+        if Self.debugLogsEnabled {
+            let from = String(format: "%.1f", currentX)
+            let to = String(format: "%.1f", x)
+            print("[GRIDDBG][V] lockX \(from) -> \(to)")
         }
-        return result
+        let y = scrollView.contentView.bounds.origin.y
+        scrollView.contentView.setBoundsOrigin(NSPoint(x: x, y: y))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func detachHeaderObserver() {
+        if let headerObserver {
+            NotificationCenter.default.removeObserver(headerObserver)
+        }
+        headerObserver = nil
+    }
+
+    private func detachGridObserver() {
+        if let gridObserver {
+            NotificationCenter.default.removeObserver(gridObserver)
+        }
+        gridObserver = nil
     }
 }
