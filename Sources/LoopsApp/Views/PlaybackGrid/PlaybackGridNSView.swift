@@ -440,7 +440,7 @@ public final class PlaybackGridNSView: NSView {
         passDesc.colorAttachments[0].texture = drawable.texture
         passDesc.colorAttachments[0].loadAction = .clear
         passDesc.colorAttachments[0].storeAction = .store
-        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1)
+        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0.13, green: 0.14, blue: 0.16, alpha: 1)
 
         guard let commandBuffer = renderer.commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDesc) else {

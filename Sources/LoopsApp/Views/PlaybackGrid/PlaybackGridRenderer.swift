@@ -125,7 +125,7 @@ public final class PlaybackGridRenderer {
         let gridBottom = max(canvasHeight, visibleMaxY)
         let startBar = max(0, Int(floor(visibleMinX / ppb)) - 2)
         let endBar = Int(ceil(visibleMaxX / ppb)) + 2
-        let shadingColor = SIMD4<Float>(1, 1, 1, 0.12)
+        let shadingColor = SIMD4<Float>(1, 1, 1, 0.05)
 
         for bar in startBar..<endBar where bar % 2 == 0 {
             let x = Float(bar) * ppb
@@ -136,7 +136,7 @@ public final class PlaybackGridRenderer {
             ))
         }
 
-        let barLineColor = SIMD4<Float>(1, 1, 1, 0.36)
+        let barLineColor = SIMD4<Float>(1, 1, 1, 0.24)
         for bar in startBar...endBar {
             let x = Float(bar) * ppb
             lines.append(PlaybackGridLineInstance(
@@ -149,7 +149,7 @@ public final class PlaybackGridRenderer {
 
         let pixelsPerBeat = ppb / Float(snapshot.timeSignature.beatsPerBar)
         if pixelsPerBeat >= 20 {
-            let beatLineColor = SIMD4<Float>(1, 1, 1, 0.20)
+            let beatLineColor = SIMD4<Float>(1, 1, 1, 0.11)
             for bar in startBar...endBar {
                 let barX = Float(bar) * ppb
                 for beat in 1..<snapshot.timeSignature.beatsPerBar {
@@ -164,8 +164,8 @@ public final class PlaybackGridRenderer {
             }
         }
 
-        let bgColor = SIMD4<Float>(0.5, 0.5, 0.5, 0.28)
-        let sepColor = SIMD4<Float>(1, 1, 1, 0.30)
+        let bgColor = SIMD4<Float>(0.56, 0.56, 0.58, 0.18)
+        let sepColor = SIMD4<Float>(1, 1, 1, 0.22)
         for layout in scene.trackLayouts {
             let y = Float(layout.yOrigin)
             let h = Float(layout.height)
@@ -190,7 +190,7 @@ public final class PlaybackGridRenderer {
 
             let color: SIMD4<Float> = section.isSelected
                 ? SIMD4(0.25, 0.55, 1.0, 0.35)
-                : SIMD4(1, 1, 1, 0.08)
+                : SIMD4(1, 1, 1, 0.05)
             rects.append(PlaybackGridRectInstance(
                 origin: SIMD2(Float(section.rect.minX), visibleMinY + rulerHeight + 1),
                 size: SIMD2(Float(section.rect.width), max(1, sectionLaneHeight - 2)),
@@ -356,13 +356,13 @@ public final class PlaybackGridRenderer {
         }
 
         if snapshot.showRulerAndSections {
-            let rulerBg = SIMD4<Float>(0.11, 0.11, 0.12, 0.95)
+            let rulerBg = SIMD4<Float>(0.13, 0.14, 0.16, 0.95)
             rects.append(PlaybackGridRectInstance(
                 origin: SIMD2(visibleMinX, visibleMinY),
                 size: SIMD2(visibleMaxX - visibleMinX, rulerHeight),
                 color: rulerBg
             ))
-            let sectionBg = SIMD4<Float>(0.16, 0.16, 0.18, 0.95)
+            let sectionBg = SIMD4<Float>(0.15, 0.16, 0.18, 0.95)
             rects.append(PlaybackGridRectInstance(
                 origin: SIMD2(visibleMinX, visibleMinY + rulerHeight),
                 size: SIMD2(visibleMaxX - visibleMinX, sectionLaneHeight),
@@ -372,13 +372,13 @@ public final class PlaybackGridRenderer {
             lines.append(PlaybackGridLineInstance(
                 start: SIMD2(visibleMinX, visibleMinY + rulerHeight),
                 end: SIMD2(visibleMaxX, visibleMinY + rulerHeight),
-                color: SIMD4(1, 1, 1, 0.35),
+                color: SIMD4(1, 1, 1, 0.24),
                 width: 1
             ))
             lines.append(PlaybackGridLineInstance(
                 start: SIMD2(visibleMinX, visibleMinY + trackAreaTop),
                 end: SIMD2(visibleMaxX, visibleMinY + trackAreaTop),
-                color: SIMD4(1, 1, 1, 0.35),
+                color: SIMD4(1, 1, 1, 0.24),
                 width: 1
             ))
 
@@ -758,13 +758,14 @@ private struct PlaybackGridTrackMetalColors {
 
     init(kind: TrackKind) {
         let base = Self.baseColor(for: kind)
-        fillNormal = SIMD4(base.x, base.y, base.z, 0.3)
-        fillSelected = SIMD4(base.x, base.y, base.z, 0.5)
+        fillNormal = SIMD4(base.x, base.y, base.z, 0.25)
+        fillSelected = SIMD4(base.x, base.y, base.z, 0.42)
         fillArmed = SIMD4(1, 0.23, 0.19, 0.15)
-        borderNormal = SIMD4(base.x, base.y, base.z, 0.6)
+        borderNormal = SIMD4(base.x, base.y, base.z, 0.45)
         borderSelected = SIMD4(0.25, 0.55, 1.0, 1.0)
         borderArmed = SIMD4(1, 0.23, 0.19, 1.0)
-        waveformFill = SIMD4(base.x, base.y, base.z, 0.4)
+        let waveformRGB = (base * 0.38) + SIMD3<Float>(repeating: 1.0) * 0.62
+        waveformFill = SIMD4(waveformRGB.x, waveformRGB.y, waveformRGB.z, 0.85)
         selectionHighlight = SIMD4(0.25, 0.55, 1.0, 0.3)
     }
 
