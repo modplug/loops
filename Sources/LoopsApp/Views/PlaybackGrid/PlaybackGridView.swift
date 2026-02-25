@@ -169,6 +169,24 @@ public struct PlaybackGridView: View {
             },
             onSetContainerExitFade: { containerID, fade in
                 projectViewModel.setContainerExitFade(containerID: containerID, fade: fade)
+            },
+            onAddMIDINote: { containerID, note in
+                projectViewModel.addMIDINote(containerID: containerID, note: note)
+            },
+            onUpdateMIDINote: { containerID, note in
+                projectViewModel.updateMIDINote(containerID: containerID, note: note)
+            },
+            onRemoveMIDINote: { containerID, noteID in
+                projectViewModel.removeMIDINote(containerID: containerID, noteID: noteID)
+            },
+            onAddAutomationBreakpoint: { containerID, laneID, breakpoint in
+                projectViewModel.addAutomationBreakpoint(containerID: containerID, laneID: laneID, breakpoint: breakpoint)
+            },
+            onUpdateAutomationBreakpoint: { containerID, laneID, breakpoint in
+                projectViewModel.updateAutomationBreakpoint(containerID: containerID, laneID: laneID, breakpoint: breakpoint)
+            },
+            onRemoveAutomationBreakpoint: { containerID, laneID, breakpointID in
+                projectViewModel.removeAutomationBreakpoint(containerID: containerID, laneID: laneID, breakpointID: breakpointID)
             }
         )
         .frame(width: displayWidth, height: displayHeight)

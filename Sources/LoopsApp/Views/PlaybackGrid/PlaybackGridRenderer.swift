@@ -303,6 +303,16 @@ public final class PlaybackGridRenderer {
                         calls: &fadeCalls
                     )
                 }
+
+                if !cl.container.automationLanes.isEmpty {
+                    buildAutomationOverlay(
+                        lanes: cl.container.automationLanes,
+                        container: cl.container,
+                        rect: rect,
+                        lines: &lines,
+                        rects: &rects
+                    )
+                }
             }
 
             for xfade in trackLayout.track.crossfades {
@@ -624,6 +634,57 @@ public final class PlaybackGridRenderer {
                 vertices.append(PlaybackGridFadeVertex(position: SIMD2(x, yCurve), color: SIMD4(0, 0, 0, 0)))
             }
             calls.append((offset: offset, count: (steps + 1) * 2))
+        }
+    }
+
+    private func buildAutomationOverlay(
+        lanes: [AutomationLane],
+        container: Container,
+        rect: CGRect,
+        lines: inout [PlaybackGridLineInstance],
+        rects: inout [PlaybackGridRectInstance]
+    ) {
+        guard container.lengthBars > 0 else { return }
+
+        let laneColors: [SIMD4<Float>] = [
+            SIMD4(1.0, 0.55, 0.15, 0.9),
+            SIMD4(0.33, 0.75, 1.0, 0.9),
+            SIMD4(0.65, 0.95, 0.45, 0.9),
+            SIMD4(0.95, 0.45, 0.85, 0.9)
+        ]
+        let handleSize: Float = 6
+        let barsToPixels = rect.width / CGFloat(container.lengthBars)
+
+        for (laneIndex, lane) in lanes.enumerated() {
+            let color = laneColors[laneIndex % laneColors.count]
+            let sorted = lane.breakpoints.sorted { $0.position < $1.position }
+            guard !sorted.isEmpty else { continue }
+
+            var points: [SIMD2<Float>] = []
+            points.reserveCapacity(sorted.count)
+
+            for bp in sorted {
+                let x = Float(rect.minX + (CGFloat(bp.position) * barsToPixels))
+                let y = Float(rect.maxY - (CGFloat(bp.value) * rect.height))
+                points.append(SIMD2(x, y))
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(x - handleSize / 2, y - handleSize / 2),
+                    size: SIMD2(handleSize, handleSize),
+                    color: color,
+                    cornerRadius: 2
+                ))
+            }
+
+            if points.count >= 2 {
+                for i in 0..<(points.count - 1) {
+                    lines.append(PlaybackGridLineInstance(
+                        start: points[i],
+                        end: points[i + 1],
+                        color: color,
+                        width: 1.5
+                    ))
+                }
+            }
         }
     }
 

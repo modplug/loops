@@ -66,7 +66,11 @@ public final class PlaybackGridInteractionController {
                     startPoint: point,
                     originStartBar: container.startBar,
                     originLengthBars: container.lengthBars,
-                    originAudioStartOffset: container.audioStartOffset
+                    originAudioStartOffset: container.audioStartOffset,
+                    originEnterFadeDuration: container.enterFade?.duration ?? 0,
+                    originEnterFadeCurve: container.enterFade?.curve ?? .linear,
+                    originExitFadeDuration: container.exitFade?.duration ?? 0,
+                    originExitFadeCurve: container.exitFade?.curve ?? .linear
                 ))
             } else {
                 state = .idle
@@ -74,6 +78,63 @@ public final class PlaybackGridInteractionController {
 
         case .trackBackground:
             sink?.setPlayhead(bar: snappedBarForX(point.x, snapshot: snapshot))
+            state = .idle
+
+        case .midiNote:
+            guard let containerID = pick.containerID,
+                  let trackID = pick.trackID,
+                  let noteID = pick.midiNoteID,
+                  let (_, container) = containerAndTrack(containerID: containerID, trackID: trackID, in: snapshot.tracks),
+                  let note = container.midiSequence?.notes.first(where: { $0.id == noteID }) ?? container.resolved(using: { id in
+                      snapshot.tracks
+                          .flatMap(\.containers)
+                          .first(where: { $0.id == id })
+                  }).midiSequence?.notes.first(where: { $0.id == noteID }) else {
+                state = .idle
+                return
+            }
+
+            sink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
+            if event.clickCount >= 2 {
+                sink?.openContainerEditor(containerID, trackID: trackID)
+                state = .idle
+                return
+            }
+
+            state = .draggingMIDINote(context: PlaybackGridMIDINoteDragContext(
+                containerID: containerID,
+                trackID: trackID,
+                noteID: noteID,
+                startPoint: point,
+                originalNote: note,
+                containerStartBar: container.startBar,
+                containerLengthBars: container.lengthBars
+            ))
+
+        case .automationBreakpoint:
+            guard let containerID = pick.containerID,
+                  let trackID = pick.trackID,
+                  let laneID = pick.automationLaneID,
+                  let breakpointID = pick.automationBreakpointID else {
+                state = .idle
+                return
+            }
+            sink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
+            state = .draggingAutomationBreakpoint(context: PlaybackGridAutomationBreakpointDragContext(
+                containerID: containerID,
+                trackID: trackID,
+                laneID: laneID,
+                breakpointID: breakpointID,
+                startPoint: point
+            ))
+
+        case .none:
+            // Allow setting playhead anywhere in the main grid surface, even when no
+            // specific pick object is hit (e.g. blank timeline area).
+            let gridTop = snapshot.showRulerAndSections ? PlaybackGridLayout.trackAreaTop : 0
+            if point.y >= CGFloat(gridTop) {
+                sink?.setPlayhead(bar: snappedBarForX(point.x, snapshot: snapshot))
+            }
             state = .idle
 
         default:
@@ -91,6 +152,12 @@ public final class PlaybackGridInteractionController {
 
         case let .draggingContainer(context):
             handleContainerDrag(context: context, point: point, snapshot: snapshot)
+
+        case let .draggingMIDINote(context):
+            handleMIDINoteDrag(context: context, point: point, snapshot: snapshot)
+
+        case let .draggingAutomationBreakpoint(context):
+            handleAutomationBreakpointDrag(context: context, point: point, snapshot: snapshot)
 
         case .selectingRange:
             break
@@ -128,6 +195,12 @@ public final class PlaybackGridInteractionController {
                 sink?.cloneContainer(context.containerID, trackID: context.trackID, newStartBar: snapped)
             }
 
+        case .draggingMIDINote:
+            break
+
+        case .draggingAutomationBreakpoint:
+            break
+
         case .idle:
             break
         }
@@ -140,15 +213,35 @@ public final class PlaybackGridInteractionController {
     }
 
     private func snapToGrid(_ bar: Double, snapshot: PlaybackGridSnapshot) -> Double {
-        // Reuse the same adaptive behavior currently used in timeline interaction.
-        let pixelsPerBeat = snapshot.pixelsPerBar / CGFloat(snapshot.timeSignature.beatsPerBar)
-        if pixelsPerBeat >= 40 {
-            let beatsPerBar = Double(snapshot.timeSignature.beatsPerBar)
-            let totalBeats = (bar - 1.0) * beatsPerBar
-            let snappedBeats = totalBeats.rounded()
-            return max((snappedBeats / beatsPerBar) + 1.0, 1.0)
+        guard snapshot.isSnapEnabled else { return max(bar, 1.0) }
+
+        let resolution = effectiveSnapResolution(snapshot: snapshot)
+        let beatsPerBar = Double(snapshot.timeSignature.beatsPerBar)
+        let totalBeats = (bar - 1.0) * beatsPerBar
+        let snappedBeats = resolution.snap(totalBeats)
+        return max((snappedBeats / beatsPerBar) + 1.0, 1.0)
+    }
+
+    private func effectiveSnapResolution(snapshot: PlaybackGridSnapshot) -> SnapResolution {
+        switch snapshot.gridMode {
+        case .fixed(let resolution):
+            return resolution
+        case .adaptive:
+            let ppBeat = snapshot.pixelsPerBar / CGFloat(snapshot.timeSignature.beatsPerBar)
+            if ppBeat >= 150 { return .thirtySecond }
+            if ppBeat >= 80 { return .sixteenth }
+            if ppBeat >= 40 { return .quarter }
+            return .whole
         }
-        return max(bar.rounded(), 1.0)
+    }
+
+    private func snapFadeDuration(_ durationBars: Double, snapshot: PlaybackGridSnapshot) -> Double {
+        guard snapshot.isSnapEnabled else { return max(durationBars, 0) }
+
+        let resolution = effectiveSnapResolution(snapshot: snapshot)
+        let beatsPerBar = Double(snapshot.timeSignature.beatsPerBar)
+        let snappedBeats = resolution.snap(durationBars * beatsPerBar)
+        return max(snappedBeats / beatsPerBar, 0)
     }
 
     private func snappedBarForX(_ x: CGFloat, snapshot: PlaybackGridSnapshot) -> Double {
@@ -161,6 +254,36 @@ public final class PlaybackGridInteractionController {
             if let container = track.containers.first(where: { $0.id == containerID }) {
                 return container
             }
+        }
+        return nil
+    }
+
+    private func containerAndTrack(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        in tracks: [Track]
+    ) -> (Track, Container)? {
+        guard let track = tracks.first(where: { $0.id == trackID }),
+              let container = track.containers.first(where: { $0.id == containerID }) else {
+            return nil
+        }
+        return (track, container)
+    }
+
+    private func containerRect(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect? {
+        var yOffset: CGFloat = snapshot.showRulerAndSections ? PlaybackGridLayout.trackAreaTop : 0
+        for track in snapshot.tracks {
+            let height = snapshot.trackHeights[track.id] ?? snapshot.defaultTrackHeight
+            defer { yOffset += height }
+            guard track.id == trackID else { continue }
+            guard let container = track.containers.first(where: { $0.id == containerID }) else { return nil }
+            let x = CGFloat(container.startBar - 1.0) * snapshot.pixelsPerBar
+            let width = CGFloat(container.lengthBars) * snapshot.pixelsPerBar
+            return CGRect(x: x, y: yOffset, width: width, height: height)
         }
         return nil
     }
@@ -261,16 +384,82 @@ public final class PlaybackGridInteractionController {
             sink?.trimContainerRight(context.containerID, trackID: context.trackID, newLengthBars: newLength)
 
         case .fadeLeft:
-            let fadeBars = max(0.0, min(context.originLengthBars, (point.x / snapshot.pixelsPerBar) - (context.originStartBar - 1.0)))
-            let fade = fadeBars < 0.01 ? nil : FadeSettings(duration: fadeBars, curve: .linear)
+            let rawDuration = context.originEnterFadeDuration + deltaBars
+            let clamped = max(0.0, min(context.originLengthBars, rawDuration))
+            let snapped = snapFadeDuration(clamped, snapshot: snapshot)
+            let fade = snapped < 0.125 ? nil : FadeSettings(duration: snapped, curve: context.originEnterFadeCurve)
             sink?.setContainerEnterFade(context.containerID, fade: fade)
 
         case .fadeRight:
-            let endBar = context.originStartBar + context.originLengthBars
-            let cursorBar = (point.x / snapshot.pixelsPerBar) + 1.0
-            let fadeBars = max(0.0, min(context.originLengthBars, endBar - cursorBar))
-            let fade = fadeBars < 0.01 ? nil : FadeSettings(duration: fadeBars, curve: .linear)
+            let rawDuration = context.originExitFadeDuration - deltaBars
+            let clamped = max(0.0, min(context.originLengthBars, rawDuration))
+            let snapped = snapFadeDuration(clamped, snapshot: snapshot)
+            let fade = snapped < 0.125 ? nil : FadeSettings(duration: snapped, curve: context.originExitFadeCurve)
             sink?.setContainerExitFade(context.containerID, fade: fade)
         }
+    }
+
+    private func handleMIDINoteDrag(
+        context: PlaybackGridMIDINoteDragContext,
+        point: CGPoint,
+        snapshot: PlaybackGridSnapshot
+    ) {
+        let beatsPerBar = Double(snapshot.timeSignature.beatsPerBar)
+        let deltaX = point.x - context.startPoint.x
+        let deltaBars = Double(deltaX / snapshot.pixelsPerBar)
+        let deltaBeatsRaw = deltaBars * beatsPerBar
+
+        let deltaBeats: Double
+        if snapshot.isSnapEnabled {
+            let unit = effectiveSnapResolution(snapshot: snapshot).beatsPerUnit
+            deltaBeats = (deltaBeatsRaw / unit).rounded() * unit
+        } else {
+            deltaBeats = deltaBeatsRaw
+        }
+
+        let maxStartBeat = max(0, context.containerLengthBars * beatsPerBar - context.originalNote.duration)
+        var updated = context.originalNote
+        updated.startBeat = max(0, min(maxStartBeat, context.originalNote.startBeat + deltaBeats))
+
+        let deltaYPixels = context.startPoint.y - point.y
+        let pitchDelta = Int((deltaYPixels / 8).rounded())
+        let newPitch = max(0, min(127, Int(context.originalNote.pitch) + pitchDelta))
+        updated.pitch = UInt8(newPitch)
+
+        sink?.updateMIDINote(context.containerID, note: updated)
+    }
+
+    private func handleAutomationBreakpointDrag(
+        context: PlaybackGridAutomationBreakpointDragContext,
+        point: CGPoint,
+        snapshot: PlaybackGridSnapshot
+    ) {
+        guard let (_, container) = containerAndTrack(
+            containerID: context.containerID,
+            trackID: context.trackID,
+            in: snapshot.tracks
+        ),
+        let rect = containerRect(
+            containerID: context.containerID,
+            trackID: context.trackID,
+            snapshot: snapshot
+        ),
+        let lane = container.automationLanes.first(where: { $0.id == context.laneID }),
+        let existing = lane.breakpoints.first(where: { $0.id == context.breakpointID }) else {
+            return
+        }
+
+        let rawBarOffset = Double((point.x - rect.minX) / snapshot.pixelsPerBar)
+        let clampedRawOffset = max(0, min(container.lengthBars, rawBarOffset))
+        let snappedAbsBar = snapToGrid(container.startBar + clampedRawOffset, snapshot: snapshot)
+        let snappedOffset = max(0, min(container.lengthBars, snappedAbsBar - container.startBar))
+
+        let rawValue = 1.0 - ((point.y - rect.minY) / max(rect.height, 1))
+        let value = Float(max(0, min(1, rawValue)))
+
+        var updated = existing
+        updated.position = snappedOffset
+        updated.value = value
+        sink?.updateAutomationBreakpoint(context.containerID, laneID: context.laneID, breakpoint: updated)
     }
 }

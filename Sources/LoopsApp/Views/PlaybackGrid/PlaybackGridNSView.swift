@@ -48,7 +48,7 @@ public final class PlaybackGridNSView: NSView {
     public private(set) var configureHitCount = 0
     public private(set) var lastDrawDuration: CFTimeInterval = 0
     private var lastDebugLogTime: CFTimeInterval = 0
-    private static let debugLogsEnabled = true
+    private static let debugLogsEnabled = false
 
     private static func makeMetalLayer() -> CAMetalLayer {
         let layer = CAMetalLayer()
@@ -502,6 +502,7 @@ public final class PlaybackGridNSView: NSView {
             && lhs.selectedSectionID == rhs.selectedSectionID
             && lhs.selectedRange == rhs.selectedRange
             && lhs.rangeSelection == rhs.rangeSelection
+            && lhs.isSnapEnabled == rhs.isSnapEnabled
             && lhs.showRulerAndSections == rhs.showRulerAndSections
             && lhs.bottomPadding == rhs.bottomPadding
             && lhs.minimumContentHeight == rhs.minimumContentHeight

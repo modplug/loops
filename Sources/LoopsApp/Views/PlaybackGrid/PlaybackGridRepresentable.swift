@@ -32,6 +32,12 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
     var onContainerTrimRight: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ newLengthBars: Double) -> Void)?
     var onSetContainerEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
     var onSetContainerExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
+    var onAddMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?
+    var onUpdateMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?
+    var onRemoveMIDINote: ((_ containerID: ID<Container>, _ noteID: ID<MIDINoteEvent>) -> Void)?
+    var onAddAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    var onUpdateAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    var onRemoveAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
 
     public func makeNSView(context: Context) -> PlaybackGridNSView {
         let view = PlaybackGridNSView(frame: .zero)
@@ -79,7 +85,13 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
             onContainerTrimLeft: onContainerTrimLeft,
             onContainerTrimRight: onContainerTrimRight,
             onSetContainerEnterFade: onSetContainerEnterFade,
-            onSetContainerExitFade: onSetContainerExitFade
+            onSetContainerExitFade: onSetContainerExitFade,
+            onAddMIDINote: onAddMIDINote,
+            onUpdateMIDINote: onUpdateMIDINote,
+            onRemoveMIDINote: onRemoveMIDINote,
+            onAddAutomationBreakpoint: onAddAutomationBreakpoint,
+            onUpdateAutomationBreakpoint: onUpdateAutomationBreakpoint,
+            onRemoveAutomationBreakpoint: onRemoveAutomationBreakpoint
         )
         view.setCommandSink(adapter)
 
@@ -99,6 +111,7 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
             selectedSectionID: selectionState.selectedSectionID,
             selectedRange: viewModel.selectedRange,
             rangeSelection: selectionState.rangeSelection,
+            isSnapEnabled: viewModel.isSnapEnabled,
             showRulerAndSections: showRulerAndSections,
             playheadBar: viewModel.playheadBar,
             cursorX: viewModel.cursorX,
@@ -127,6 +140,12 @@ private final class CommandAdapter: PlaybackGridCommandSink {
     private let onContainerTrimRight: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ newLengthBars: Double) -> Void)?
     private let onSetContainerEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
     private let onSetContainerExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
+    private let onAddMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?
+    private let onUpdateMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?
+    private let onRemoveMIDINote: ((_ containerID: ID<Container>, _ noteID: ID<MIDINoteEvent>) -> Void)?
+    private let onAddAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    private let onUpdateAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    private let onRemoveAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
 
     init(
         onPlayheadPosition: ((Double) -> Void)?,
@@ -146,7 +165,13 @@ private final class CommandAdapter: PlaybackGridCommandSink {
         onContainerTrimLeft: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ newAudioStartOffset: Double, _ newStartBar: Double, _ newLengthBars: Double) -> Void)?,
         onContainerTrimRight: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ newLengthBars: Double) -> Void)?,
         onSetContainerEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?,
-        onSetContainerExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
+        onSetContainerExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?,
+        onAddMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?,
+        onUpdateMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?,
+        onRemoveMIDINote: ((_ containerID: ID<Container>, _ noteID: ID<MIDINoteEvent>) -> Void)?,
+        onAddAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?,
+        onUpdateAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?,
+        onRemoveAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
     ) {
         self.onPlayheadPosition = onPlayheadPosition
         self.onSectionSelect = onSectionSelect
@@ -166,6 +191,12 @@ private final class CommandAdapter: PlaybackGridCommandSink {
         self.onContainerTrimRight = onContainerTrimRight
         self.onSetContainerEnterFade = onSetContainerEnterFade
         self.onSetContainerExitFade = onSetContainerExitFade
+        self.onAddMIDINote = onAddMIDINote
+        self.onUpdateMIDINote = onUpdateMIDINote
+        self.onRemoveMIDINote = onRemoveMIDINote
+        self.onAddAutomationBreakpoint = onAddAutomationBreakpoint
+        self.onUpdateAutomationBreakpoint = onUpdateAutomationBreakpoint
+        self.onRemoveAutomationBreakpoint = onRemoveAutomationBreakpoint
     }
 
     func setPlayhead(bar: Double) {
@@ -238,6 +269,30 @@ private final class CommandAdapter: PlaybackGridCommandSink {
 
     func setContainerExitFade(_ containerID: ID<Container>, fade: FadeSettings?) {
         onSetContainerExitFade?(containerID, fade)
+    }
+
+    func addMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent) {
+        onAddMIDINote?(containerID, note)
+    }
+
+    func updateMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent) {
+        onUpdateMIDINote?(containerID, note)
+    }
+
+    func removeMIDINote(_ containerID: ID<Container>, noteID: ID<MIDINoteEvent>) {
+        onRemoveMIDINote?(containerID, noteID)
+    }
+
+    func addAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {
+        onAddAutomationBreakpoint?(containerID, laneID, breakpoint)
+    }
+
+    func updateAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {
+        onUpdateAutomationBreakpoint?(containerID, laneID, breakpoint)
+    }
+
+    func removeAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>) {
+        onRemoveAutomationBreakpoint?(containerID, laneID, breakpointID)
     }
 }
 

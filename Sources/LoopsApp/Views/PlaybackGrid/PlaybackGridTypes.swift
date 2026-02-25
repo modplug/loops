@@ -34,6 +34,9 @@ public struct GridPickObject: Equatable {
     public var containerID: ID<Container>?
     public var trackID: ID<Track>?
     public var sectionID: ID<SectionRegion>?
+    public var automationLaneID: ID<AutomationLane>?
+    public var automationBreakpointID: ID<AutomationBreakpoint>?
+    public var midiNoteID: ID<MIDINoteEvent>?
     public var zone: GridContainerZone?
 
     public init(
@@ -42,6 +45,9 @@ public struct GridPickObject: Equatable {
         containerID: ID<Container>? = nil,
         trackID: ID<Track>? = nil,
         sectionID: ID<SectionRegion>? = nil,
+        automationLaneID: ID<AutomationLane>? = nil,
+        automationBreakpointID: ID<AutomationBreakpoint>? = nil,
+        midiNoteID: ID<MIDINoteEvent>? = nil,
         zone: GridContainerZone? = nil
     ) {
         self.id = id
@@ -49,6 +55,9 @@ public struct GridPickObject: Equatable {
         self.containerID = containerID
         self.trackID = trackID
         self.sectionID = sectionID
+        self.automationLaneID = automationLaneID
+        self.automationBreakpointID = automationBreakpointID
+        self.midiNoteID = midiNoteID
         self.zone = zone
     }
 
@@ -60,6 +69,8 @@ public enum PlaybackGridInteractionState: Equatable {
     case scrubbingRuler
     case selectingRange(startBar: Int, startPoint: CGPoint)
     case draggingContainer(context: PlaybackGridContainerDragContext)
+    case draggingMIDINote(context: PlaybackGridMIDINoteDragContext)
+    case draggingAutomationBreakpoint(context: PlaybackGridAutomationBreakpointDragContext)
 }
 
 public enum PlaybackGridContainerDragKind: Equatable {
@@ -81,6 +92,28 @@ public struct PlaybackGridContainerDragContext: Equatable {
     public var originStartBar: Double
     public var originLengthBars: Double
     public var originAudioStartOffset: Double
+    public var originEnterFadeDuration: Double
+    public var originEnterFadeCurve: CurveType
+    public var originExitFadeDuration: Double
+    public var originExitFadeCurve: CurveType
+}
+
+public struct PlaybackGridMIDINoteDragContext: Equatable {
+    public var containerID: ID<Container>
+    public var trackID: ID<Track>
+    public var noteID: ID<MIDINoteEvent>
+    public var startPoint: CGPoint
+    public var originalNote: MIDINoteEvent
+    public var containerStartBar: Double
+    public var containerLengthBars: Double
+}
+
+public struct PlaybackGridAutomationBreakpointDragContext: Equatable {
+    public var containerID: ID<Container>
+    public var trackID: ID<Track>
+    public var laneID: ID<AutomationLane>
+    public var breakpointID: ID<AutomationBreakpoint>
+    public var startPoint: CGPoint
 }
 
 public protocol PlaybackGridCommandSink: AnyObject {
@@ -102,6 +135,12 @@ public protocol PlaybackGridCommandSink: AnyObject {
     func trimContainerRight(_ containerID: ID<Container>, trackID: ID<Track>, newLengthBars: Double)
     func setContainerEnterFade(_ containerID: ID<Container>, fade: FadeSettings?)
     func setContainerExitFade(_ containerID: ID<Container>, fade: FadeSettings?)
+    func addMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent)
+    func updateMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent)
+    func removeMIDINote(_ containerID: ID<Container>, noteID: ID<MIDINoteEvent>)
+    func addAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint)
+    func updateAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint)
+    func removeAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>)
 }
 
 public extension PlaybackGridCommandSink {
@@ -123,6 +162,12 @@ public extension PlaybackGridCommandSink {
     func trimContainerRight(_ containerID: ID<Container>, trackID: ID<Track>, newLengthBars: Double) {}
     func setContainerEnterFade(_ containerID: ID<Container>, fade: FadeSettings?) {}
     func setContainerExitFade(_ containerID: ID<Container>, fade: FadeSettings?) {}
+    func addMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent) {}
+    func updateMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent) {}
+    func removeMIDINote(_ containerID: ID<Container>, noteID: ID<MIDINoteEvent>) {}
+    func addAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {}
+    func updateAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {}
+    func removeAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>) {}
 }
 
 public enum PlaybackGridLayout {
@@ -145,6 +190,7 @@ public struct PlaybackGridSnapshot: Equatable {
     public var selectedSectionID: ID<SectionRegion>?
     public var selectedRange: ClosedRange<Int>?
     public var rangeSelection: SelectionState.RangeSelection?
+    public var isSnapEnabled: Bool
     public var showRulerAndSections: Bool
     public var playheadBar: Double
     public var cursorX: CGFloat?
@@ -164,6 +210,7 @@ public struct PlaybackGridSnapshot: Equatable {
         selectedSectionID: ID<SectionRegion>?,
         selectedRange: ClosedRange<Int>?,
         rangeSelection: SelectionState.RangeSelection?,
+        isSnapEnabled: Bool = true,
         showRulerAndSections: Bool,
         playheadBar: Double,
         cursorX: CGFloat?,
@@ -182,6 +229,7 @@ public struct PlaybackGridSnapshot: Equatable {
         self.selectedSectionID = selectedSectionID
         self.selectedRange = selectedRange
         self.rangeSelection = rangeSelection
+        self.isSnapEnabled = isSnapEnabled
         self.showRulerAndSections = showRulerAndSections
         self.playheadBar = playheadBar
         self.cursorX = cursorX

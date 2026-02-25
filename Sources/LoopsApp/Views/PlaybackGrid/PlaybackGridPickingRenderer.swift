@@ -52,6 +52,45 @@ public final class PlaybackGridPickingRenderer {
         for trackLayout in scene.trackLayouts.reversed() {
             for containerLayout in trackLayout.containers.reversed() {
                 if containerLayout.rect.contains(point) {
+                    if let midiHit = detectMIDINoteHit(
+                        point: point,
+                        containerLayout: containerLayout,
+                        timeSignature: snapshot.timeSignature
+                    ) {
+                        return GridPickObject(
+                            id: makeID(
+                                kind: .midiNote,
+                                containerID: containerLayout.container.id,
+                                trackID: trackLayout.track.id,
+                                midiNoteID: midiHit.id
+                            ),
+                            kind: .midiNote,
+                            containerID: containerLayout.container.id,
+                            trackID: trackLayout.track.id,
+                            midiNoteID: midiHit.id
+                        )
+                    }
+
+                    if let automationHit = detectAutomationBreakpointHit(
+                        point: point,
+                        containerLayout: containerLayout
+                    ) {
+                        return GridPickObject(
+                            id: makeID(
+                                kind: .automationBreakpoint,
+                                containerID: containerLayout.container.id,
+                                trackID: trackLayout.track.id,
+                                automationLaneID: automationHit.laneID,
+                                automationBreakpointID: automationHit.breakpoint.id
+                            ),
+                            kind: .automationBreakpoint,
+                            containerID: containerLayout.container.id,
+                            trackID: trackLayout.track.id,
+                            automationLaneID: automationHit.laneID,
+                            automationBreakpointID: automationHit.breakpoint.id
+                        )
+                    }
+
                     let zone = detectZone(point: point, rect: containerLayout.rect)
                     return GridPickObject(
                         id: makeID(
@@ -83,6 +122,14 @@ public final class PlaybackGridPickingRenderer {
             }
         }
 
+        let gridTop = snapshot.showRulerAndSections ? PlaybackGridLayout.trackAreaTop : 0
+        if point.y >= CGFloat(gridTop), point.y <= scene.contentHeight {
+            return GridPickObject(
+                id: makeID(kind: .trackBackground),
+                kind: .trackBackground
+            )
+        }
+
         return .none
     }
 
@@ -110,11 +157,77 @@ public final class PlaybackGridPickingRenderer {
         }
     }
 
+    private func detectMIDINoteHit(
+        point: CGPoint,
+        containerLayout: PlaybackGridContainerLayout,
+        timeSignature: TimeSignature
+    ) -> MIDINoteEvent? {
+        guard let notes = containerLayout.resolvedMIDINotes, !notes.isEmpty else {
+            return nil
+        }
+
+        var minPitch: UInt8 = 127
+        var maxPitch: UInt8 = 0
+        for note in notes {
+            if note.pitch < minPitch { minPitch = note.pitch }
+            if note.pitch > maxPitch { maxPitch = note.pitch }
+        }
+        let pitchRange = max(CGFloat(maxPitch - minPitch), 12)
+        let beatsPerBar = CGFloat(timeSignature.beatsPerBar)
+        let totalBeats = max(CGFloat(containerLayout.container.lengthBars) * beatsPerBar, 0.0001)
+        let heightMinusPad = containerLayout.rect.height - 4
+        let noteH = max(2, heightMinusPad / pitchRange)
+
+        for note in notes.reversed() {
+            let xFraction = CGFloat(note.startBeat) / totalBeats
+            let widthFraction = CGFloat(note.duration) / totalBeats
+            let noteX = containerLayout.rect.minX + xFraction * containerLayout.rect.width
+            let noteW = max(2, widthFraction * containerLayout.rect.width)
+            let yFraction = 1.0 - (CGFloat(note.pitch - minPitch) / pitchRange)
+            let noteY = containerLayout.rect.minY + yFraction * heightMinusPad + 2
+            let centerX = noteX + noteW / 2
+            let centerY = noteY + noteH / 2
+            let halfSize = min(noteW, noteH, 8) / 2
+            let hitRect = CGRect(
+                x: centerX - halfSize - 3,
+                y: centerY - halfSize - 3,
+                width: (halfSize + 3) * 2,
+                height: (halfSize + 3) * 2
+            )
+            if hitRect.contains(point) {
+                return note
+            }
+        }
+        return nil
+    }
+
+    private func detectAutomationBreakpointHit(
+        point: CGPoint,
+        containerLayout: PlaybackGridContainerLayout
+    ) -> (laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint)? {
+        let hitRadius: CGFloat = 7
+        for lane in containerLayout.container.automationLanes.reversed() {
+            for breakpoint in lane.breakpoints.reversed() {
+                let x = containerLayout.rect.minX + CGFloat(breakpoint.position) * (containerLayout.rect.width / max(CGFloat(containerLayout.container.lengthBars), 0.0001))
+                let y = containerLayout.rect.maxY - (CGFloat(breakpoint.value) * containerLayout.rect.height)
+                let dx = point.x - x
+                let dy = point.y - y
+                if dx * dx + dy * dy <= hitRadius * hitRadius {
+                    return (laneID: lane.id, breakpoint: breakpoint)
+                }
+            }
+        }
+        return nil
+    }
+
     private func makeID(
         kind: GridPickObjectKind,
         containerID: ID<Container>? = nil,
         trackID: ID<Track>? = nil,
         sectionID: ID<SectionRegion>? = nil,
+        automationLaneID: ID<AutomationLane>? = nil,
+        automationBreakpointID: ID<AutomationBreakpoint>? = nil,
+        midiNoteID: ID<MIDINoteEvent>? = nil,
         zone: GridContainerZone? = nil
     ) -> GridPickID {
         var hasher = Hasher()
@@ -122,6 +235,9 @@ public final class PlaybackGridPickingRenderer {
         hasher.combine(containerID?.rawValue)
         hasher.combine(trackID?.rawValue)
         hasher.combine(sectionID?.rawValue)
+        hasher.combine(automationLaneID?.rawValue)
+        hasher.combine(automationBreakpointID?.rawValue)
+        hasher.combine(midiNoteID?.rawValue)
         hasher.combine(zone?.rawValue)
         let value = UInt32(bitPattern: Int32(truncatingIfNeeded: hasher.finalize()))
         return value == 0 ? 1 : value

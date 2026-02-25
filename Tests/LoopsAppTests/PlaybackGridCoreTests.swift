@@ -84,6 +84,96 @@ struct PlaybackGridCoreTests {
         #expect(topLeft.zone == .fadeLeft)
     }
 
+    @Test("Picking empty grid area resolves to track background for playhead set")
+    func pickingEmptyGridAsTrackBackground() {
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [],
+            sections: [],
+            timeSignature: TimeSignature(),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            defaultTrackHeight: 80,
+            gridMode: .adaptive,
+            selectedContainerIDs: [],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+        let scene = PlaybackGridSceneBuilder().build(snapshot: snapshot)
+        let picker = PlaybackGridPickingRenderer()
+        let pick = picker.pick(
+            at: CGPoint(x: 210, y: PlaybackGridLayout.trackAreaTop + 40),
+            scene: scene,
+            snapshot: snapshot,
+            visibleRect: CGRect(x: 0, y: 0, width: 1000, height: 500),
+            canvasWidth: 1000
+        )
+        #expect(pick.kind == .trackBackground)
+    }
+
+    @Test("Picking resolves MIDI note and automation breakpoint")
+    func pickingMIDINoteAndAutomationBreakpoint() {
+        let midiNote = MIDINoteEvent(pitch: 64, startBeat: 0, duration: 1)
+        let lane = AutomationLane(
+            targetPath: .trackVolume(trackID: ID()),
+            breakpoints: [AutomationBreakpoint(position: 1.0, value: 0.5)]
+        )
+        let container = Container(
+            name: "Clip",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            automationLanes: [lane],
+            midiSequence: MIDISequence(notes: [midiNote])
+        )
+        let track = Track(name: "MIDI 1", kind: .midi, containers: [container])
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            defaultTrackHeight: 80,
+            gridMode: .adaptive,
+            selectedContainerIDs: [],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let builder = PlaybackGridSceneBuilder()
+        builder.resolvedMIDISequenceProvider = { $0.midiSequence }
+        let scene = builder.build(snapshot: snapshot)
+        let picker = PlaybackGridPickingRenderer()
+
+        let midiPick = picker.pick(
+            at: CGPoint(x: 12, y: PlaybackGridLayout.trackAreaTop + 79),
+            scene: scene,
+            snapshot: snapshot,
+            visibleRect: CGRect(x: 0, y: 0, width: 1000, height: 500),
+            canvasWidth: 1000
+        )
+        #expect(midiPick.kind == .midiNote)
+        #expect(midiPick.midiNoteID == midiNote.id)
+
+        let automationPick = picker.pick(
+            at: CGPoint(x: 120, y: PlaybackGridLayout.trackAreaTop + 40),
+            scene: scene,
+            snapshot: snapshot,
+            visibleRect: CGRect(x: 0, y: 0, width: 1000, height: 500),
+            canvasWidth: 1000
+        )
+        #expect(automationPick.kind == .automationBreakpoint)
+        #expect(automationPick.automationLaneID == lane.id)
+    }
+
     @Test("Interaction controller emits playhead, range, move, clone and editor commands")
     func interactionControllerCommands() {
         let container = Container(name: "Clip", startBar: 1.0, lengthBars: 4.0)
@@ -210,6 +300,128 @@ struct PlaybackGridCoreTests {
         #expect(sink.lastPlayheadBar == 2.0)
     }
 
+    @Test("Interaction controller respects global snap settings")
+    func interactionControllerRespectsGlobalSnap() {
+        let container = Container(name: "Clip", startBar: 1.0, lengthBars: 4.0)
+        let track = Track(name: "Audio 1", kind: .audio, containers: [container])
+
+        let snapOffSnapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            defaultTrackHeight: 80,
+            gridMode: .fixed(.quarter),
+            selectedContainerIDs: [],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            isSnapEnabled: false,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let sink = CommandSinkSpy()
+        let controller = PlaybackGridInteractionController(sink: sink)
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
+            point: CGPoint(x: 123, y: PlaybackGridLayout.trackAreaTop + 50),
+            pick: GridPickObject(id: 10, kind: .trackBackground, trackID: track.id),
+            snapshot: snapOffSnapshot
+        )
+
+        // Raw bar when snapping is disabled.
+        #expect(abs((sink.lastPlayheadBar ?? 0) - 2.025) < 0.0001)
+
+        let snapOnSnapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            defaultTrackHeight: 80,
+            gridMode: .fixed(.quarter),
+            selectedContainerIDs: [],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            isSnapEnabled: true,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
+            point: CGPoint(x: 123, y: PlaybackGridLayout.trackAreaTop + 50),
+            pick: GridPickObject(id: 11, kind: .trackBackground, trackID: track.id),
+            snapshot: snapOnSnapshot
+        )
+
+        // Quarter-note snap in 4/4 => 0.25 bars.
+        #expect(abs((sink.lastPlayheadBar ?? 0) - 2.0) < 0.0001)
+    }
+
+    @Test("Fade drag preserves curve and uses drag delta")
+    func fadeDragPreservesCurveAndUsesDelta() {
+        let container = Container(
+            name: "Clip",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            enterFade: FadeSettings(duration: 1.0, curve: .exponential)
+        )
+        let track = Track(name: "Audio 1", kind: .audio, containers: [container])
+
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            defaultTrackHeight: 80,
+            gridMode: .fixed(.quarter),
+            selectedContainerIDs: [],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            isSnapEnabled: true,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let sink = CommandSinkSpy()
+        let controller = PlaybackGridInteractionController(sink: sink)
+        let y = PlaybackGridLayout.trackAreaTop + 10
+
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
+            point: CGPoint(x: 2, y: y),
+            pick: GridPickObject(
+                id: 20,
+                kind: .containerZone,
+                containerID: container.id,
+                trackID: track.id,
+                zone: .fadeLeft
+            ),
+            snapshot: snapshot
+        )
+        // +0.5 bars
+        controller.handleMouseDragged(
+            point: CGPoint(x: 62, y: y),
+            snapshot: snapshot
+        )
+
+        #expect(sink.lastEnterFade != nil)
+        #expect(abs((sink.lastEnterFade?.duration ?? 0) - 1.5) < 0.0001)
+        #expect(sink.lastEnterFade?.curve == .exponential)
+    }
+
     private func makeMouseEvent(
         type: NSEvent.EventType,
         modifiers: NSEvent.ModifierFlags,
@@ -236,6 +448,8 @@ private final class CommandSinkSpy: PlaybackGridCommandSink {
     var lastClone: (containerID: ID<Container>, trackID: ID<Track>, newStartBar: Double)?
     var lastSelection: (containerID: ID<Container>, trackID: ID<Track>, modifiers: NSEvent.ModifierFlags)?
     var lastOpenEditor: (containerID: ID<Container>, trackID: ID<Track>)?
+    var lastEnterFade: FadeSettings?
+    var lastExitFade: FadeSettings?
 
     func setPlayhead(bar: Double) {
         lastPlayheadBar = bar
@@ -259,5 +473,13 @@ private final class CommandSinkSpy: PlaybackGridCommandSink {
 
     func openContainerEditor(_ containerID: ID<Container>, trackID: ID<Track>) {
         lastOpenEditor = (containerID, trackID)
+    }
+
+    func setContainerEnterFade(_ containerID: ID<Container>, fade: FadeSettings?) {
+        lastEnterFade = fade
+    }
+
+    func setContainerExitFade(_ containerID: ID<Container>, fade: FadeSettings?) {
+        lastExitFade = fade
     }
 }
