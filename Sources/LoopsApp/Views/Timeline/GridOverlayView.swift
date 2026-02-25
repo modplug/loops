@@ -8,19 +8,25 @@ public struct GridOverlayView: View {
     let timeSignature: TimeSignature
     let height: CGFloat
     let gridMode: GridMode
+    let visibleXMin: CGFloat
+    let visibleXMax: CGFloat
 
     public init(
         totalBars: Int,
         pixelsPerBar: CGFloat,
         timeSignature: TimeSignature,
         height: CGFloat,
-        gridMode: GridMode = .adaptive
+        gridMode: GridMode = .adaptive,
+        visibleXMin: CGFloat = 0,
+        visibleXMax: CGFloat = .greatestFiniteMagnitude
     ) {
         self.totalBars = totalBars
         self.pixelsPerBar = pixelsPerBar
         self.timeSignature = timeSignature
         self.height = height
         self.gridMode = gridMode
+        self.visibleXMin = visibleXMin
+        self.visibleXMax = visibleXMax
     }
 
     public var body: some View {
@@ -28,8 +34,19 @@ public struct GridOverlayView: View {
             let totalHeight = size.height
             let pixelsPerBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
 
+            // Compute visible bar range (clamp to valid bounds).
+            // startBar can exceed totalBars when visibleXMin is stale (set at a higher ppb)
+            // and zoom-out reduces ppb before the visible range updates.
+            let endBar: Int
+            if visibleXMax >= CGFloat(totalBars) * pixelsPerBar {
+                endBar = totalBars
+            } else {
+                endBar = min(totalBars, Int(ceil(visibleXMax / pixelsPerBar)) + 1)
+            }
+            let startBar = min(max(0, Int(floor(visibleXMin / pixelsPerBar))), endBar)
+
             // Alternating bar shading (Bitwig-style)
-            for bar in 0..<totalBars {
+            for bar in startBar..<endBar {
                 if bar % 2 == 1 {
                     let x = CGFloat(bar) * pixelsPerBar
                     let rect = CGRect(x: x, y: 0, width: pixelsPerBar, height: totalHeight)
@@ -37,7 +54,8 @@ public struct GridOverlayView: View {
                 }
             }
 
-            for bar in 0...totalBars {
+            for bar in startBar...endBar {
+                guard bar <= totalBars else { break }
                 let x = CGFloat(bar) * pixelsPerBar
 
                 // Bar line
@@ -114,7 +132,9 @@ extension GridOverlayView: Equatable {
         lhs.pixelsPerBar == rhs.pixelsPerBar &&
         lhs.timeSignature == rhs.timeSignature &&
         lhs.height == rhs.height &&
-        lhs.gridMode == rhs.gridMode
+        lhs.gridMode == rhs.gridMode &&
+        lhs.visibleXMin == rhs.visibleXMin &&
+        lhs.visibleXMax == rhs.visibleXMax
     }
 }
 

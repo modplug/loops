@@ -110,14 +110,14 @@ public struct ToolbarView: View {
                 .buttonStyle(.plain)
                 .help("Stop")
 
-                // Return to start position toggle
-                Button(action: { viewModel.returnToStartEnabled.toggle() }) {
-                    Image(systemName: "arrow.uturn.backward")
-                        .foregroundStyle(viewModel.returnToStartEnabled ? Color.accentColor : Color.secondary)
+                // Return to bar 1
+                Button(action: { viewModel.setPlayheadPosition(1.0) }) {
+                    Image(systemName: "backward.end.fill")
+                        .foregroundStyle(.primary)
                         .font(.caption)
                 }
                 .buttonStyle(.plain)
-                .help(viewModel.returnToStartEnabled ? "Return to Start Position: On" : "Return to Start Position: Off")
+                .help("Return to Start")
             }
 
             Divider().frame(height: 24)

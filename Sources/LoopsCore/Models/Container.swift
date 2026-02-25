@@ -3,7 +3,7 @@ import Foundation
 /// Phantom type for link group identification.
 public enum LinkGroup {}
 
-public struct Container: Codable, Equatable, Sendable, Identifiable {
+public struct Container: Codable, Sendable, Identifiable {
     public var id: ID<Container>
     public var name: String
     /// 1-based
@@ -243,5 +243,40 @@ public struct Container: Codable, Equatable, Sendable, Identifiable {
             return self
         }
         return resolved(parent: parent)
+    }
+}
+
+// MARK: - Equatable (custom: cheap scalar fields first, expensive arrays last)
+
+extension Container: Equatable {
+    public static func == (lhs: Container, rhs: Container) -> Bool {
+        // Identity
+        guard lhs.id == rhs.id else { return false }
+        // Frequently-changed cheap scalars
+        guard lhs.startBar == rhs.startBar,
+              lhs.lengthBars == rhs.lengthBars,
+              lhs.name == rhs.name,
+              lhs.isRecordArmed == rhs.isRecordArmed,
+              lhs.isEffectChainBypassed == rhs.isEffectChainBypassed,
+              lhs.audioStartOffset == rhs.audioStartOffset else { return false }
+        // Other cheap scalars
+        guard lhs.sourceRecordingID == rhs.sourceRecordingID,
+              lhs.linkGroupID == rhs.linkGroupID,
+              lhs.loopSettings == rhs.loopSettings,
+              lhs.volumeOverride == rhs.volumeOverride,
+              lhs.panOverride == rhs.panOverride,
+              lhs.instrumentOverride == rhs.instrumentOverride,
+              lhs.enterFade == rhs.enterFade,
+              lhs.exitFade == rhs.exitFade,
+              lhs.parentContainerID == rhs.parentContainerID,
+              lhs.overriddenFields == rhs.overriddenFields,
+              lhs.metronomeSettings == rhs.metronomeSettings else { return false }
+        // Expensive comparisons last (often O(1) via COW buffer identity)
+        guard lhs.midiSequence == rhs.midiSequence,
+              lhs.automationLanes == rhs.automationLanes,
+              lhs.insertEffects == rhs.insertEffects,
+              lhs.onEnterActions == rhs.onEnterActions,
+              lhs.onExitActions == rhs.onExitActions else { return false }
+        return true
     }
 }

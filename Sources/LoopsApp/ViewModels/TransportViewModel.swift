@@ -124,6 +124,7 @@ public final class TransportViewModel {
             if !engine.isRunning {
                 try? engine.start()
             }
+            engine.installMasterLevelTap()
             // Update metronome parameters
             engine.metronome?.update(
                 bpm: bpm,
@@ -205,9 +206,10 @@ public final class TransportViewModel {
         stopContainerRecording()
         playbackTask?.cancel()
         playbackTask = nil
-        // Stop the scheduler synchronously — don't queue behind SwiftUI work.
-        // The ~8ms declick fade is acceptable for a user-initiated pause.
-        playbackScheduler?.stop()
+        // Favor responsiveness on repeated transport toggles.
+        playbackScheduler?.removeTrackLevelTaps()
+        playbackScheduler?.stop(skipDeclick: true)
+        engineManager?.removeMasterLevelTap()
         engineManager?.metronome?.setEnabled(false)
         transport.pause()
         syncFromTransport()
@@ -218,8 +220,9 @@ public final class TransportViewModel {
         stopContainerRecording()
         playbackTask?.cancel()
         playbackTask = nil
-        // Stop the scheduler synchronously for immediate audio silence.
-        playbackScheduler?.stop()
+        playbackScheduler?.removeTrackLevelTaps()
+        playbackScheduler?.stop(skipDeclick: true)
+        engineManager?.removeMasterLevelTap()
         engineManager?.metronome?.setEnabled(false)
         engineManager?.metronome?.reset()
         if isPerformMode {
@@ -245,7 +248,9 @@ public final class TransportViewModel {
             stopContainerRecording()
             playbackTask?.cancel()
             playbackTask = nil
-            playbackScheduler?.stop()
+            playbackScheduler?.removeTrackLevelTaps()
+            playbackScheduler?.stop(skipDeclick: true)
+            engineManager?.removeMasterLevelTap()
             engineManager?.metronome?.setEnabled(false)
             engineManager?.metronome?.reset()
             transport.pause()
@@ -265,7 +270,7 @@ public final class TransportViewModel {
 
     public func togglePlayPause() {
         if isPlaying || isCountingIn {
-            pause()
+            stop()
         } else {
             play()
         }
@@ -312,11 +317,8 @@ public final class TransportViewModel {
     }
 
     public func setPlayheadPosition(_ bar: Double) {
-        let start = CFAbsoluteTimeGetCurrent()
         transport.setPlayheadPosition(bar)
         syncFromTransport()
-        let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
-        print("[PERF] setPlayheadPosition(\(bar)): \(String(format: "%.1f", ms))ms")
     }
 
     /// Updates a single track's volume/pan in the live audio graph without
@@ -347,7 +349,6 @@ public final class TransportViewModel {
     /// Seeks to a new bar position. If currently playing, stops and restarts
     /// playback from the new position so audio is rescheduled.
     public func seek(toBar bar: Double) {
-        let seekStart = CFAbsoluteTimeGetCurrent()
         playbackGeneration += 1
         let wasPlaying = isPlaying
         if wasPlaying {
@@ -355,6 +356,7 @@ public final class TransportViewModel {
             playbackTask?.cancel()
             playbackTask = nil
             // Stop synchronously with skipDeclick — we're about to restart playback
+            playbackScheduler?.removeTrackLevelTaps()
             playbackScheduler?.stop(skipDeclick: true)
             engineManager?.metronome?.reset()
             transport.pause()
@@ -386,8 +388,6 @@ public final class TransportViewModel {
             transport.play(waitForAudioSync: true)
             syncFromTransport()
         }
-        let seekMs = (CFAbsoluteTimeGetCurrent() - seekStart) * 1000
-        print("[PERF] seek(toBar: \(bar)): \(String(format: "%.1f", seekMs))ms wasPlaying=\(wasPlaying)")
     }
 
     public func updateBPM(_ newBPM: Double) {
@@ -624,22 +624,14 @@ public final class TransportViewModel {
             song: song,
             recordingIDs: Set(recordings.keys)
         ) ?? true
-        let containerCount = song.tracks.flatMap(\.containers).count
-        let recCount = recordings.count
-        print("[PLAY] schedulePlayback: needsPrepare=\(needsPrepare) containers=\(containerCount) recordings=\(recCount)")
-        let scheduleEnqueueTime = CFAbsoluteTimeGetCurrent()
         playbackTask = Task {
             // Wait for any in-flight prepare (e.g. from ensureEngineReadyForPreview)
             // to finish before starting ours — prevents concurrent engine graph mutations.
             _ = await previousTask?.value
-            let taskStart = CFAbsoluteTimeGetCurrent()
-            let waitMs = (taskStart - scheduleEnqueueTime) * 1000
             guard self.playbackGeneration == gen else {
-                print("[PERF] schedulePlayback: cancelled after \(String(format: "%.1f", waitMs))ms queued")
                 return
             }
             if needsPrepare {
-                print("[PLAY] calling prepare()")
                 await scheduler?.prepare(song: song, sourceRecordings: recordings)
                 guard self.playbackGeneration == gen else { return }
                 // Install per-track level taps after graph is built
@@ -655,6 +647,8 @@ public final class TransportViewModel {
                 timeSignature: timeSignature,
                 sampleRate: sampleRate
             )
+            // Reinstall taps for resume paths where needsPrepare is false.
+            scheduler?.installTrackLevelTaps()
 
             // Start container recording after audio scheduling
             if let context = self.songProvider?() {
@@ -671,11 +665,11 @@ public final class TransportViewModel {
             // Audio player nodes are now started — calibrate the playhead
             // so it starts advancing in sync with audible output.
             let outputLatency = self.engineManager?.engine.outputNode.presentationLatency ?? 0
-            self.transport.completeAudioSync(audioOutputLatency: outputLatency)
+            let schedulerStartupCompensation = scheduler?.playbackStartupCompensationSeconds ?? 0
+            self.transport.completeAudioSync(
+                audioOutputLatency: outputLatency + schedulerStartupCompensation
+            )
             self.syncFromTransport()
-
-            let totalMs = (CFAbsoluteTimeGetCurrent() - taskStart) * 1000
-            print("[PERF] schedulePlayback task: \(String(format: "%.1f", totalMs))ms (queued \(String(format: "%.1f", waitMs))ms, needsPrepare=\(needsPrepare))")
         }
     }
 
@@ -689,11 +683,7 @@ public final class TransportViewModel {
         sampleRate: Double,
         audioDir: URL
     ) {
-        print("[REC] startContainerRecordingIfNeeded called, isRecordArmed=\(isRecordArmed)")
-        guard isRecordArmed else {
-            print("[REC] BAIL: transport not record-armed")
-            return
-        }
+        guard isRecordArmed else { return }
 
         // Collect armed containers from audio tracks.
         // If individual containers are armed, use those.
@@ -703,26 +693,17 @@ public final class TransportViewModel {
             let containerArmed = track.containers.filter(\.isRecordArmed)
             if !containerArmed.isEmpty {
                 for container in containerArmed {
-                    print("[REC]   container '\(container.name)' armed (container-level) bars=\(container.startBar)-\(container.endBar)")
                     armed.append((container.id, track.id, container.startBar, container.endBar))
                 }
             } else if track.isRecordArmed {
                 for container in track.containers {
-                    print("[REC]   container '\(container.name)' armed (track-level) bars=\(container.startBar)-\(container.endBar)")
                     armed.append((container.id, track.id, container.startBar, container.endBar))
                 }
             }
         }
-        guard !armed.isEmpty else {
-            print("[REC] BAIL: no armed containers found")
-            return
-        }
-        guard let engine = engineManager else {
-            print("[REC] BAIL: no engine manager")
-            return
-        }
+        guard !armed.isEmpty else { return }
+        guard let engine = engineManager else { return }
 
-        print("[REC] Creating ContainerRecorder with \(armed.count) armed container(s), audioDir=\(audioDir.path)")
         let recorder = ContainerRecorder(engine: engine.engine, audioDirURL: audioDir)
         recorder.onPeaksUpdated = { [weak self] containerID, peaks in
             self?.onRecordingPeaksUpdated?(containerID, peaks)
@@ -747,7 +728,6 @@ public final class TransportViewModel {
     }
 
     private func syncFromTransport() {
-        let syncStart = CFAbsoluteTimeGetCurrent()
         isPlaying = transport.state == .playing || transport.state == .recording
         isCountingIn = transport.state == .countingIn
         isRecordArmed = transport.isRecordArmed
@@ -756,9 +736,5 @@ public final class TransportViewModel {
         playheadBar = bar
         onPlayheadChanged?(bar)
         countInBarsRemaining = transport.countInBarsRemaining
-        let syncMs = (CFAbsoluteTimeGetCurrent() - syncStart) * 1000
-        if syncMs > 1.0 {
-            print("[PERF] syncFromTransport: \(String(format: "%.1f", syncMs))ms")
-        }
     }
 }

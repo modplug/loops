@@ -66,6 +66,9 @@ public struct ContainerView: View {
     var onDuplicateSelected: (() -> Void)?
     var onCopySelected: (() -> Void)?
     var onSplitSelected: (() -> Void)?
+    /// Visible X range in timeline coordinates (for viewport-aware waveform rendering).
+    var visibleXMin: CGFloat = 0
+    var visibleXMax: CGFloat = CGFloat.greatestFiniteMagnitude
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
@@ -132,7 +135,9 @@ public struct ContainerView: View {
         onDeleteSelected: (() -> Void)? = nil,
         onDuplicateSelected: (() -> Void)? = nil,
         onCopySelected: (() -> Void)? = nil,
-        onSplitSelected: (() -> Void)? = nil
+        onSplitSelected: (() -> Void)? = nil,
+        visibleXMin: CGFloat = 0,
+        visibleXMax: CGFloat = .greatestFiniteMagnitude
     ) {
         self.container = container
         self.pixelsPerBar = pixelsPerBar
@@ -174,6 +179,8 @@ public struct ContainerView: View {
         self.onDuplicateSelected = onDuplicateSelected
         self.onCopySelected = onCopySelected
         self.onSplitSelected = onSplitSelected
+        self.visibleXMin = visibleXMin
+        self.visibleXMax = visibleXMax
     }
 
     /// Derived from SelectionState observable — only this ContainerView re-evaluates
@@ -305,13 +312,24 @@ public struct ContainerView: View {
 
             // Waveform (audio containers)
             if let peaks = waveformPeaks, !peaks.isEmpty {
+                let waveformWidth = max(1, (activeWaveformContainerWidth - 4) * activeWaveformWidthFraction)
+                // Convert timeline visible range to WaveformView-local coordinates.
+                // Quantize to 200pt steps so WaveformView's Equatable absorbs small
+                // scroll changes. The 500pt viewport buffer ensures no blank areas.
+                let containerX = containerOriginX
+                let quantumSize: CGFloat = 200
+                let localVisibleMinX = floor((visibleXMin - containerX) / quantumSize) * quantumSize
+                let localVisibleMaxX = ceil((visibleXMax - containerX) / quantumSize) * quantumSize
                 WaveformView(
                     peaks: peaks,
                     color: trackColor,
                     startFraction: activeWaveformStartFraction,
-                    lengthFraction: activeWaveformLengthFraction
+                    lengthFraction: activeWaveformLengthFraction,
+                    visibleMinX: localVisibleMinX,
+                    visibleMaxX: localVisibleMaxX
                 )
-                .frame(width: max(1, (activeWaveformContainerWidth - 4) * activeWaveformWidthFraction))
+                .equatable()
+                .frame(width: waveformWidth)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // During resize-left extension (no audioStartOffset change),
                 // keep waveform at its original position by offsetting right.
@@ -502,30 +520,30 @@ public struct ContainerView: View {
             .allowsHitTesting(false)
 
             // Unified smart tool gesture overlay
-            GeometryReader { geo in
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onContinuousHover { phase in
-                        switch phase {
-                        case .active(let location):
-                            isHovering = true
-                            let zone = detectZone(at: location, in: geo.size)
-                            if zone != hoverZone {
-                                if hoverZone != nil { NSCursor.pop() }
-                                hoverZone = zone
-                                cursorForZone(zone).push()
-                            }
-                        case .ended:
+            // Uses known displayWidth/height instead of GeometryReader to avoid
+            // an extra layout pass per container during zoom.
+            Color.clear
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    let knownSize = CGSize(width: displayWidth, height: height)
+                    switch phase {
+                    case .active(let location):
+                        isHovering = true
+                        let zone = detectZone(at: location, in: knownSize)
+                        if zone != hoverZone {
                             if hoverZone != nil { NSCursor.pop() }
-                            isHovering = false
-                            hoverZone = nil
+                            hoverZone = zone
+                            cursorForZone(zone).push()
                         }
+                    case .ended:
+                        if hoverZone != nil { NSCursor.pop() }
+                        isHovering = false
+                        hoverZone = nil
                     }
-                    .gesture(altCloneGesture)
-                    .gesture(smartDragGesture(size: geo.size))
-            }
+                }
+                .gesture(altCloneGesture)
+                .gesture(smartDragGesture(size: CGSize(width: displayWidth, height: height)))
         }
-        .drawingGroup()
         .clipped()
         .frame(width: displayWidth, height: height)
         .overlay {
@@ -987,19 +1005,41 @@ extension ContainerView: Equatable {
     public static func == (lhs: ContainerView, rhs: ContainerView) -> Bool {
         // selectionState is not compared — it's the same object reference.
         // Selection changes are observed directly via @Observable in each ContainerView's body.
-        lhs.container == rhs.container &&
+        //
+        // Cheap scalars first, expensive arrays last.
+        // waveformPeaks uses O(1) identity check (count + sentinel samples) instead of
+        // full O(N) array comparison — peaks change rarely (only on import/recording).
         lhs.pixelsPerBar == rhs.pixelsPerBar &&
         lhs.height == rhs.height &&
         lhs.trackColor == rhs.trackColor &&
-        lhs.waveformPeaks == rhs.waveformPeaks &&
         lhs.isClone == rhs.isClone &&
-        lhs.overriddenFields == rhs.overriddenFields &&
-        lhs.resolvedMIDISequence == rhs.resolvedMIDISequence &&
+        lhs.multiSelectCount == rhs.multiSelectCount &&
         lhs.recordingDurationBars == rhs.recordingDurationBars &&
+        lhs.container == rhs.container &&
+        lhs.overriddenFields == rhs.overriddenFields &&
+        peaksEqual(lhs.waveformPeaks, rhs.waveformPeaks) &&
+        lhs.resolvedMIDISequence == rhs.resolvedMIDISequence &&
         lhs.crossfades == rhs.crossfades &&
         lhs.otherSongs.count == rhs.otherSongs.count &&
         zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name } &&
-        lhs.multiSelectCount == rhs.multiSelectCount
+        lhs.visibleXMin == rhs.visibleXMin &&
+        lhs.visibleXMax == rhs.visibleXMax
+    }
+
+    /// O(1) waveform peaks identity check. Full element-wise comparison is too expensive
+    /// for large audio files (18,000+ samples). Peaks only change on import/recording,
+    /// so count + sentinel samples is sufficient to detect actual changes.
+    private static func peaksEqual(_ a: [Float]?, _ b: [Float]?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): return true
+        case (nil, _), (_, nil): return false
+        case let (a?, b?):
+            guard a.count == b.count else { return false }
+            guard !a.isEmpty else { return true }
+            return a[0] == b[0] &&
+                   a[a.count / 2] == b[a.count / 2] &&
+                   a[a.count - 1] == b[a.count - 1]
+        }
     }
 }
 

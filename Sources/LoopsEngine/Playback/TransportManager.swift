@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import QuartzCore
 import LoopsCore
 
 /// Transport state: stopped, playing, recording, or counting in before recording.
@@ -82,14 +83,14 @@ public final class TransportManager: @unchecked Sendable {
             state = .countingIn
             countInBarsRemaining = countInBars
             countInDurationSeconds = Double(countInBars) * barDurationSeconds
-            countInStartTime = CFAbsoluteTimeGetCurrent()
+            countInStartTime = CACurrentMediaTime()
             isWaitingForAudioSync = false
             startTimer()
         } else {
             state = isRecordArmed ? .recording : .playing
             isWaitingForAudioSync = waitForAudioSync
             if !waitForAudioSync {
-                playbackStartTime = CFAbsoluteTimeGetCurrent()
+                playbackStartTime = CACurrentMediaTime()
             }
             playbackStartBar = playheadBar
             startTimer()
@@ -112,7 +113,7 @@ public final class TransportManager: @unchecked Sendable {
     ///   this long before advancing, matching audible output timing.
     public func completeAudioSync(audioOutputLatency: Double = 0) {
         guard isWaitingForAudioSync else { return }
-        playbackStartTime = CFAbsoluteTimeGetCurrent() + audioOutputLatency
+        playbackStartTime = CACurrentMediaTime() + audioOutputLatency
         playbackStartBar = playheadBar
         isWaitingForAudioSync = false
     }
@@ -166,7 +167,7 @@ public final class TransportManager: @unchecked Sendable {
     public func setPlayheadPosition(_ bar: Double) {
         let wasPlaying = state == .playing || state == .recording
         if wasPlaying {
-            playbackStartTime = CFAbsoluteTimeGetCurrent()
+            playbackStartTime = CACurrentMediaTime()
             playbackStartBar = max(bar, 1.0)
         }
         playheadBar = max(bar, 1.0)
@@ -206,7 +207,7 @@ public final class TransportManager: @unchecked Sendable {
         guard state != .stopped else { return }
 
         if state == .countingIn {
-            let elapsed = CFAbsoluteTimeGetCurrent() - countInStartTime
+            let elapsed = CACurrentMediaTime() - countInStartTime
             let barsElapsed = elapsed / barDurationSeconds
             let remaining = countInBars - Int(barsElapsed)
             countInBarsRemaining = max(remaining, 0)
@@ -216,7 +217,7 @@ public final class TransportManager: @unchecked Sendable {
                 // Count-in complete — transition to recording
                 state = .recording
                 countInBarsRemaining = 0
-                playbackStartTime = CFAbsoluteTimeGetCurrent()
+                playbackStartTime = CACurrentMediaTime()
                 playbackStartBar = playheadBar
                 onCountInComplete?()
             }
@@ -234,7 +235,7 @@ public final class TransportManager: @unchecked Sendable {
         // Clamp to non-negative: when audioOutputLatency pushes
         // playbackStartTime into the future, the playhead holds at
         // playbackStartBar until audio reaches the speakers.
-        let elapsed = max(0, CFAbsoluteTimeGetCurrent() - playbackStartTime)
+        let elapsed = max(0, CACurrentMediaTime() - playbackStartTime)
         let barsElapsed = elapsed / barDurationSeconds
         playheadBar = playbackStartBar + barsElapsed
         onPositionUpdate?(playheadBar)

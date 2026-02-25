@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreFoundation
+import QuartzCore
 import LoopsCore
 import ObjCHelpers
 
@@ -12,6 +13,17 @@ import ObjCHelpers
 /// When a container's effect chain is bypassed (or empty), the player routes
 /// directly to the track mixer.
 public final class PlaybackScheduler: @unchecked Sendable {
+    private static let syncDiagnosticsEnabled = false
+    private static let syncDiagnosticsVerboseEnabled = false
+
+    private func syncDiag(_ message: @autoclosure () -> String) {
+        _ = message
+    }
+
+    private func playLog(_ message: @autoclosure () -> String) {
+        _ = message
+    }
+
     private let engine: AVAudioEngine
     private let audioUnitHost: AudioUnitHost
     private var audioFiles: [ID<SourceRecording>: AVAudioFile] = [:]
@@ -90,8 +102,15 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
     /// Automation state: tracks playback start time and container offsets.
     private var automationTimer: DispatchSourceTimer?
-    private var playbackStartTime: Date?
+    /// Monotonic clock reference (CACurrentMediaTime) for playback position.
+    private var playbackStartTime: CFTimeInterval?
     private var playbackStartBar: Double = 1.0
+    /// Startup delay between transport play command and first audible sample.
+    /// Includes start headroom + maximum path latency compensation.
+    private var _playbackStartupCompensationSeconds: Double = 0
+    /// Rolling estimate of start-batch dispatch cost (`player.play(at:)` fan-out),
+    /// used to reserve enough lead for subsequent starts.
+    private var recentStartDispatchSeconds: Double = 0.040
 
     /// Live automation data — updated without graph rebuild so edits during
     /// playback are reflected immediately.
@@ -189,6 +208,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
         return playbackStartTime != nil
     }
 
+    /// Startup delay applied on the most recent `play()` call.
+    public var playbackStartupCompensationSeconds: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return _playbackStartupCompensationSeconds
+    }
+
     /// Invalidates the prepared graph fingerprints, forcing the next
     /// `needsPrepare()` call to return `true`. Use after operations that
     /// may corrupt the engine topology (e.g. input monitoring toggles).
@@ -252,7 +278,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// the synchronous attach/connect pass.
     @MainActor
     public func prepare(song: Song, sourceRecordings: [ID<SourceRecording>: SourceRecording]) async {
-        let prepareStart = CFAbsoluteTimeGetCurrent()
         let allContainers = song.tracks.flatMap(\.containers)
 
         // ── Phase 1: Load files and audio units (async, engine keeps running) ──
@@ -288,7 +313,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     preloadedMasterEffectIdxMap[fullIndex] = preloadedMasterEffects.count
                     preloadedMasterEffects.append(unit)
                 } else {
-                    print("[WARN] Failed to load AU: \(effect.displayName)")
                 }
             }
         }
@@ -328,7 +352,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         trackEffectIdxMap[fullIndex] = trackEffects.count
                         trackEffects.append(unit)
                     } else {
-                        print("[WARN] Failed to load AU: \(effect.displayName)")
                     }
                 }
             }
@@ -375,7 +398,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
                             containerEffectIdxMap[fullIndex] = effectUnits.count
                             effectUnits.append(unit)
                         } else {
-                            print("[WARN] Failed to load AU: \(effect.displayName)")
                         }
                     }
                 }
@@ -416,16 +438,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // engine.connect() silently fails on a running engine, so we must
         // stop it for the attach/connect pass. This phase is fast (no awaits).
 
-        let totalContainers = preloadedTracks.flatMap(\.containers).count
-        let phase1Ms = (CFAbsoluteTimeGetCurrent() - prepareStart) * 1000
-        print("[PERF] prepare phase1 (AU load): \(String(format: "%.1f", phase1Ms))ms — \(loadedFiles.count) files, \(preloadedTracks.count) tracks, \(totalContainers) containers")
         for pt in preloadedTracks {
             for pc in pt.containers {
-                print("[PLAY]   container '\(pc.container.name)' id=\(pc.container.id) hasFormat=\(pc.audioFormat != nil) recID=\(pc.container.sourceRecordingID.map { "\($0)" } ?? "none")")
+                playLog("  container '\(pc.container.name)' id=\(pc.container.id) hasFormat=\(pc.audioFormat != nil) recID=\(pc.container.sourceRecordingID.map { "\($0)" } ?? "none")")
             }
         }
 
-        let phase2Start = CFAbsoluteTimeGetCurrent()
         let wasRunning = engine.isRunning
         if wasRunning { engine.stop() }
         defer { if wasRunning { try? engine.start() } }
@@ -528,7 +546,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     let inst = pc.instrument!
                     // Connect instrument → effects → trackMixer
                     if !connectEffectChain(source: inst, chain: effectChain, destination: trackMixer, format: nil) {
-                        print("[WARN] Instrument chain connection failed for '\(pc.container.name)'")
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
                     }
@@ -538,7 +555,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 } else {
                     // Audio container: player → effects → trackMixer
                     if !connectEffectChain(source: player, chain: effectChain, destination: trackMixer, format: playerFormat) {
-                        print("[WARN] Effect chain connection failed for '\(pc.container.name)'")
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
                     }
@@ -590,9 +606,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
         preparedMasterFingerprint = masterFP
         lock.unlock()
 
-        let phase2Ms = (CFAbsoluteTimeGetCurrent() - phase2Start) * 1000
-        let totalMs = (CFAbsoluteTimeGetCurrent() - prepareStart) * 1000
-        print("[PERF] prepare phase2 (engine rebuild): \(String(format: "%.1f", phase2Ms))ms — total: \(String(format: "%.1f", totalMs))ms")
     }
 
     /// Incrementally updates the audio graph, rebuilding only tracks whose
@@ -675,7 +688,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         preloadedMasterEffectIdxMap[fullIndex] = preloadedMasterEffects.count
                         preloadedMasterEffects.append(unit)
                     } else {
-                        print("[WARN] Failed to load AU: \(effect.displayName)")
                     }
                 }
             }
@@ -729,7 +741,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         trackEffectIdxMap[fullIndex] = trackEffects.count
                         trackEffects.append(unit)
                     } else {
-                        print("[WARN] Failed to load AU: \(effect.displayName)")
                     }
                 }
             }
@@ -771,7 +782,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
                             containerEffectIdxMap[fullIndex] = effectUnits.count
                             effectUnits.append(unit)
                         } else {
-                            print("[WARN] Failed to load AU: \(effect.displayName)")
                         }
                     }
                 }
@@ -809,7 +819,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         // ── Phase 2: Stop engine, selectively rebuild graph, restart ──
 
-        print("[PLAY] prepareIncremental: \(changedTrackIDs.count) changed, \(removedTrackIDs.count) removed, master=\(masterChanged)")
+        playLog("prepareIncremental: \(changedTrackIDs.count) changed, \(removedTrackIDs.count) removed, master=\(masterChanged)")
 
         // Capture current AU state from containers being rebuilt so preset
         // changes made via the plugin UI are preserved across graph rebuilds.
@@ -979,14 +989,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 if hasInstrument {
                     let inst = pc.instrument!
                     if !connectEffectChain(source: inst, chain: effectChain, destination: trackMixer, format: nil) {
-                        print("[WARN] Instrument chain connection failed for '\(pc.container.name)'")
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
                     }
                     engine.connect(player, to: trackMixer, format: playerFormat)
                 } else {
                     if !connectEffectChain(source: player, chain: effectChain, destination: trackMixer, format: playerFormat) {
-                        print("[WARN] Effect chain connection failed for '\(pc.container.name)'")
                         chainConnected = false
                         newFailedContainerIDs.insert(pc.container.id)
                     }
@@ -1084,7 +1092,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         lock.unlock()
 
         // Schedule containers only on changed tracks, deferring play() for batch start
-        var scheduledPlayers: [AVAudioPlayerNode] = []
+        var scheduledEntries: [(player: AVAudioPlayerNode, containerID: ID<Container>)] = []
         for track in song.tracks {
             if track.kind == .master { continue }
             guard changedTrackIDs.contains(track.id) else { continue }
@@ -1109,18 +1117,18 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     samplesPerBar: samplesPerBar,
                     deferPlay: true
                 ) {
-                    scheduledPlayers.append(player)
+                    scheduledEntries.append((player: player, containerID: resolved.id))
                 }
             }
         }
 
-        // Batch-start changed track players with a shared host-time anchor
-        if !scheduledPlayers.isEmpty {
-            let sharedStartTime = AVAudioTime(hostTime: Self.syncStartHostTime())
-            for player in scheduledPlayers {
-                player.play(at: sharedStartTime)
-            }
-        }
+        // Start changed-track players with latency compensation so rebuilt paths
+        // remain sample-aligned with each other.
+        _ = startScheduledPlayersWithLatencyCompensation(
+            scheduledEntries,
+            sampleRate: sampleRate,
+            updateStartupCompensation: false
+        )
 
         // Restart automation timer with updated song data to pick up new track effects
         restartAutomationTimer(song: song, fromBar: fromBar, bpm: bpm, timeSignature: timeSignature)
@@ -1139,7 +1147,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let ts = currentTimeSignature
         lock.unlock()
 
-        let elapsed = Date().timeIntervalSince(startTime)
+        let elapsed = max(0, CACurrentMediaTime() - startTime)
         let secondsPerBeat = 60.0 / bpm
         let secondsPerBar = Double(ts.beatsPerBar) * secondsPerBeat
         return startBar + elapsed / secondsPerBar
@@ -1159,7 +1167,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Calculate current bar position under the old tempo
         let currentBar: Double
         if let startTime = oldStartTime {
-            let elapsed = Date().timeIntervalSince(startTime)
+            let elapsed = max(0, CACurrentMediaTime() - startTime)
             let secondsPerBeat = 60.0 / oldBPM
             let secondsPerBar = Double(oldTS.beatsPerBar) * secondsPerBeat
             currentBar = oldStartBar + elapsed / secondsPerBar
@@ -1171,7 +1179,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         currentBPM = bpm
         currentTimeSignature = timeSignature
         if oldStartTime != nil {
-            playbackStartTime = Date()
+            playbackStartTime = CACurrentMediaTime()
             playbackStartBar = currentBar
         }
         lock.unlock()
@@ -1185,7 +1193,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
         timeSignature: TimeSignature,
         sampleRate: Double
     ) {
-        let playStart = CFAbsoluteTimeGetCurrent()
         let samplesPerBar = self.samplesPerBar(bpm: bpm, timeSignature: timeSignature, sampleRate: sampleRate)
         let allContainers = song.tracks.flatMap(\.containers)
 
@@ -1195,8 +1202,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
         currentBPM = bpm
         currentTimeSignature = timeSignature
         currentSampleRate = sampleRate
-        playbackStartTime = Date()
+        playbackStartTime = CACurrentMediaTime()
         playbackStartBar = fromBar
+        _playbackStartupCompensationSeconds = 0
 
         // Build container → track mapping for monitoring suppression
         for track in song.tracks {
@@ -1206,12 +1214,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
         lock.unlock()
 
-        print("[PLAY] play() fromBar=\(fromBar) subgraphs=\(containerSubgraphs.count) audioFiles=\(audioFiles.count)")
+        playLog("play() fromBar=\(fromBar) subgraphs=\(containerSubgraphs.count) audioFiles=\(audioFiles.count)")
+        syncDiag("play begin fromBar=\(String(format: "%.3f", fromBar)) bpm=\(String(format: "%.2f", bpm)) sampleRate=\(String(format: "%.1f", sampleRate)) presentationLatency=\(String(format: "%.4f", engine.outputNode.presentationLatency)) outputMaxFrames=\(engine.outputNode.auAudioUnit.maximumFramesToRender)")
 
         // Phase 1: Schedule all container segments with deferred play().
-        // Collect player nodes so we can batch-start them with a shared
-        // host-time anchor for sample-accurate multi-track sync.
-        var scheduledPlayers: [AVAudioPlayerNode] = []
+        // Collect player/container pairs so we can compute path latency and
+        // start each player at the correct host time.
+        var scheduledEntries: [(player: AVAudioPlayerNode, containerID: ID<Container>)] = []
 
         for track in song.tracks {
             // Master track has no playable containers
@@ -1243,21 +1252,17 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     samplesPerBar: samplesPerBar,
                     deferPlay: true
                 ) {
-                    scheduledPlayers.append(player)
+                    scheduledEntries.append((player: player, containerID: resolved.id))
                 }
             }
         }
 
-        // Phase 2: Batch-start all player nodes with a shared host-time anchor.
-        // This ensures every track begins rendering at exactly the same sample,
-        // eliminating the inter-track drift caused by sequential play() calls.
-        if !scheduledPlayers.isEmpty {
-            let sharedStartTime = AVAudioTime(hostTime: Self.syncStartHostTime())
-            for player in scheduledPlayers {
-                player.play(at: sharedStartTime)
-            }
-            print("[PLAY] batch-started \(scheduledPlayers.count) player nodes at shared host time")
-        }
+        // Phase 2: Start players with per-path latency compensation.
+        let startupCompensation = startScheduledPlayersWithLatencyCompensation(
+            scheduledEntries,
+            sampleRate: sampleRate,
+            updateStartupCompensation: true
+        )
 
         lock.lock()
         let activeTrackIDs = tracksWithActiveContainers
@@ -1268,17 +1273,19 @@ public final class PlaybackScheduler: @unchecked Sendable {
             inputMonitor?.suppressMonitoring(trackID: trackID)
         }
 
-        startAutomationTimer(song: song, fromBar: fromBar, bpm: bpm, timeSignature: timeSignature)
-
-        let playMs = (CFAbsoluteTimeGetCurrent() - playStart) * 1000
-        print("[PERF] play(): \(String(format: "%.1f", playMs))ms — \(song.tracks.flatMap(\.containers).count) containers from bar \(fromBar)")
+        startAutomationTimer(
+            song: song,
+            fromBar: fromBar,
+            bpm: bpm,
+            timeSignature: timeSignature,
+            startupCompensationSeconds: startupCompensation
+        )
     }
 
     /// Stops all playback.
     /// - Parameter skipDeclick: When `true`, stops player nodes immediately without
     ///   the ~8ms fade-out ramp. Use this for seeks where playback restarts immediately.
     public func stop(skipDeclick: Bool = false) {
-        let stopStart = CFAbsoluteTimeGetCurrent()
         stopAutomationTimer()
 
         // Copy state under lock, then operate on copies
@@ -1292,6 +1299,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         containerToTrack.removeAll()
         activeMIDINotes.removeAll()
         currentSong = nil
+        playbackStartTime = nil
+        _playbackStartupCompensationSeconds = 0
         lock.unlock()
 
         // Send note-off for all active MIDI notes
@@ -1300,24 +1309,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         if !subgraphs.isEmpty {
-            if skipDeclick {
-                // Immediate stop — no fade, playback is about to restart
-                for (_, subgraph) in subgraphs {
-                    subgraph.playerNode.stop()
-                }
-            } else {
-                // Declick fade-out: ramp main mixer output volume to zero over ~8ms
-                // so the render thread picks up intermediate values before we stop nodes.
-                let savedVolume = engine.mainMixerNode.outputVolume
-                let steps = 8
-                for i in 1...steps {
-                    engine.mainMixerNode.outputVolume = savedVolume * Float(steps - i) / Float(steps)
-                    usleep(1000)
-                }
-                for (_, subgraph) in subgraphs {
-                    subgraph.playerNode.stop()
-                }
-                engine.mainMixerNode.outputVolume = savedVolume
+            // Avoid blocking the main thread with synchronous fade loops.
+            // Stop immediately; transport already uses skipDeclick for rapid toggles.
+            _ = skipDeclick
+            for (_, subgraph) in subgraphs {
+                subgraph.playerNode.stop()
             }
         }
 
@@ -1328,9 +1324,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
         for trackID in tracks {
             inputMonitor?.unsuppressMonitoring(trackID: trackID)
         }
-
-        let stopMs = (CFAbsoluteTimeGetCurrent() - stopStart) * 1000
-        print("[PERF] stop(skipDeclick=\(skipDeclick)): \(String(format: "%.1f", stopMs))ms — \(subgraphs.count) subgraphs, \(midiNotes.count) MIDI notes")
     }
 
     /// Safely disconnects a node's output and input, catching NSExceptions from
@@ -1361,10 +1354,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
             timeSignatureNumerator?.pointee = Double(ts.beatsPerBar)
             timeSignatureDenominator?.pointee = Int(ts.beatUnit)
 
-            // Calculate current beat position from wall-clock elapsed time
+            // Calculate current beat position from monotonic elapsed time
             let secondsPerBeat = 60.0 / bpm
             if let startTime {
-                let elapsed = Date().timeIntervalSince(startTime)
+                let elapsed = max(0, CACurrentMediaTime() - startTime)
                 let beatsElapsed = elapsed / secondsPerBeat
                 let startBeat = (startBar - 1.0) * Double(ts.beatsPerBar)
                 let currentBeat = startBeat + beatsElapsed
@@ -1404,7 +1397,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             transportStateFlags?.pointee = flags
 
             if let startTime {
-                let elapsed = Date().timeIntervalSince(startTime)
+                let elapsed = max(0, CACurrentMediaTime() - startTime)
                 currentSamplePosition?.pointee = elapsed * sampleRate
             } else {
                 currentSamplePosition?.pointee = 0
@@ -1450,6 +1443,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         audioFiles.removeAll()
         recordingFileURLs.removeAll()
         currentSong = nil
+        playbackStartTime = nil
+        _playbackStartupCompensationSeconds = 0
         preparedTrackFingerprints.removeAll()
         preparedMasterFingerprint = nil
         lock.unlock()
@@ -1678,9 +1673,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         guard song != nil else { return }
         let spb = samplesPerBar(bpm: bpm, timeSignature: ts, sampleRate: sr)
+        let playbackBar = currentPlaybackBar() ?? container.startBar
         scheduleContainer(
             container: container,
-            fromBar: container.startBar,
+            fromBar: playbackBar,
             samplesPerBar: spb
         )
     }
@@ -1698,23 +1694,39 @@ public final class PlaybackScheduler: @unchecked Sendable {
         samplesPerBar: Double,
         deferPlay: Bool = false
     ) -> AVAudioPlayerNode? {
+        var audioFile: AVAudioFile?
+        var subgraph: ContainerSubgraph?
+        var recordingURL: URL?
+
         lock.lock()
-        let audioFile: AVAudioFile?
-        let subgraph: ContainerSubgraph?
         if let recordingID = container.sourceRecordingID {
             let sg = containerSubgraphs[container.id]
-            // Prefer per-container audio file; fall back to shared file
-            audioFile = sg?.audioFile ?? audioFiles[recordingID]
             subgraph = sg
-            if audioFile == nil || subgraph == nil {
-                print("[PLAY] scheduleContainer '\(container.name)' id=\(container.id) MISSING audioFile=\(audioFile != nil) subgraph=\(subgraph != nil) recID=\(recordingID)")
+            audioFile = sg?.audioFile
+            recordingURL = recordingFileURLs[recordingID] ?? audioFiles[recordingID]?.url
+            if subgraph == nil {
+                playLog("scheduleContainer '\(container.name)' id=\(container.id) MISSING audioFile=\(audioFile != nil) subgraph=\(subgraph != nil) recID=\(recordingID)")
             }
         } else {
             audioFile = nil
             subgraph = nil
-            print("[PLAY] scheduleContainer '\(container.name)' id=\(container.id) NO sourceRecordingID")
+            playLog("scheduleContainer '\(container.name)' id=\(container.id) NO sourceRecordingID")
         }
         lock.unlock()
+
+        // Never share AVAudioFile instances across concurrently-playing containers.
+        // Each player node should read from its own file handle/cursor.
+        if audioFile == nil, let url = recordingURL, var sg = subgraph {
+            if let freshFile = try? AVAudioFile(forReading: url) {
+                audioFile = freshFile
+                sg.audioFile = freshFile
+                subgraph = sg
+                lock.lock()
+                containerSubgraphs[container.id] = sg
+                lock.unlock()
+                syncDiag("opened dedicated file handle for container=\(container.id) url=\(url.lastPathComponent)")
+            }
+        }
 
         guard let audioFile, let subgraph else { return nil }
 
@@ -1731,15 +1743,21 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         let audioOffsetSamples = Int64(container.audioStartOffset * fileSPB)
 
-        print("[PLAY] scheduleContainer '\(container.name)' id=\(container.id) bars=\(container.startBar)-\(container.endBar) fileLen=\(audioFile.length) audioOffset=\(audioOffsetSamples) fileRate=\(fileRate) engineRate=\(currentSampleRate) parent=\(container.parentContainerID.map { "\($0)" } ?? "none")")
-
         let containerStartSample = Int64((container.startBar - 1.0) * fileSPB)
         let containerEndSample = Int64((container.endBar - 1.0) * fileSPB)
         let playheadSample = Int64((fromBar - 1.0) * fileSPB)
+        playLog(
+            "scheduleContainer '\(container.name)' id=\(container.id) "
+            + "bars=\(String(format: "%.6f", container.startBar))-\(String(format: "%.6f", container.endBar)) "
+            + "samples=\(containerStartSample)-\(containerEndSample) playheadSample=\(playheadSample) "
+            + "fileLen=\(audioFile.length) audioOffset=\(audioOffsetSamples) "
+            + "fileRate=\(fileRate) engineRate=\(currentSampleRate) "
+            + "parent=\(container.parentContainerID.map { "\($0)" } ?? "none")"
+        )
 
         // Skip containers that end before the playhead
         if containerEndSample <= playheadSample {
-            print("[PLAY]   skipping '\(container.name)' — ends before playhead")
+            playLog("  skipping '\(container.name)' — ends before playhead")
             return nil
         }
 
@@ -1767,7 +1785,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         guard frameCount > 0 else {
-            print("[PLAY]   '\(container.name)' frameCount=0, skipping")
+            playLog("  '\(container.name)' frameCount=0, skipping")
             return nil
         }
 
@@ -1776,10 +1794,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let scheduleTime: AVAudioTime?
         if futureDelayFrames > 0 {
             scheduleTime = AVAudioTime(sampleTime: futureDelayFrames, atRate: fileRate)
-            print("[PLAY]   '\(container.name)' scheduling frameCount=\(frameCount) delay=\(futureDelayFrames) frames")
+            playLog("  '\(container.name)' scheduling frameCount=\(frameCount) delay=\(futureDelayFrames) frames")
         } else {
             scheduleTime = nil
-            print("[PLAY]   '\(container.name)' scheduling frameCount=\(frameCount) startOffset=\(startOffset)")
+            playLog("  '\(container.name)' scheduling frameCount=\(frameCount) startOffset=\(startOffset)")
         }
 
         let hasFades = container.enterFade != nil || container.exitFade != nil
@@ -1837,14 +1855,13 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         // Guard against concurrent cleanup detaching the node from the engine
         guard subgraph.playerNode.engine != nil else {
-            print("[PLAY]   '\(container.name)' player NOT attached to engine!")
             return nil
         }
         if !deferPlay {
             subgraph.playerNode.play()
-            print("[PLAY]   '\(container.name)' player.play() called, isPlaying=\(subgraph.playerNode.isPlaying)")
+            playLog("  '\(container.name)' player.play() called, isPlaying=\(subgraph.playerNode.isPlaying)")
         } else {
-            print("[PLAY]   '\(container.name)' scheduled (play deferred for batch start)")
+            playLog("  '\(container.name)' scheduled (play deferred for batch start)")
         }
 
         lock.lock()
@@ -1864,14 +1881,264 @@ public final class PlaybackScheduler: @unchecked Sendable {
         return beatsPerBar * secondsPerBeat * sampleRate
     }
 
-    /// Computes a host time ~1ms in the future for synchronized player starts.
-    /// All player nodes started with the same host-time anchor begin rendering
-    /// at exactly the same sample, eliminating inter-track timing drift.
-    private static func syncStartHostTime() -> UInt64 {
+    /// Starts scheduled players with plugin-delay compensation:
+    /// low-latency paths are delayed so all outputs align to the maximum path latency.
+    ///
+    /// Returns startup compensation in seconds (start headroom + max path latency),
+    /// used to align transport/playhead with audible output.
+    private func startScheduledPlayersWithLatencyCompensation(
+        _ scheduledEntries: [(player: AVAudioPlayerNode, containerID: ID<Container>)],
+        sampleRate: Double,
+        updateStartupCompensation: Bool
+    ) -> Double {
+        guard !scheduledEntries.isEmpty else {
+            if updateStartupCompensation {
+                lock.lock()
+                _playbackStartupCompensationSeconds = 0
+                lock.unlock()
+            }
+            return 0
+        }
+
+        var uniquePlayers: [ObjectIdentifier: AVAudioPlayerNode] = [:]
+        var playerLatencySeconds: [ObjectIdentifier: Double] = [:]
+        var playerContainers: [ObjectIdentifier: [ID<Container>]] = [:]
+
+        for entry in scheduledEntries {
+            let playerID = ObjectIdentifier(entry.player)
+            uniquePlayers[playerID] = entry.player
+            playerContainers[playerID, default: []].append(entry.containerID)
+            let pathLatency = latencySeconds(forContainerID: entry.containerID)
+            playerLatencySeconds[playerID] = max(playerLatencySeconds[playerID] ?? 0, pathLatency)
+        }
+
+        let maxPathLatency = playerLatencySeconds.values.max() ?? 0
+        let startHeadroom = startHeadroomSeconds(
+            sampleRate: sampleRate,
+            scheduledPlayerCount: uniquePlayers.count
+        )
+        let earliestStartHostTime = Self.hostTime(afterSeconds: startHeadroom)
+
+        let configuredMaxFrames = max(512, Int(engine.outputNode.auAudioUnit.maximumFramesToRender))
+        let prepareFrames = AVAudioFrameCount(max(2048, configuredMaxFrames * 8))
+        for player in uniquePlayers.values {
+            player.prepare(withFrameCount: prepareFrames)
+        }
+        syncDiag("start batch entries=\(scheduledEntries.count) uniquePlayers=\(uniquePlayers.count) prepareFrames=\(prepareFrames) startHeadroom=\(String(format: "%.3f", startHeadroom)) maxPathLatency=\(String(format: "%.3f", maxPathLatency))")
+
+        var starts: [(hostTime: UInt64, player: AVAudioPlayerNode)] = []
+        starts.reserveCapacity(uniquePlayers.count)
+        for (playerID, player) in uniquePlayers {
+            let pathLatency = playerLatencySeconds[playerID] ?? 0
+            let delaySeconds = max(0, maxPathLatency - pathLatency)
+            let startHostTime = Self.offsetHostTime(base: earliestStartHostTime, bySeconds: delaySeconds)
+            starts.append((hostTime: startHostTime, player: player))
+        }
+
+        // Start in host-time order so earliest-starting players are issued first.
+        // Break ties deterministically for repeatable startup behavior.
+        starts.sort { lhs, rhs in
+            if lhs.hostTime != rhs.hostTime { return lhs.hostTime < rhs.hostTime }
+            let left = UInt(bitPattern: Unmanaged.passUnretained(lhs.player).toOpaque())
+            let right = UInt(bitPattern: Unmanaged.passUnretained(rhs.player).toOpaque())
+            return left < right
+        }
+
+        // Under load, scheduling work can consume much of the planned headroom.
+        // Rebase all anchors forward if the earliest start is now too close.
+        let sr = sampleRate > 0 ? sampleRate : max(currentSampleRate, 44100.0)
+        let currentOutputMaxFrames = Double(engine.outputNode.auAudioUnit.maximumFramesToRender)
+        let maxFrames = currentOutputMaxFrames > 0 ? currentOutputMaxFrames : 512
+        let renderQuantumSeconds = maxFrames / sr
+        let minRequiredLeadSeconds = min(
+            0.650,
+            max(0.100, renderQuantumSeconds * 2.0 + 0.020 + Double(uniquePlayers.count) * 0.0025)
+        )
+        // Real-time `play(at:)` fan-out can be expensive, especially with lower
+        // hardware sample rates and many active player nodes. Budget lead for:
+        // 1) historical measured dispatch time, and
+        // 2) a conservative per-player first-run estimate.
+        let perPlayerDispatchBudget = min(0.020, max(0.006, renderQuantumSeconds))
+        let fanOutDispatchBudget = Double(uniquePlayers.count) * perPlayerDispatchBudget
+        let estimatedDispatchSeconds = min(
+            1.500,
+            max(recentStartDispatchSeconds * 2.0, fanOutDispatchBudget)
+        )
+        let requiredLeadBeforeDispatchSeconds = min(
+            2.000,
+            minRequiredLeadSeconds + estimatedDispatchSeconds
+        )
+        syncDiag("required lead min=\(String(format: "%.4f", minRequiredLeadSeconds))s dispatchBudget=\(String(format: "%.4f", estimatedDispatchSeconds))s perPlayer=\(String(format: "%.4f", perPlayerDispatchBudget))s total=\(String(format: "%.4f", requiredLeadBeforeDispatchSeconds))s")
+
+        let preflightNowHostTime = mach_absolute_time()
+        var addedLeadSeconds: Double = 0
+        if let earliestHostTime = starts.first?.hostTime {
+            let currentLeadSeconds = earliestHostTime >= preflightNowHostTime
+                ? Self.hostTicksToSeconds(earliestHostTime - preflightNowHostTime)
+                : -Self.hostTicksToSeconds(preflightNowHostTime - earliestHostTime)
+            if currentLeadSeconds < requiredLeadBeforeDispatchSeconds {
+                addedLeadSeconds = requiredLeadBeforeDispatchSeconds - currentLeadSeconds
+                for i in starts.indices {
+                    starts[i].hostTime = Self.offsetHostTime(base: starts[i].hostTime, bySeconds: addedLeadSeconds)
+                }
+                syncDiag("rebased anchors by \(String(format: "%.4f", addedLeadSeconds))s (lead \(String(format: "%.4f", currentLeadSeconds))s -> \(String(format: "%.4f", requiredLeadBeforeDispatchSeconds))s)")
+            } else {
+                syncDiag("anchor lead ok lead=\(String(format: "%.4f", currentLeadSeconds))s required=\(String(format: "%.4f", requiredLeadBeforeDispatchSeconds))s")
+            }
+        }
+
+        let planNowHostTime = mach_absolute_time()
+        if Self.syncDiagnosticsVerboseEnabled {
+            for start in starts {
+                let playerID = ObjectIdentifier(start.player)
+                let latency = playerLatencySeconds[playerID] ?? 0
+                let startInSeconds = start.hostTime >= planNowHostTime
+                    ? Self.hostTicksToSeconds(start.hostTime - planNowHostTime)
+                    : -Self.hostTicksToSeconds(planNowHostTime - start.hostTime)
+                let containers = playerContainers[playerID]?.map { "\($0)" }.joined(separator: ",") ?? "-"
+                syncDiag("plan player=\(playerID) startIn=\(String(format: "%.4f", startInSeconds))s pathLatency=\(String(format: "%.4f", latency))s containers=[\(containers)]")
+            }
+        } else if let earliest = starts.first {
+            let earliestInSeconds = earliest.hostTime >= planNowHostTime
+                ? Self.hostTicksToSeconds(earliest.hostTime - planNowHostTime)
+                : -Self.hostTicksToSeconds(planNowHostTime - earliest.hostTime)
+            syncDiag("plan summary players=\(starts.count) earliestStartIn=\(String(format: "%.4f", earliestInSeconds))s")
+        }
+
+        // Re-check anchor lead immediately before dispatch. Planning/logging can
+        // consume significant wall time in larger sessions, shrinking lead.
+        let dispatchNowHostTime = mach_absolute_time()
+        if let earliestHostTime = starts.first?.hostTime {
+            let dispatchLeadSeconds = earliestHostTime >= dispatchNowHostTime
+                ? Self.hostTicksToSeconds(earliestHostTime - dispatchNowHostTime)
+                : -Self.hostTicksToSeconds(dispatchNowHostTime - earliestHostTime)
+            if dispatchLeadSeconds < requiredLeadBeforeDispatchSeconds {
+                let extraLeadSeconds = requiredLeadBeforeDispatchSeconds - dispatchLeadSeconds
+                for i in starts.indices {
+                    starts[i].hostTime = Self.offsetHostTime(base: starts[i].hostTime, bySeconds: extraLeadSeconds)
+                }
+                addedLeadSeconds += extraLeadSeconds
+                syncDiag("rebased anchors before dispatch by \(String(format: "%.4f", extraLeadSeconds))s (lead \(String(format: "%.4f", dispatchLeadSeconds))s -> \(String(format: "%.4f", requiredLeadBeforeDispatchSeconds))s)")
+            }
+        }
+
+        let dispatchStartHostTime = mach_absolute_time()
+        var missedAnchors = 0
+        var reportedMisses = 0
+        for start in starts {
+            if Self.syncDiagnosticsEnabled {
+                let nowHostTime = mach_absolute_time()
+                if start.hostTime <= nowHostTime {
+                    missedAnchors += 1
+                    if Self.syncDiagnosticsVerboseEnabled || reportedMisses < 3 {
+                        let lateBy = Self.hostTicksToSeconds(nowHostTime - start.hostTime)
+                        syncDiag("MISSED anchor player=\(ObjectIdentifier(start.player)) lateBy=\(String(format: "%.4f", lateBy))s")
+                        reportedMisses += 1
+                    }
+                } else {
+                    let leadNow = Self.hostTicksToSeconds(start.hostTime - nowHostTime)
+                    if Self.syncDiagnosticsVerboseEnabled && leadNow < 0.010 {
+                        syncDiag("tight anchor player=\(ObjectIdentifier(start.player)) lead=\(String(format: "%.4f", leadNow))s")
+                    }
+                }
+            }
+            start.player.play(at: AVAudioTime(hostTime: start.hostTime))
+        }
+
+        let postDispatchNowHostTime = mach_absolute_time()
+        let dispatchDurationSeconds = postDispatchNowHostTime >= dispatchStartHostTime
+            ? Self.hostTicksToSeconds(postDispatchNowHostTime - dispatchStartHostTime)
+            : 0
+        recentStartDispatchSeconds = min(
+            2.000,
+            max(dispatchDurationSeconds, max(0.010, recentStartDispatchSeconds * 0.70 + dispatchDurationSeconds * 0.30))
+        )
+        let earliestScheduledHostTime = starts.first?.hostTime ?? postDispatchNowHostTime
+        let effectiveHeadroom = earliestScheduledHostTime >= postDispatchNowHostTime
+            ? Self.hostTicksToSeconds(earliestScheduledHostTime - postDispatchNowHostTime)
+            : 0
+        let startupCompensation = effectiveHeadroom + maxPathLatency
+        playLog("startup compensation: headroom=\(String(format: "%.3f", effectiveHeadroom))s maxPathLatency=\(String(format: "%.3f", maxPathLatency))s players=\(uniquePlayers.count)")
+        syncDiag("startup details plannedHeadroom=\(String(format: "%.3f", startHeadroom))s addedLead=\(String(format: "%.3f", addedLeadSeconds))s effectiveHeadroom=\(String(format: "%.3f", effectiveHeadroom))s dispatch=\(String(format: "%.3f", dispatchDurationSeconds))s missedAnchors=\(missedAnchors)")
+        if updateStartupCompensation {
+            let now = CACurrentMediaTime()
+            lock.lock()
+            _playbackStartupCompensationSeconds = startupCompensation
+            playbackStartTime = now + startupCompensation
+            lock.unlock()
+        }
+
+        return startupCompensation
+    }
+
+    /// Estimates path latency from container player output to the final output mix.
+    /// Includes container, track, and master AU latencies.
+    private func latencySeconds(forContainerID containerID: ID<Container>) -> Double {
+        lock.lock()
+        let subgraph = containerSubgraphs[containerID]
+        let trackID = containerToTrack[containerID]
+        let trackUnits = trackID.flatMap { trackEffectUnits[$0] } ?? []
+        let masterUnits = masterEffectUnits
+        lock.unlock()
+
+        guard let subgraph else { return 0 }
+
+        var latency: Double = 0
+        if let instrument = subgraph.instrumentUnit {
+            latency += unitLatencySeconds(instrument)
+        }
+        for unit in subgraph.effectUnits {
+            latency += unitLatencySeconds(unit)
+        }
+        for unit in trackUnits {
+            latency += unitLatencySeconds(unit)
+        }
+        for unit in masterUnits {
+            latency += unitLatencySeconds(unit)
+        }
+        return latency
+    }
+
+    private func unitLatencySeconds(_ unit: AVAudioUnit) -> Double {
+        let latency = max(unit.auAudioUnit.latency, unit.latency)
+        guard latency.isFinite, latency > 0 else { return 0 }
+        return latency
+    }
+
+    /// Headroom before the earliest player start to avoid missing host-time anchors.
+    /// Scales with render quantum and number of players started in the batch.
+    private func startHeadroomSeconds(sampleRate: Double, scheduledPlayerCount: Int) -> Double {
+        let sr = sampleRate > 0 ? sampleRate : max(currentSampleRate, 44100.0)
+        let configuredMaxFrames = Double(engine.outputNode.auAudioUnit.maximumFramesToRender)
+        let maxFrames = configuredMaxFrames > 0 ? configuredMaxFrames : 512
+        let renderQuantumSeconds = maxFrames / sr
+        // Real-time startup is less deterministic than offline tests; use a
+        // stronger baseline and include fan-out dispatch budget for larger batches.
+        let base = max(0.060, renderQuantumSeconds * 3.0 + 0.010)
+        let fanOut = Double(max(0, scheduledPlayerCount - 1)) * 0.006
+        let historicalDispatch = max(0.0, recentStartDispatchSeconds * 1.2)
+        return min(1.250, base + fanOut + historicalDispatch)
+    }
+
+    private static func hostTime(afterSeconds seconds: Double) -> UInt64 {
+        offsetHostTime(base: mach_absolute_time(), bySeconds: seconds)
+    }
+
+    private static func offsetHostTime(base: UInt64, bySeconds seconds: Double) -> UInt64 {
+        guard seconds > 0 else { return base }
         var timebase = mach_timebase_info_data_t()
         mach_timebase_info(&timebase)
-        let oneMillisecondTicks = UInt64(1_000_000) * UInt64(timebase.denom) / UInt64(timebase.numer)
-        return mach_absolute_time() + oneMillisecondTicks
+        let nanos = seconds * 1_000_000_000
+        let ticks = nanos * Double(timebase.denom) / Double(timebase.numer)
+        let offset = UInt64(max(0, ticks.rounded()))
+        return base &+ offset
+    }
+
+    private static func hostTicksToSeconds(_ ticks: UInt64) -> Double {
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let nanos = Double(ticks) * Double(timebase.numer) / Double(timebase.denom)
+        return nanos / 1_000_000_000
     }
 
     // MARK: - Transport Declick
@@ -2323,7 +2590,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         song: Song,
         fromBar: Double,
         bpm: Double,
-        timeSignature: TimeSignature
+        timeSignature: TimeSignature,
+        startupCompensationSeconds: Double = 0
     ) {
         // Collect all containers with automation (resolve clone fields)
         let allContainers = song.tracks.flatMap(\.containers)
@@ -2363,7 +2631,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         guard !containersWithAutomation.isEmpty || !tracksWithAutomation.isEmpty || !midiContainers.isEmpty else { return }
 
-        let startTime = Date()
+        let startTime = CACurrentMediaTime() + max(0, startupCompensationSeconds)
 
         lock.lock()
         playbackStartBar = fromBar
@@ -2415,7 +2683,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Evaluate at ~60 Hz (every ~16ms) for smooth parameter updates and MIDI scheduling
         timer.schedule(deadline: .now(), repeating: .milliseconds(16))
         timer.setEventHandler {
-            let elapsed = Date().timeIntervalSince(startTime)
+            let elapsed = max(0, CACurrentMediaTime() - startTime)
             let currentBar = startBar + elapsed / secondsPerBar
 
             // ── MIDI note scheduling ──
@@ -2579,7 +2847,6 @@ public final class PlaybackScheduler: @unchecked Sendable {
         lock.lock()
         let timer = automationTimer
         automationTimer = nil
-        playbackStartTime = nil
         lock.unlock()
         timer?.cancel()
     }
@@ -2620,7 +2887,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Calculate where we are now in the playback
         let currentBar: Double
         if let startTime = oldStartTime {
-            let elapsed = Date().timeIntervalSince(startTime)
+            let elapsed = max(0, CACurrentMediaTime() - startTime)
             let secondsPerBeat = 60.0 / oldBPM
             let secondsPerBar = Double(oldTS.beatsPerBar) * secondsPerBeat
             currentBar = oldStartBar + elapsed / secondsPerBar

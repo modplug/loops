@@ -141,6 +141,11 @@ public final class AudioEngineManager: @unchecked Sendable {
         // Apply single audio interface for both input and output
         if let uid = settings.deviceUID,
            let device = deviceManager.device(forUID: uid) {
+            if let requestedRate = settings.sampleRate,
+               requestedRate > 0,
+               device.supportedSampleRates.contains(requestedRate) {
+                setDeviceSampleRate(deviceID: device.id, rate: requestedRate)
+            }
             if device.hasOutput {
                 setOutputDeviceOnUnit(deviceID: device.id)
             }
@@ -150,6 +155,9 @@ public final class AudioEngineManager: @unchecked Sendable {
             // Apply buffer size to this device
             setDeviceBufferSize(deviceID: device.id, size: UInt32(settings.bufferSize))
         } else if let deviceID = deviceManager.defaultOutputDeviceID() {
+            if let requestedRate = settings.sampleRate, requestedRate > 0 {
+                setDeviceSampleRate(deviceID: deviceID, rate: requestedRate)
+            }
             setDeviceBufferSize(deviceID: deviceID, size: UInt32(settings.bufferSize))
         }
 
@@ -268,16 +276,22 @@ public final class AudioEngineManager: @unchecked Sendable {
     }
 
     private func handleDeviceChange() {
-        // AVAudioEngine automatically stops on config change.
-        // We restart to handle hot-plugged devices gracefully.
-        isRunning = false
-        metronome = nil
-        do {
-            try start()
-        } catch {
-            // Device change may leave us without a valid device.
-            // The engine will be in a stopped state until the user
-            // selects a new device or one becomes available.
+        // AVAudioEngineConfigurationChange fires on an arbitrary thread.
+        // All mutable state on AudioEngineManager is main-thread-only,
+        // so hop to main before touching anything.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            // AVAudioEngine automatically stops on config change.
+            // We restart to handle hot-plugged devices gracefully.
+            self.isRunning = false
+            self.metronome = nil
+            do {
+                try self.start()
+            } catch {
+                // Device change may leave us without a valid device.
+                // The engine will be in a stopped state until the user
+                // selects a new device or one becomes available.
+            }
         }
     }
 
@@ -294,6 +308,22 @@ public final class AudioEngineManager: @unchecked Sendable {
             0, nil,
             UInt32(MemoryLayout<UInt32>.size),
             &bufferSize
+        )
+    }
+
+    private func setDeviceSampleRate(deviceID: AudioDeviceID, rate: Double) {
+        var sampleRate = rate
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectSetPropertyData(
+            deviceID,
+            &address,
+            0, nil,
+            UInt32(MemoryLayout<Double>.size),
+            &sampleRate
         )
     }
 

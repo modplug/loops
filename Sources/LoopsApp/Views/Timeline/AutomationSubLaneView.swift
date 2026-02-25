@@ -36,6 +36,9 @@ struct AutomationSubLaneView: View {
     var onReplaceBreakpoints: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
     /// Callback to replace breakpoints in a range on a track lane with shape-generated ones.
     var onReplaceTrackBreakpoints: ((_ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
+    /// Visible X range for viewport-aware rendering (with buffer).
+    var visibleXMin: CGFloat = 0
+    var visibleXMax: CGFloat = CGFloat.greatestFiniteMagnitude
     /// Multi-selection: set of selected breakpoint IDs. Falls back to single selectedBreakpointID if nil.
     var selectedBreakpointIDs: Set<ID<AutomationBreakpoint>>?
     /// Callback to replace the full set of selected breakpoint IDs (marquee / Cmd+click).
@@ -71,7 +74,9 @@ struct AutomationSubLaneView: View {
                     pixelsPerBar: pixelsPerBar,
                     timeSignature: ts,
                     height: height,
-                    gridMode: gm
+                    gridMode: gm,
+                    visibleXMin: visibleXMin,
+                    visibleXMax: visibleXMax
                 )
                 .opacity(0.5)
                 .allowsHitTesting(false)
@@ -116,7 +121,11 @@ struct AutomationSubLaneView: View {
 
             // Render automation for each container that has a lane targeting this path
             if trackAutomationLane == nil {
-                ForEach(containers) { container in
+                ForEach(containers.filter { container in
+                    let xStart = CGFloat(container.startBar - 1) * pixelsPerBar
+                    let xEnd = CGFloat(container.endBar - 1) * pixelsPerBar
+                    return xEnd >= visibleXMin && xStart <= visibleXMax
+                }) { container in
                     if let lane = container.automationLanes.first(where: { $0.targetPath == targetPath }) {
                         AutomationSubLaneContainerView(
                             container: container,
@@ -316,15 +325,41 @@ private struct AutomationSubLaneContainerView: View {
 
     // MARK: - Drawing
 
+    /// Returns breakpoints with drag offsets applied (for live preview during drag).
+    private func effectiveBreakpoints(for lane: AutomationLane, height: CGFloat) -> [AutomationBreakpoint] {
+        let delta = groupDragDelta
+        guard draggedBreakpointID != nil || delta != nil else { return lane.breakpoints }
+        return lane.breakpoints.map { bp in
+            var result = bp
+            if bp.id == draggedBreakpointID, let pos = dragPosition {
+                result.position = AutomationCoordinateMapping.positionForX(pos.x, containerLengthBars: containerLengthBars, pixelsPerBar: pixelsPerBar)
+                result.value = AutomationCoordinateMapping.valueForY(pos.y, height: height)
+            } else if selectedBreakpointIDs.contains(bp.id), let d = delta {
+                result.position = max(0, min(result.position + d.positionDelta, containerLengthBars))
+                result.value = max(0, min(result.value + d.valueDelta, 1))
+            }
+            return result
+        }
+    }
+
     private func drawCurve(lane: AutomationLane, in context: GraphicsContext, size: CGSize) {
-        let sorted = lane.breakpoints.sorted { $0.position < $1.position }
+        // Use drag-adjusted breakpoints so the curve follows the point during drag
+        let effectiveLane: AutomationLane
+        if draggedBreakpointID != nil || groupDragDelta != nil {
+            var modified = lane
+            modified.breakpoints = effectiveBreakpoints(for: lane, height: size.height)
+            effectiveLane = modified
+        } else {
+            effectiveLane = lane
+        }
+        let sorted = effectiveLane.breakpoints.sorted { $0.position < $1.position }
         guard !sorted.isEmpty else { return }
 
         var path = Path()
         let resolution = max(Int(size.width / 2), 2)
         for step in 0...resolution {
             let barPosition = Double(step) / Double(resolution) * containerLengthBars
-            guard let value = lane.interpolatedValue(atBar: barPosition) else { continue }
+            guard let value = effectiveLane.interpolatedValue(atBar: barPosition) else { continue }
             let x = CGFloat(step) / CGFloat(resolution) * size.width
             let y = CGFloat(1.0 - value) * size.height
             if step == 0 {
@@ -533,22 +568,31 @@ private struct AutomationSubLaneContainerView: View {
                                 draggedBreakpointID = bp.id
                                 dragStartPosition = bp.position
                                 dragStartValue = bp.value
-                                // If dragging an unselected breakpoint, select just it
                                 if !selectedBreakpointIDs.contains(bp.id) {
                                     onSetSelectedBreakpoints?([bp.id])
                                 }
                             }
-                            dragPosition = value.location
+                            // Compute preview position from original + translation (not value.location which is in Circle's local frame)
+                            let deltaPos = Double(value.translation.width) / Double(pixelsPerBar)
+                            let deltaVal = -Float(value.translation.height / height)
+                            let previewX = AutomationCoordinateMapping.xForPosition(
+                                max(0, min((dragStartPosition ?? bp.position) + deltaPos, containerLengthBars)),
+                                containerLengthBars: containerLengthBars, pixelsPerBar: pixelsPerBar
+                            )
+                            let previewY = AutomationCoordinateMapping.yForValue(
+                                max(0, min((dragStartValue ?? bp.value) + deltaVal, 1)),
+                                height: height
+                            )
+                            dragPosition = CGPoint(x: previewX, y: previewY)
                         }
                         .onEnded { value in
-                            let rawPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: containerLengthBars, pixelsPerBar: pixelsPerBar)
-                            let rawValue = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
-                            let newPosition = snapPosition(rawPosition)
-                            let newValue = snapValue(rawValue)
+                            let deltaPos = Double(value.translation.width) / Double(pixelsPerBar)
+                            let deltaVal = -Float(value.translation.height / height)
+                            let newPosition = snapPosition(max(0, min((dragStartPosition ?? bp.position) + deltaPos, containerLengthBars)))
+                            let newValue = snapValue(max(0, min((dragStartValue ?? bp.value) + deltaVal, 1)))
                             let posDelta = newPosition - snapPosition(dragStartPosition ?? bp.position)
                             let valDelta = newValue - snapValue(dragStartValue ?? bp.value)
 
-                            // Apply delta to all selected breakpoints in this lane
                             let toMove = lane.breakpoints.filter { selectedBreakpointIDs.contains($0.id) }
                             if toMove.count > 1 {
                                 for selectedBP in toMove {
@@ -727,15 +771,41 @@ private struct TrackAutomationSubLaneView: View {
         return nil
     }
 
+    /// Returns breakpoints with drag offsets applied (for live preview during drag).
+    private func effectiveBreakpoints(height: CGFloat) -> [AutomationBreakpoint] {
+        let delta = groupDragDelta
+        guard draggedBreakpointID != nil || delta != nil else { return lane.breakpoints }
+        return lane.breakpoints.map { bp in
+            var result = bp
+            if bp.id == draggedBreakpointID, let pos = dragPosition {
+                result.position = AutomationCoordinateMapping.positionForX(pos.x, containerLengthBars: totalBarsDouble, pixelsPerBar: pixelsPerBar)
+                result.value = AutomationCoordinateMapping.valueForY(pos.y, height: height)
+            } else if selectedBreakpointIDs.contains(bp.id), let d = delta {
+                result.position = max(0, min(result.position + d.positionDelta, totalBarsDouble))
+                result.value = max(0, min(result.value + d.valueDelta, 1))
+            }
+            return result
+        }
+    }
+
     private func drawCurve(in context: GraphicsContext, size: CGSize) {
-        let sorted = lane.breakpoints.sorted { $0.position < $1.position }
+        // Use drag-adjusted breakpoints so the curve follows the point during drag
+        let effectiveLane: AutomationLane
+        if draggedBreakpointID != nil || groupDragDelta != nil {
+            var modified = lane
+            modified.breakpoints = effectiveBreakpoints(height: size.height)
+            effectiveLane = modified
+        } else {
+            effectiveLane = lane
+        }
+        let sorted = effectiveLane.breakpoints.sorted { $0.position < $1.position }
         guard !sorted.isEmpty else { return }
 
         var path = Path()
         let resolution = max(Int(size.width / 2), 2)
         for step in 0...resolution {
             let barPosition = Double(step) / Double(resolution) * totalBarsDouble
-            guard let value = lane.interpolatedValue(atBar: barPosition) else { continue }
+            guard let value = effectiveLane.interpolatedValue(atBar: barPosition) else { continue }
             let x = CGFloat(step) / CGFloat(resolution) * size.width
             let y = CGFloat(1.0 - value) * size.height
             if step == 0 {
@@ -941,13 +1011,23 @@ private struct TrackAutomationSubLaneView: View {
                                     onSetSelectedBreakpoints?([bp.id])
                                 }
                             }
-                            dragPosition = value.location
+                            let deltaPos = Double(value.translation.width) / Double(pixelsPerBar)
+                            let deltaVal = -Float(value.translation.height / height)
+                            let previewX = AutomationCoordinateMapping.xForPosition(
+                                max(0, min((dragStartPosition ?? bp.position) + deltaPos, totalBarsDouble)),
+                                containerLengthBars: totalBarsDouble, pixelsPerBar: pixelsPerBar
+                            )
+                            let previewY = AutomationCoordinateMapping.yForValue(
+                                max(0, min((dragStartValue ?? bp.value) + deltaVal, 1)),
+                                height: height
+                            )
+                            dragPosition = CGPoint(x: previewX, y: previewY)
                         }
                         .onEnded { value in
-                            let rawPosition = AutomationCoordinateMapping.positionForX(value.location.x, containerLengthBars: totalBarsDouble, pixelsPerBar: pixelsPerBar)
-                            let rawValue = AutomationCoordinateMapping.valueForY(value.location.y, height: height)
-                            let newPosition = snapPosition(rawPosition)
-                            let newValue = snapValue(rawValue)
+                            let deltaPos = Double(value.translation.width) / Double(pixelsPerBar)
+                            let deltaVal = -Float(value.translation.height / height)
+                            let newPosition = snapPosition(max(0, min((dragStartPosition ?? bp.position) + deltaPos, totalBarsDouble)))
+                            let newValue = snapValue(max(0, min((dragStartValue ?? bp.value) + deltaVal, 1)))
                             let posDelta = newPosition - snapPosition(dragStartPosition ?? bp.position)
                             let valDelta = newValue - snapValue(dragStartValue ?? bp.value)
 

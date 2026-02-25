@@ -155,7 +155,7 @@ public enum AutomationShapeGenerator {
             let t = Double(step) / Double(steps) * span
             let position = startPosition + t
             let phase = t / period
-            let value = Float(2.0 * abs(2.0 * (phase - floor(phase + 0.5))))
+            let value = Float(abs(2.0 * (phase - floor(phase + 0.5))))
             return AutomationBreakpoint(position: position, value: value)
         }
     }
@@ -218,25 +218,28 @@ public enum AutomationShapeGenerator {
                 gridSpacing: gridSpacing
             )
         case .sine:
+            // Period = 1 bar (4 grid beats at 1/4 grid), breakpoints at grid resolution
             return generateSine(
                 startPosition: startPosition,
                 endPosition: endPosition,
-                period: gridSpacing,
-                gridSpacing: gridSpacing / 8
+                period: gridSpacing * 4,
+                gridSpacing: gridSpacing
             )
         case .triangle:
+            // Period = 1 bar, breakpoints at grid resolution (triangle only needs endpoints + peaks)
             return generateTriangle(
                 startPosition: startPosition,
                 endPosition: endPosition,
-                period: gridSpacing,
-                gridSpacing: gridSpacing / 8
+                period: gridSpacing * 4,
+                gridSpacing: gridSpacing
             )
         case .square:
+            // Period = 1 bar, breakpoints at grid resolution
             return generateSquare(
                 startPosition: startPosition,
                 endPosition: endPosition,
-                period: gridSpacing,
-                gridSpacing: gridSpacing / 8
+                period: gridSpacing * 4,
+                gridSpacing: gridSpacing
             )
         }
     }

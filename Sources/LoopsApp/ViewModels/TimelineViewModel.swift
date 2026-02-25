@@ -2,15 +2,46 @@ import SwiftUI
 import QuartzCore
 import LoopsCore
 
+/// Groups viewport-related visible range that changes during scroll.
+/// Stored separately from pixelsPerBar so scroll-only changes don't trigger
+/// re-evaluation of views that only read pixelsPerBar (e.g. TimelineView).
+public struct VisibleRange: Equatable, Sendable {
+    public var xMin: CGFloat
+    public var xMax: CGFloat
+
+    public init(
+        xMin: CGFloat = 0,
+        xMax: CGFloat = .greatestFiniteMagnitude
+    ) {
+        self.xMin = xMin
+        self.xMax = xMax
+    }
+}
+
 /// Manages timeline display state: zoom, scroll offset, and pixel calculations.
 @Observable
 @MainActor
 public final class TimelineViewModel {
     /// Pixels per bar at the current zoom level.
+    /// Separate stored property so that scroll-only visible range changes
+    /// don't trigger re-evaluation of views that read pixelsPerBar.
     public var pixelsPerBar: CGFloat = 120.0
 
-    /// Horizontal scroll offset in points.
-    public var scrollOffset: CGPoint = .zero
+    /// Visible+buffered X range in timeline coordinates.
+    /// Separate from pixelsPerBar so scroll updates don't invalidate zoom-dependent views.
+    public var visibleRange = VisibleRange()
+
+    /// Left edge of the visible+buffered X range in timeline coordinates.
+    public var visibleXMin: CGFloat {
+        get { visibleRange.xMin }
+        set { visibleRange.xMin = newValue }
+    }
+
+    /// Right edge of the visible+buffered X range in timeline coordinates.
+    public var visibleXMax: CGFloat {
+        get { visibleRange.xMax }
+        set { visibleRange.xMax = newValue }
+    }
 
     /// Tracks with automation sub-lanes expanded.
     public var automationExpanded: Set<ID<Track>> = []
@@ -39,8 +70,14 @@ public final class TimelineViewModel {
     /// Current playhead position in bars (1-based).
     public var playheadBar: Double = 1.0
 
-    /// Number of bars visible in the timeline.
-    public var totalBars: Int = 64
+    /// Number of bars in the timeline (computed from content extent, viewport, and minimum).
+    /// Derived — does not fire a separate @Observable notification during zoom.
+    public var totalBars: Int {
+        let viewportBars = viewportWidth > 0
+            ? Int(ceil(viewportWidth / pixelsPerBar)) + Self.barPadding
+            : 0
+        return max(contentEndBar + Self.barPadding, viewportBars, Self.minimumTotalBars, manualMinBars)
+    }
 
     /// Selected bar range from ruler drag (transient, not persisted). 1-based, inclusive.
     public var selectedRange: ClosedRange<Int>?
@@ -57,6 +94,13 @@ public final class TimelineViewModel {
     /// Grid mode: adaptive (zoom-dependent) or fixed resolution.
     public var gridMode: GridMode = .adaptive
 
+    /// Feature flag: use high-performance NSView canvas instead of SwiftUI timeline.
+    public var useNSViewTimeline: Bool = true
+
+    /// Feature flag: use Metal GPU rendering instead of CoreGraphics.
+    /// Only takes effect when `useNSViewTimeline` is also true.
+    public var useMetalTimeline: Bool = true
+
     /// Cursor position in bars (1-based), derived from cursorX.
     public var cursorBar: Double? {
         guard let x = cursorX else { return nil }
@@ -72,12 +116,23 @@ public final class TimelineViewModel {
     /// Maximum track header column width.
     public static let maxHeaderWidth: CGFloat = 400
 
+    /// Absolute minimum pixels per bar (hard floor, no content).
+    public static let absoluteMinPixelsPerBar: CGFloat = 8.0
+
     /// Minimum pixels per bar (fully zoomed out).
-    public static let minPixelsPerBar: CGFloat = 8.0
+    /// Content-aware: ensures the entire project fits in the viewport with some padding,
+    /// preventing an infinite grid of tiny unusable lines (like Bitwig's max zoom out).
+    public var minPixelsPerBar: CGFloat {
+        guard viewportWidth > 0 else { return Self.absoluteMinPixelsPerBar }
+        let contentBars = CGFloat(max(contentEndBar + Self.barPadding, Self.minimumTotalBars))
+        // At max zoom out, all content should fit in the viewport
+        let contentFit = viewportWidth / contentBars
+        return max(contentFit, Self.absoluteMinPixelsPerBar)
+    }
 
     /// Maximum pixels per bar (fully zoomed in).
-    /// 2400 ppb @ 4/4 = 600 px/beat = ~150 px per sixteenth note for drum transient editing.
-    public static let maxPixelsPerBar: CGFloat = 2400.0
+    /// 9600 ppb @ 4/4 = 2400 px/beat = ~600 px per sixteenth note for sample-level editing.
+    public static let maxPixelsPerBar: CGFloat = 9600.0
 
     /// Zoom step multiplier for each zoom in/out action.
     private static let zoomFactor: CGFloat = 1.3
@@ -88,11 +143,52 @@ public final class TimelineViewModel {
     /// Timestamp of the last applied zoom operation.
     private var lastZoomTime: CFTimeInterval = 0
 
+    /// Extra points rendered beyond the viewport on each side.
+    public static let viewportBuffer: CGFloat = 500
+
     public init() {}
+
+    /// Updates the visible X range unconditionally (no dead zone).
+    /// Use during zoom so the range is correct in the same @Observable transaction as pixelsPerBar.
+    public func forceUpdateVisibleXRange(scrollOffsetX: CGFloat, viewportWidth: CGFloat) {
+        visibleRange = VisibleRange(
+            xMin: scrollOffsetX - Self.viewportBuffer,
+            xMax: scrollOffsetX + viewportWidth + Self.viewportBuffer
+        )
+    }
+
+    /// Updates the visible X range from scroll position and viewport width.
+    /// Called by the scroll synchronizer when scroll offset changes.
+    public func updateVisibleXRange(scrollOffsetX: CGFloat, viewportWidth: CGFloat) {
+        let newMin = scrollOffsetX - Self.viewportBuffer
+        let newMax = scrollOffsetX + viewportWidth + Self.viewportBuffer
+        // Only update if the change is significant (>50pt) to avoid excessive invalidation.
+        // 50pt threshold absorbs scrollbar-induced viewport width oscillation (~17pt)
+        // and minor scroll adjustments. The 500pt buffer ensures this doesn't cause pop-in.
+        if abs(visibleRange.xMin - newMin) > 50 || abs(visibleRange.xMax - newMax) > 50 {
+            visibleRange = VisibleRange(xMin: newMin, xMax: newMax)
+        }
+    }
 
     /// Total timeline width in points.
     public var totalWidth: CGFloat {
         CGFloat(totalBars) * pixelsPerBar
+    }
+
+    /// Frame width quantized to 4096-point boundaries. Changes only when totalWidth
+    /// crosses a boundary, so views that read this for `.frame(width:)` avoid
+    /// body re-evaluation on every zoom step.
+    public private(set) var quantizedFrameWidth: CGFloat = 4096
+
+    private static let frameWidthQuantum: CGFloat = 4096
+
+    /// Call after any pixelsPerBar change to update the quantized frame width.
+    /// Only fires an @Observable notification when the quantized value actually changes.
+    private func syncQuantizedFrameWidth() {
+        let newWidth = ceil(totalWidth / Self.frameWidthQuantum) * Self.frameWidthQuantum
+        if newWidth != quantizedFrameWidth {
+            quantizedFrameWidth = newWidth
+        }
     }
 
     /// Pixels per beat given a time signature.
@@ -156,13 +252,13 @@ public final class TimelineViewModel {
     /// Zooms in by one step.
     public func zoomIn() {
         pixelsPerBar = min(pixelsPerBar * Self.zoomFactor, Self.maxPixelsPerBar)
-        recalculateTotalBars()
+        syncQuantizedFrameWidth()
     }
 
     /// Zooms out by one step.
     public func zoomOut() {
-        pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, Self.minPixelsPerBar)
-        recalculateTotalBars()
+        pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, minPixelsPerBar)
+        syncQuantizedFrameWidth()
     }
 
     /// Zooms in/out around a specific timeline X position.
@@ -174,12 +270,69 @@ public final class TimelineViewModel {
         if zoomIn {
             pixelsPerBar = min(pixelsPerBar * Self.zoomFactor, Self.maxPixelsPerBar)
         } else {
-            pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, Self.minPixelsPerBar)
+            pixelsPerBar = max(pixelsPerBar / Self.zoomFactor, minPixelsPerBar)
         }
-        recalculateTotalBars()
+        syncQuantizedFrameWidth()
         let newX = xPosition(forBar: barUnderCursor)
         let oldX = CGFloat(barUnderCursor - 1.0) * oldPPB
         return newX - oldX
+    }
+
+    /// Performs a zoom step and updates the visible range in a single observation transaction.
+    /// Returns the new scroll offset for the caller to apply to the NSScrollView.
+    /// @Observable batches mutations within a synchronous call, so changing pixelsPerBar
+    /// and visibleRange in the same method produces a single SwiftUI update.
+    @discardableResult
+    public func zoomAndUpdateViewport(
+        zoomIn isZoomIn: Bool,
+        anchorBar: Double,
+        mouseXRelativeToTimeline: CGFloat,
+        viewportWidth: CGFloat
+    ) -> CGFloat {
+        let newPPB: CGFloat
+        if isZoomIn {
+            newPPB = min(pixelsPerBar * Self.zoomFactor, Self.maxPixelsPerBar)
+        } else {
+            newPPB = max(pixelsPerBar / Self.zoomFactor, minPixelsPerBar)
+        }
+        let newTimelineX = CGFloat(anchorBar - 1.0) * newPPB
+        let newScrollOffset = max(0, newTimelineX - mouseXRelativeToTimeline)
+
+        // Both mutations in one synchronous call → @Observable batches into single notification
+        pixelsPerBar = newPPB
+        syncQuantizedFrameWidth()
+        visibleRange = VisibleRange(
+            xMin: newScrollOffset - Self.viewportBuffer,
+            xMax: newScrollOffset + viewportWidth + Self.viewportBuffer
+        )
+        return newScrollOffset
+    }
+
+    /// Performs a continuous zoom with a multiplicative factor and updates the visible range.
+    /// Used for trackpad pinch-to-zoom where magnification provides smooth, proportional deltas
+    /// instead of discrete 1.3x steps.
+    /// Returns the new scroll offset for the caller to apply.
+    @discardableResult
+    public func zoomContinuousAndUpdateViewport(
+        factor: CGFloat,
+        anchorBar: Double,
+        mouseXRelativeToTimeline: CGFloat,
+        viewportWidth: CGFloat
+    ) -> CGFloat {
+        let newPPB = max(minPixelsPerBar, min(pixelsPerBar * factor, Self.maxPixelsPerBar))
+        guard newPPB != pixelsPerBar else {
+            return max(0, CGFloat(anchorBar - 1.0) * pixelsPerBar - mouseXRelativeToTimeline)
+        }
+        let newTimelineX = CGFloat(anchorBar - 1.0) * newPPB
+        let newScrollOffset = max(0, newTimelineX - mouseXRelativeToTimeline)
+
+        pixelsPerBar = newPPB
+        syncQuantizedFrameWidth()
+        visibleRange = VisibleRange(
+            xMin: newScrollOffset - Self.viewportBuffer,
+            xMax: newScrollOffset + viewportWidth + Self.viewportBuffer
+        )
+        return newScrollOffset
     }
 
     /// Throttled zoom for scroll wheel events. Returns `false` if the zoom was
@@ -256,34 +409,28 @@ public final class TimelineViewModel {
     /// Furthest bar with content.
     private var contentEndBar: Int = 0
 
+    /// Manual minimum bars override (set by ensureBarVisible, cleared by updateTotalBars).
+    private var manualMinBars: Int = 0
+
     /// Expands the timeline's total bars if the given bar exceeds the current range.
     public func ensureBarVisible(_ bar: Double) {
-        let barInt = Int(ceil(bar))
+        let barInt = Int(ceil(bar)) + 8
         if barInt > totalBars {
-            totalBars = barInt + 8
+            manualMinBars = barInt
         }
     }
 
-    /// Updates the content extent from the given tracks and recalculates totalBars.
+    /// Updates the content extent from the given tracks.
     public func updateTotalBars(for tracks: [Track]) {
         let maxEndBar = tracks.flatMap(\.containers).map(\.endBar).max() ?? 0
         contentEndBar = Int(ceil(maxEndBar))
-        recalculateTotalBars()
+        manualMinBars = 0
     }
 
-    /// Sets the visible viewport width and recalculates totalBars.
+    /// Sets the visible viewport width.
     public func setViewportWidth(_ width: CGFloat) {
         guard abs(viewportWidth - width) > 1 else { return }
         viewportWidth = width
-        recalculateTotalBars()
-    }
-
-    /// Recalculates totalBars from content extent, viewport size, and minimum.
-    private func recalculateTotalBars() {
-        let viewportBars = viewportWidth > 0
-            ? Int(ceil(viewportWidth / pixelsPerBar)) + Self.barPadding
-            : 0
-        totalBars = max(contentEndBar + Self.barPadding, viewportBars, Self.minimumTotalBars)
     }
 
     /// Returns the number of unique automation lanes across all containers and track-level automation.
@@ -317,6 +464,7 @@ public final class TimelineViewModel {
         trackHeights = settings.trackHeights.mapValues { CGFloat($0) }
         trackHeaderWidth = CGFloat(settings.trackHeaderWidth)
         pixelsPerBar = CGFloat(settings.pixelsPerBar)
+        syncQuantizedFrameWidth()
         automationExpanded = settings.automationExpanded
     }
 }

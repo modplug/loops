@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 import UniformTypeIdentifiers
 import LoopsCore
 
@@ -80,6 +81,9 @@ public struct TrackLaneView: View {
     var onDuplicateSelected: (() -> Void)?
     var onCopySelected: (() -> Void)?
     var onSplitSelected: (() -> Void)?
+    /// Visible X range for viewport-aware rendering (with buffer).
+    var visibleXMin: CGFloat = 0
+    var visibleXMax: CGFloat = CGFloat.greatestFiniteMagnitude
 
     @State private var dragStartX: CGFloat?
     @State private var dragCurrentX: CGFloat?
@@ -87,6 +91,8 @@ public struct TrackLaneView: View {
     @State private var isDropTargeted = false
     @State private var dropPreviewBar: Double?
     @State private var dropPreviewLengthBars: Double?
+    @State private var toolbarScrollOffset: CGFloat = 0
+    @State private var toolbarViewportWidth: CGFloat = 0
 
     public init(
         track: Track,
@@ -150,7 +156,9 @@ public struct TrackLaneView: View {
         onDeleteSelected: (() -> Void)? = nil,
         onDuplicateSelected: (() -> Void)? = nil,
         onCopySelected: (() -> Void)? = nil,
-        onSplitSelected: (() -> Void)? = nil
+        onSplitSelected: (() -> Void)? = nil,
+        visibleXMin: CGFloat = 0,
+        visibleXMax: CGFloat = .greatestFiniteMagnitude
     ) {
         self.track = track
         self.pixelsPerBar = pixelsPerBar
@@ -214,6 +222,8 @@ public struct TrackLaneView: View {
         self.onDuplicateSelected = onDuplicateSelected
         self.onCopySelected = onCopySelected
         self.onSplitSelected = onSplitSelected
+        self.visibleXMin = visibleXMin
+        self.visibleXMax = visibleXMax
     }
 
     private var baseHeight: CGFloat {
@@ -270,8 +280,12 @@ public struct TrackLaneView: View {
                         .offset(x: minX, y: 2)
                 }
 
-                // Existing containers
-                ForEach(track.containers) { container in
+                // Existing containers (skip off-screen ones for viewport-aware rendering)
+                ForEach(track.containers.filter { container in
+                    let xStart = CGFloat(container.startBar - 1) * pixelsPerBar
+                    let xEnd = CGFloat(container.endBar - 1) * pixelsPerBar
+                    return xEnd >= visibleXMin && xStart <= visibleXMax
+                }) { container in
                     containerView(for: container)
                         .equatable()
                         .offset(x: CGFloat(container.startBar - 1) * pixelsPerBar, y: 2)
@@ -286,9 +300,19 @@ public struct TrackLaneView: View {
             .frame(width: CGFloat(totalBars) * pixelsPerBar, height: baseHeight)
 
             // Automation toolbar + sub-lanes (when expanded)
+            // Toolbar is pinned to the visible viewport (same approach as piano roll toolbar)
             if isAutomationExpanded && !automationSubLanePaths.isEmpty {
                 automationToolbar
-                    .frame(width: CGFloat(totalBars) * pixelsPerBar, height: TimelineViewModel.automationToolbarHeight)
+                    .frame(width: toolbarViewportWidth > 0 ? toolbarViewportWidth : CGFloat(totalBars) * pixelsPerBar, height: TimelineViewModel.automationToolbarHeight)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .offset(x: toolbarViewportWidth > 0 ? toolbarScrollOffset : 0)
+                    .background(
+                        HorizontalScrollObserver { offset, width in
+                            toolbarScrollOffset = offset
+                            toolbarViewportWidth = width
+                        }
+                        .frame(width: 0, height: 0)
+                    )
                     .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
                     .overlay(
                         Rectangle()
@@ -321,10 +345,10 @@ public struct TrackLaneView: View {
                         selectedTool: selectedAutomationTool,
                         gridSpacingBars: gridSpacingBars,
                         onReplaceBreakpoints: onReplaceBreakpoints,
-                        onReplaceTrackBreakpoints: onReplaceTrackBreakpoints
+                        onReplaceTrackBreakpoints: onReplaceTrackBreakpoints,
+                        visibleXMin: visibleXMin,
+                        visibleXMax: visibleXMax
                     )
-                    .equatable()
-                    .drawingGroup()
                     .overlay(
                         Rectangle()
                             .frame(height: 0.5)
@@ -387,7 +411,9 @@ public struct TrackLaneView: View {
             onDeleteSelected: onDeleteSelected,
             onDuplicateSelected: onDuplicateSelected,
             onCopySelected: onCopySelected,
-            onSplitSelected: onSplitSelected
+            onSplitSelected: onSplitSelected,
+            visibleXMin: visibleXMin,
+            visibleXMax: visibleXMax
         )
     }
 
@@ -593,6 +619,8 @@ extension TrackLaneView: Equatable {
         lhs.gridSpacingBars == rhs.gridSpacingBars &&
         lhs.otherSongs.count == rhs.otherSongs.count &&
         zip(lhs.otherSongs, rhs.otherSongs).allSatisfy { $0.id == $1.id && $0.name == $1.name } &&
-        lhs.multiSelectCount == rhs.multiSelectCount
+        lhs.multiSelectCount == rhs.multiSelectCount &&
+        lhs.visibleXMin == rhs.visibleXMin &&
+        lhs.visibleXMax == rhs.visibleXMax
     }
 }

@@ -610,105 +610,32 @@ public struct MainContentView: View {
 
     @ViewBuilder
     private func timelineContent(song: Song) -> some View {
-        // Ruler row (fixed, not scrollable vertically)
-        HStack(spacing: 0) {
-            Color.clear.frame(width: timelineViewModel.trackHeaderWidth, height: 20)
-            headerColumnResizeHandle
-            ScrollView(.horizontal, showsIndicators: false) {
-                RulerView(
-                    totalBars: timelineViewModel.totalBars,
-                    pixelsPerBar: timelineViewModel.pixelsPerBar,
-                    timeSignature: song.timeSignature,
-                    selectedRange: timelineViewModel.selectedRange,
-                    onRangeSelect: { range in
-                        timelineViewModel.selectedRange = range
-                    },
-                    onRangeDeselect: {
-                        timelineViewModel.clearSelectedRange()
-                    },
-                    onPlayheadPosition: { bar in
-                        transportViewModel?.seek(toBar: bar)
-                    }
-                )
-            }
-        }
-        .frame(height: 20)
-        Divider()
-
-        // Section lane row (fixed, not scrollable vertically)
-        HStack(spacing: 0) {
-            Text("Sections")
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-                .frame(width: timelineViewModel.trackHeaderWidth, height: 24)
-                .background(Color(nsColor: .controlBackgroundColor))
-            headerColumnResizeHandle
-            ScrollView(.horizontal, showsIndicators: false) {
-                SectionLaneView(
-                    sections: song.sections,
-                    pixelsPerBar: timelineViewModel.pixelsPerBar,
-                    totalBars: timelineViewModel.totalBars,
-                    selectedSectionID: selectionState.selectedSectionID,
-                    onSectionSelect: { sectionID in
-                        selectionState.selectedSectionID = sectionID
-                    },
-                    onSectionCreate: { startBar, lengthBars in
-                        projectViewModel.addSection(startBar: startBar, lengthBars: lengthBars)
-                    },
-                    onSectionMove: { sectionID, newStartBar in
-                        projectViewModel.moveSection(sectionID: sectionID, newStartBar: newStartBar)
-                    },
-                    onSectionResizeLeft: { sectionID, newStart, newLength in
-                        projectViewModel.resizeSection(sectionID: sectionID, newStartBar: newStart, newLengthBars: newLength)
-                    },
-                    onSectionResizeRight: { sectionID, newLength in
-                        projectViewModel.resizeSection(sectionID: sectionID, newLengthBars: newLength)
-                    },
-                    onSectionDoubleClick: { sectionID in
-                        editingSectionID = sectionID
-                        if let section = song.sections.first(where: { $0.id == sectionID }) {
-                            editingSectionName = section.name
-                        }
-                    },
-                    onSectionNavigate: { bar in
-                        transportViewModel?.setPlayheadPosition(Double(bar))
-                    },
-                    onSectionDelete: { sectionID in
-                        projectViewModel.removeSection(sectionID: sectionID)
-                    },
-                    onSectionRecolor: { sectionID, color in
-                        projectViewModel.recolorSection(sectionID: sectionID, color: color)
-                    },
-                    onSectionCopy: { sectionID in
-                        projectViewModel.copySectionWithMetadata(sectionID: sectionID)
-                    },
-                    onSectionSplit: { sectionID in
-                        let bar = Int(timelineViewModel.playheadBar)
-                        projectViewModel.splitSection(sectionID: sectionID, atBar: bar)
-                    }
-                )
-            }
-        }
-        .frame(height: 24)
-        Divider()
-
         // Track area — grid fills available space, scrollbar at bottom.
-        // Split regular tracks (scrollable) from master track (pinned at bottom).
+        // Ruler and section lane are docked at the top (outside the vertical scroll).
+        // All tracks (including master) share a single grid and horizontal ScrollView.
         let regularTracks = song.tracks.filter { $0.kind != .master }
+        // Ensure canvas and header column use identical track order:
+        // regular tracks first, master always last.
         let masterTrack = song.tracks.first { $0.kind == .master }
+        let allTracksOrdered = regularTracks + (masterTrack.map { [$0] } ?? [])
+
+        // Fixed ruler + section header — not vertically scrollable.
+        // When Metal rendering is active, the ruler is drawn inside the Metal view
+        // (via TimelineTextOverlayLayer) to eliminate scroll synchronization drift.
+        let metalActive = timelineViewModel.useNSViewTimeline && timelineViewModel.useMetalTimeline
+        if !metalActive {
+            rulerHeader(song: song)
+        }
 
         GeometryReader { geo in
             ScrollView(.vertical, showsIndicators: true) {
-                Color.clear.frame(width: 0, height: 0)
-                    .onAppear {
-                        timelineViewModel.setViewportWidth(geo.size.width - timelineViewModel.trackHeaderWidth - 4)
-                    }
-                    .onChange(of: geo.size.width) { _, newWidth in
-                        timelineViewModel.setViewportWidth(newWidth - timelineViewModel.trackHeaderWidth - 4)
-                    }
                 HStack(alignment: .top, spacing: 0) {
                     // Track headers — fixed width, scroll vertically with tracks (lazy)
-                    LazyVStack(spacing: 0, pinnedViews: []) {
+                    // When Metal rendering is active, the ruler is drawn inside the Metal
+                    // view (pinned to viewport top). A matching pinned Section header keeps
+                    // the sidebar's "Sections" label aligned with the Metal ruler.
+                    LazyVStack(spacing: 0, pinnedViews: metalActive ? [.sectionHeaders] : []) {
+                      Section {
                         ForEach(regularTracks) { track in
                             VStack(spacing: 0) {
                                 trackHeaderWithActions(track: track)
@@ -732,6 +659,10 @@ public struct MainContentView: View {
                                     projectViewModel.moveTrack(from: source, to: destination)
                                 }
                             ))
+                        }
+                        // Master track header — always at bottom, not draggable
+                        if let master = song.tracks.first(where: { $0.kind == .master }) {
+                            trackHeaderWithActions(track: master)
                         }
                         // Ghost track headers (shown during file drop over empty space)
                         if ghostDropState.isActive {
@@ -759,6 +690,21 @@ public struct MainContentView: View {
                                     }
                                 }
                             }
+                      } header: {
+                        // Pinned sidebar header when Metal is active — matches the
+                        // pinned Metal ruler so track headers stay vertically aligned.
+                        if metalActive {
+                            VStack(spacing: 0) {
+                                Color.clear.frame(height: TimelineCanvasView.rulerHeight)
+                                Text("Sections")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                            .frame(height: TimelineCanvasView.trackAreaTop)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                        }
+                      }
                     }
                     .frame(width: timelineViewModel.trackHeaderWidth)
                     .frame(minHeight: geo.size.height)
@@ -766,17 +712,19 @@ public struct MainContentView: View {
 
                     headerColumnResizeHandle
 
-                    // Timeline — scrolls horizontally inside, vertically with parent
+                    // Timeline — all tracks in one canvas, one horizontal ScrollView.
+                    // Scrollbar is at the very bottom.
                     ScrollView(.horizontal, showsIndicators: true) {
                         TimelineView(
                             viewModel: timelineViewModel,
                             projectViewModel: projectViewModel,
                             selectionState: selectionState,
                             song: song,
-                            tracks: regularTracks,
+                            tracks: allTracksOrdered,
                             minHeight: geo.size.height,
                             pianoRollState: pianoRollEditorState,
                             ghostDropState: ghostDropState,
+                            showRulerAndSections: metalActive,
                             onDropFilesToNewTracks: { urls, bar in
                                 handleEmptyAreaDrop(urls: urls, startBar: bar, song: song)
                             },
@@ -796,74 +744,91 @@ public struct MainContentView: View {
                             },
                             onOpenPianoRollSheet: {
                                 openPianoRollSheet()
+                            },
+                            onSectionSelect: { sectionID in
+                                selectionState.selectedSectionID = sectionID
+                            },
+                            onRangeSelect: { range in
+                                timelineViewModel.selectedRange = range
+                            },
+                            onRangeDeselect: {
+                                timelineViewModel.clearSelectedRange()
                             }
                         )
                     }
                 }
                 .frame(minHeight: geo.size.height)
+                .onAppear {
+                    timelineViewModel.setViewportWidth(geo.size.width - timelineViewModel.trackHeaderWidth - 4)
+                }
+                .onChange(of: geo.size.width) { _, newWidth in
+                    timelineViewModel.setViewportWidth(newWidth - timelineViewModel.trackHeaderWidth - 4)
+                }
             }
         }
         .scrollWheelHandler(
             onCmdScroll: { delta, mouseXInWindow in
                 let zoomingIn = delta > 0
-                // Compute the timeline X under the cursor for anchored zoom
-                // mouseXInWindow is the mouse position in the window's coordinate space
-                let headerWidth = timelineViewModel.trackHeaderWidth
-                let mouseXRelativeToTimeline = mouseXInWindow - headerWidth
-                if mouseXRelativeToTimeline > 0, let scrollView = findTimelineScrollView() {
-                    let scrollOffset = scrollView.contentView.bounds.origin.x
-                    let timelineX = mouseXRelativeToTimeline + scrollOffset
-                    let barUnderCursor = timelineViewModel.bar(forXPosition: timelineX)
-
-                    if zoomingIn {
-                        timelineViewModel.zoomIn()
-                    } else {
-                        timelineViewModel.zoomOut()
-                    }
-
-                    // After zoom, scroll so the same bar is under the cursor
-                    let newTimelineX = timelineViewModel.xPosition(forBar: barUnderCursor)
-                    let newScrollOffset = newTimelineX - mouseXRelativeToTimeline
-                    scrollView.contentView.setBoundsOrigin(NSPoint(x: max(0, newScrollOffset), y: scrollView.contentView.bounds.origin.y))
-                    scrollView.reflectScrolledClipView(scrollView.contentView)
-                } else {
+                guard let scrollView = findTimelineScrollView() else {
                     if zoomingIn { timelineViewModel.zoomIn() } else { timelineViewModel.zoomOut() }
+                    return
+                }
+                // Convert window X to scroll view's local coordinate space.
+                // This correctly accounts for sidebar, track headers, resize handles,
+                // and any other views to the left of the timeline scroll view.
+                let scrollViewOriginX = scrollView.convert(NSPoint.zero, to: nil).x
+                let mouseXRelativeToTimeline = mouseXInWindow - scrollViewOriginX
+                guard mouseXRelativeToTimeline > 0 else {
+                    if zoomingIn { timelineViewModel.zoomIn() } else { timelineViewModel.zoomOut() }
+                    return
+                }
+                let scrollOffset = scrollView.contentView.bounds.origin.x
+                let timelineX = mouseXRelativeToTimeline + scrollOffset
+                let barUnderCursor = timelineViewModel.bar(forXPosition: timelineX)
+                let viewportWidth = scrollView.contentView.bounds.width
+
+                let newScrollOffset = timelineViewModel.zoomAndUpdateViewport(
+                    zoomIn: zoomingIn,
+                    anchorBar: barUnderCursor,
+                    mouseXRelativeToTimeline: mouseXRelativeToTimeline,
+                    viewportWidth: viewportWidth
+                )
+                scrollSynchronizer.isZooming = true
+                scrollSynchronizer.setAllScrollOffsets(newScrollOffset)
+                // Clear isZooming asynchronously: the document view resize
+                // happens in the next SwiftUI layout pass, which can trigger
+                // boundsDidChange → syncFrom() with a clamped offset.
+                // pendingZoomOffset in syncFrom() re-applies the correct offset.
+                DispatchQueue.main.async {
+                    scrollSynchronizer.isZooming = false
+                    scrollSynchronizer.pendingZoomOffset = nil
+                }
+            },
+            onMagnify: { magnification, mouseXInWindow in
+                guard let scrollView = findTimelineScrollView() else { return }
+                let scrollViewOriginX = scrollView.convert(NSPoint.zero, to: nil).x
+                let mouseXRelativeToTimeline = mouseXInWindow - scrollViewOriginX
+                guard mouseXRelativeToTimeline > 0 else { return }
+                let scrollOffset = scrollView.contentView.bounds.origin.x
+                let timelineX = mouseXRelativeToTimeline + scrollOffset
+                let barUnderCursor = timelineViewModel.bar(forXPosition: timelineX)
+                let viewportWidth = scrollView.contentView.bounds.width
+
+                let factor = 1.0 + magnification
+                let newScrollOffset = timelineViewModel.zoomContinuousAndUpdateViewport(
+                    factor: factor,
+                    anchorBar: barUnderCursor,
+                    mouseXRelativeToTimeline: mouseXRelativeToTimeline,
+                    viewportWidth: viewportWidth
+                )
+                scrollSynchronizer.isZooming = true
+                scrollSynchronizer.setAllScrollOffsets(newScrollOffset)
+                DispatchQueue.main.async {
+                    scrollSynchronizer.isZooming = false
+                    scrollSynchronizer.pendingZoomOffset = nil
                 }
             }
         )
-
-        // Master track — pinned at bottom, does not scroll vertically
-        if let master = masterTrack {
-            let masterBaseHeight = timelineViewModel.baseTrackHeight(for: master.id)
-            let masterHeight = timelineViewModel.trackHeight(for: master, baseHeight: masterBaseHeight)
-            Divider()
-            HStack(alignment: .top, spacing: 0) {
-                trackHeaderWithActions(track: master)
-                    .frame(width: timelineViewModel.trackHeaderWidth, height: masterHeight)
-                    .background(Color(nsColor: .controlBackgroundColor))
-
-                headerColumnResizeHandle
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    TimelineView(
-                        viewModel: timelineViewModel,
-                        projectViewModel: projectViewModel,
-                        selectionState: selectionState,
-                        song: song,
-                        tracks: [master],
-                        minHeight: 0,
-                        onContainerDoubleClick: {
-                            openContainerEditor()
-                        },
-                        onPlayheadPosition: { bar in
-                            pianoRollEditorState.isFocused = false
-                            transportViewModel?.seek(toBar: bar)
-                        }
-                    )
-                }
-            }
-            .frame(height: masterHeight)
-        }
 
         Divider()
 
@@ -875,20 +840,178 @@ public struct MainContentView: View {
             Spacer()
         }
         .onAppear {
-            // Delay to allow SwiftUI to create the backing NSScrollViews
+            scrollSynchronizer.onScroll = { [timelineViewModel] offsetX, viewportWidth in
+                timelineViewModel.updateVisibleXRange(scrollOffsetX: offsetX, viewportWidth: viewportWidth)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                scrollSynchronizer.setup(expectedWidth: timelineViewModel.totalWidth)
+                scrollSynchronizer.setup(expectedWidth: timelineViewModel.quantizedFrameWidth)
+                scrollSynchronizer.setAllScrollOffsets(0)
+                scrollSynchronizer.reportCurrentPosition()
             }
         }
         .onDisappear {
             scrollSynchronizer.teardown()
         }
-        .onChange(of: timelineViewModel.totalWidth) {
-            // Re-discover scroll views after zoom changes the content width
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                scrollSynchronizer.setup(expectedWidth: timelineViewModel.totalWidth)
+        .onChange(of: timelineViewModel.quantizedFrameWidth) {
+            guard !scrollSynchronizer.hasScrollViews else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                scrollSynchronizer.setup(expectedWidth: timelineViewModel.quantizedFrameWidth)
             }
         }
+    }
+
+    // MARK: - Ruler Header (Docked at Top)
+
+    /// Fixed ruler + section lane header that stays visible above the vertical scroll.
+    /// Shares horizontal scroll position via the synchronizer.
+    @ViewBuilder
+    private func rulerHeader(song: Song) -> some View {
+        let rulerHeight = TimelineCanvasView.rulerHeight
+        let sectionHeight = TimelineCanvasView.sectionLaneHeight
+        let totalHeight = rulerHeight + sectionHeight
+        let ppb = timelineViewModel.pixelsPerBar
+        let ts = song.timeSignature
+
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                Color.clear.frame(height: rulerHeight)
+                Text("Sections")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(width: timelineViewModel.trackHeaderWidth, height: totalHeight)
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            headerColumnResizeHandle
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                Canvas { context, size in
+                    // Ruler background
+                    context.fill(
+                        Path(CGRect(x: 0, y: 0, width: size.width, height: rulerHeight)),
+                        with: .color(Color(nsColor: .windowBackgroundColor).opacity(0.95))
+                    )
+
+                    // Section lane background
+                    context.fill(
+                        Path(CGRect(x: 0, y: rulerHeight, width: size.width, height: sectionHeight)),
+                        with: .color(Color(nsColor: .windowBackgroundColor).opacity(0.8))
+                    )
+
+                    // Ruler bottom border
+                    let borderPath = Path { p in
+                        p.move(to: CGPoint(x: 0, y: rulerHeight - 0.5))
+                        p.addLine(to: CGPoint(x: size.width, y: rulerHeight - 0.5))
+                    }
+                    context.stroke(borderPath, with: .color(.secondary.opacity(0.3)), lineWidth: 0.5)
+
+                    // Section lane bottom border
+                    let sectionBorderPath = Path { p in
+                        p.move(to: CGPoint(x: 0, y: totalHeight - 0.5))
+                        p.addLine(to: CGPoint(x: size.width, y: totalHeight - 0.5))
+                    }
+                    context.stroke(sectionBorderPath, with: .color(.secondary.opacity(0.3)), lineWidth: 0.5)
+
+                    // Label step — avoid too-dense labels at low zoom
+                    let minLabelWidth: CGFloat = 30
+                    let niceSteps = [1, 2, 4, 5, 8, 10, 16, 20, 25, 32, 50, 64, 100, 200, 500, 1000]
+                    let step = niceSteps.first(where: { CGFloat($0) * ppb >= minLabelWidth }) ?? 1000
+
+                    // Bar lines, ticks, and labels
+                    let maxBar = max(1, Int(ceil(size.width / ppb)) + 1)
+                    var tickPath = Path()
+                    for bar in 1...maxBar {
+                        let x = CGFloat(bar - 1) * ppb
+
+                        // Bar tick at bottom of ruler
+                        if ppb >= 4 {
+                            tickPath.move(to: CGPoint(x: x, y: rulerHeight - 6))
+                            tickPath.addLine(to: CGPoint(x: x, y: rulerHeight))
+                        }
+
+                        // Bar number label
+                        if bar % step == 0 {
+                            let text = Text("\(bar)").font(.system(size: 9)).foregroundStyle(.secondary)
+                            context.draw(text, at: CGPoint(x: x + 12, y: 8))
+                        }
+
+                        // Beat ticks
+                        if ppb > 50 {
+                            let ppBeat = ppb / CGFloat(ts.beatsPerBar)
+                            for beat in 1..<ts.beatsPerBar {
+                                let beatX = x + CGFloat(beat) * ppBeat
+                                tickPath.move(to: CGPoint(x: beatX, y: rulerHeight - 3))
+                                tickPath.addLine(to: CGPoint(x: beatX, y: rulerHeight))
+                            }
+                        }
+                    }
+                    context.stroke(tickPath, with: .color(.secondary.opacity(0.5)), lineWidth: 0.5)
+
+                    // Range selection highlight
+                    if let range = timelineViewModel.selectedRange {
+                        let rangeX = CGFloat(range.lowerBound - 1) * ppb
+                        let rangeW = CGFloat(range.count) * ppb
+                        context.fill(
+                            Path(CGRect(x: rangeX, y: 0, width: rangeW, height: rulerHeight)),
+                            with: .color(.accentColor.opacity(0.25))
+                        )
+                    }
+
+                    // Section bands
+                    for section in song.sections {
+                        let sx = CGFloat(section.startBar - 1) * ppb
+                        let sw = CGFloat(section.lengthBars) * ppb
+                        let bandRect = CGRect(x: sx, y: rulerHeight + 1, width: sw, height: sectionHeight - 2)
+                        let sectionColor = rulerSectionColor(hex: section.color)
+                        let isSelected = selectionState.selectedSectionID == section.id
+
+                        // Band fill
+                        let bandPath = Path(roundedRect: bandRect, cornerRadius: 3)
+                        context.fill(bandPath, with: .color(sectionColor.opacity(0.4)))
+
+                        // Band border
+                        if isSelected {
+                            context.stroke(bandPath, with: .color(.accentColor), lineWidth: 1.5)
+                        } else {
+                            context.stroke(bandPath, with: .color(sectionColor.opacity(0.7)), lineWidth: 0.5)
+                        }
+
+                        // Section name
+                        if sw > 20 {
+                            let label = Text(section.name).font(.system(size: 10, weight: .medium)).foregroundStyle(sectionColor)
+                            context.draw(label, at: CGPoint(x: bandRect.minX + 6 + 30, y: bandRect.midY))
+                        }
+                    }
+
+                    // Playhead line in ruler
+                    let playX = CGFloat(timelineViewModel.playheadBar - 1.0) * ppb
+                    let playheadPath = Path { p in
+                        p.move(to: CGPoint(x: playX, y: 0))
+                        p.addLine(to: CGPoint(x: playX, y: totalHeight))
+                    }
+                    context.stroke(playheadPath, with: .color(.red), lineWidth: 1)
+                }
+                .frame(width: timelineViewModel.quantizedFrameWidth, height: totalHeight)
+                .contentShape(Rectangle())
+                .onTapGesture { location in
+                    let bar = timelineViewModel.snappedBar(forXPosition: location.x, timeSignature: ts)
+                    pianoRollEditorState.isFocused = false
+                    transportViewModel?.seek(toBar: bar)
+                }
+            }
+        }
+        .frame(height: totalHeight)
+    }
+
+    /// Converts a hex color string (e.g. "#E74C3C") to a SwiftUI Color.
+    private func rulerSectionColor(hex: String) -> Color {
+        let trimmed = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard let rgb = Int(trimmed, radix: 16) else { return .gray }
+        let r = Double((rgb >> 16) & 0xFF) / 255.0
+        let g = Double((rgb >> 8) & 0xFF) / 255.0
+        let b = Double(rgb & 0xFF) / 255.0
+        return Color(red: r, green: g, blue: b)
     }
 
     // MARK: - Mixer Content
@@ -1991,15 +2114,19 @@ struct SelectionBasedInspectorView: View {
 
 /// Uses a local event monitor to intercept Cmd+scroll events for zoom
 /// without blocking normal scroll, scrollbar dragging, or shift+scroll.
+/// Also handles native trackpad pinch-to-zoom (magnify gesture).
 private struct ScrollWheelHandlerModifier: ViewModifier {
     let onCmdScroll: (_ delta: CGFloat, _ mouseXInWindow: CGFloat) -> Void
+    let onMagnify: ((_ magnification: CGFloat, _ mouseXInWindow: CGFloat) -> Void)?
 
-    @State private var monitor: AnyObject?
+    @State private var scrollMonitor: AnyObject?
+    @State private var magnifyMonitor: AnyObject?
 
     func body(content: Content) -> some View {
         content
             .onAppear {
-                monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                // Cmd+scroll wheel → discrete zoom
+                scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
                     if event.modifierFlags.contains(.command) {
                         let delta = event.scrollingDeltaY
                         if delta != 0 {
@@ -2010,18 +2137,31 @@ private struct ScrollWheelHandlerModifier: ViewModifier {
                     }
                     return event // pass through
                 } as AnyObject
+
+                // Native trackpad pinch-to-zoom (magnify gesture) → continuous zoom
+                if let onMagnify {
+                    magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { event in
+                        let magnification = event.magnification
+                        if abs(magnification) > 0.001 {
+                            onMagnify(magnification, event.locationInWindow.x)
+                        }
+                        return event // pass through (don't consume — let other views see it)
+                    } as AnyObject
+                }
             }
             .onDisappear {
-                if let monitor {
-                    NSEvent.removeMonitor(monitor)
-                }
+                if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+                if let magnifyMonitor { NSEvent.removeMonitor(magnifyMonitor) }
             }
     }
 }
 
 extension View {
-    func scrollWheelHandler(onCmdScroll: @escaping (_ delta: CGFloat, _ mouseXInWindow: CGFloat) -> Void) -> some View {
-        modifier(ScrollWheelHandlerModifier(onCmdScroll: onCmdScroll))
+    func scrollWheelHandler(
+        onCmdScroll: @escaping (_ delta: CGFloat, _ mouseXInWindow: CGFloat) -> Void,
+        onMagnify: ((_ magnification: CGFloat, _ mouseXInWindow: CGFloat) -> Void)? = nil
+    ) -> some View {
+        modifier(ScrollWheelHandlerModifier(onCmdScroll: onCmdScroll, onMagnify: onMagnify))
     }
 }
 
@@ -2029,41 +2169,60 @@ extension View {
 /// Walks the NSApp key window's view hierarchy looking for the timeline scroll view.
 private func findTimelineScrollView() -> NSScrollView? {
     guard let window = NSApp.keyWindow else { return nil }
-    return findScrollView(in: window.contentView)
+    let candidates = collectTimelineScrollViews(in: window.contentView)
+    guard !candidates.isEmpty else { return nil }
+    return candidates.max { lhs, rhs in
+        let lhsDoc = lhs.documentView?.frame.width ?? 0
+        let rhsDoc = rhs.documentView?.frame.width ?? 0
+        if lhsDoc == rhsDoc {
+            return lhs.contentView.bounds.width < rhs.contentView.bounds.width
+        }
+        return lhsDoc < rhsDoc
+    }
 }
 
-private func findScrollView(in view: NSView?) -> NSScrollView? {
-    guard let view else { return nil }
-    // Look for NSScrollView whose document view is wide (the timeline)
+private func collectTimelineScrollViews(in view: NSView?) -> [NSScrollView] {
+    guard let view else { return [] }
+    var result: [NSScrollView] = []
     if let scrollView = view as? NSScrollView,
        let documentWidth = scrollView.documentView?.frame.width,
        documentWidth > 1000,
-       scrollView.hasHorizontalScroller || scrollView.horizontalScroller != nil {
-        return scrollView
+       (scrollView.hasHorizontalScroller || scrollView.horizontalScroller != nil) {
+        result.append(scrollView)
     }
     for subview in view.subviews {
-        if let found = findScrollView(in: subview) {
-            return found
-        }
+        result.append(contentsOf: collectTimelineScrollViews(in: subview))
     }
-    return nil
+    return result
 }
 
 // MARK: - Horizontal Scroll Synchronization
 
-/// Synchronizes all horizontal scroll views whose document width matches
-/// the timeline's total width. This keeps the ruler, section lane, track
-/// timeline, and master track scrolling in unison.
+/// Synchronizes horizontal scroll views whose document width matches
+/// the timeline's total width. With ruler and section lane now drawn
+/// inside the canvas, this only syncs the track timeline and master track.
 final class HorizontalScrollSynchronizer {
     private var observers: [NSObjectProtocol] = []
     private var scrollViews: [NSScrollView] = []
     private var isSyncing = false
+    /// Set during zoom to suppress re-entrant boundsDidChange callbacks.
+    var isZooming = false
+    /// Offset to re-apply when NSScrollView fires boundsDidChange during zoom layout.
+    var pendingZoomOffset: CGFloat?
+    /// Whether scroll views have been discovered and are being tracked.
+    var hasScrollViews: Bool { !scrollViews.isEmpty }
+    var onScroll: ((_ offsetX: CGFloat, _ viewportWidth: CGFloat) -> Void)?
+    /// Current scroll offset snapshot — read by ruler Canvas for viewport culling.
+    /// Not @Observable: reading this does NOT cause SwiftUI re-evaluation.
+    private(set) var currentScrollOffset: CGFloat = 0
+    /// Current viewport width snapshot.
+    private(set) var currentViewportWidth: CGFloat = 1400
 
     func setup(expectedWidth: CGFloat) {
         teardown()
         guard let window = NSApp.keyWindow else { return }
         scrollViews = Self.findTimelineScrollViews(in: window.contentView, expectedWidth: expectedWidth)
-        guard scrollViews.count > 1 else { return }
+        guard !scrollViews.isEmpty else { return }
 
         for sv in scrollViews {
             sv.contentView.postsBoundsChangedNotifications = true
@@ -2072,9 +2231,11 @@ final class HorizontalScrollSynchronizer {
                 object: sv.contentView,
                 queue: .main
             ) { [weak self] notification in
-                guard let self, !self.isSyncing,
+                guard let self, !self.isSyncing, !self.isZooming,
                       let clipView = notification.object as? NSClipView,
-                      let source = clipView.enclosingScrollView else { return }
+                      let source = clipView.enclosingScrollView else {
+                    return
+                }
                 self.syncFrom(source)
             }
             observers.append(observer)
@@ -2090,6 +2251,25 @@ final class HorizontalScrollSynchronizer {
     }
 
     private func syncFrom(_ source: NSScrollView) {
+        // During zoom, the document view resize triggers boundsDidChange with a
+        // clamped offset. Re-apply the pending zoom offset instead.
+        if let pending = pendingZoomOffset {
+            isSyncing = true
+            for sv in scrollViews {
+                if abs(sv.contentView.bounds.origin.x - pending) > 0.5 {
+                    sv.contentView.setBoundsOrigin(NSPoint(x: pending, y: sv.contentView.bounds.origin.y))
+                    sv.reflectScrolledClipView(sv.contentView)
+                }
+            }
+            currentScrollOffset = pending
+            if let sv = scrollViews.first {
+                currentViewportWidth = sv.contentView.bounds.width
+                onScroll?(pending, currentViewportWidth)
+            }
+            isSyncing = false
+            return
+        }
+
         isSyncing = true
         let offsetX = source.contentView.bounds.origin.x
         for sv in scrollViews where sv !== source {
@@ -2098,7 +2278,41 @@ final class HorizontalScrollSynchronizer {
                 sv.reflectScrolledClipView(sv.contentView)
             }
         }
+        let viewportWidth = source.contentView.bounds.width
+        currentScrollOffset = offsetX
+        currentViewportWidth = viewportWidth
+        onScroll?(offsetX, viewportWidth)
         isSyncing = false
+    }
+
+    /// Sets all tracked scroll views to the given horizontal offset.
+    /// Used during zoom to keep ruler, section, timeline, and master in sync.
+    func setAllScrollOffsets(_ offsetX: CGFloat) {
+        pendingZoomOffset = offsetX
+        isSyncing = true
+        for sv in scrollViews {
+            if abs(sv.contentView.bounds.origin.x - offsetX) > 0.5 {
+                sv.contentView.setBoundsOrigin(NSPoint(x: offsetX, y: sv.contentView.bounds.origin.y))
+                sv.reflectScrolledClipView(sv.contentView)
+            }
+        }
+        currentScrollOffset = offsetX
+        if let sv = scrollViews.first {
+            let viewportWidth = sv.contentView.bounds.width
+            currentViewportWidth = viewportWidth
+            onScroll?(offsetX, viewportWidth)
+        }
+        isSyncing = false
+    }
+
+    /// Reports the current scroll position. Call after setup to populate initial visible range.
+    func reportCurrentPosition() {
+        guard let sv = scrollViews.first else { return }
+        let offsetX = sv.contentView.bounds.origin.x
+        let width = sv.contentView.bounds.width
+        currentScrollOffset = offsetX
+        currentViewportWidth = width
+        onScroll?(offsetX, width)
     }
 
     /// Finds all horizontal NSScrollViews whose document width is close to expectedWidth.

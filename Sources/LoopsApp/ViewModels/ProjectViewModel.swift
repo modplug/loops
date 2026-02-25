@@ -167,7 +167,6 @@ public final class ProjectViewModel {
 
     /// Registers an undo action that snapshots and restores the full project state.
     private func registerUndo(actionName: String) {
-        let undoStart = CFAbsoluteTimeGetCurrent()
         let snapshot = project
         let wasUnsaved = hasUnsavedChanges
         let savedSongID = currentSongID
@@ -192,8 +191,6 @@ public final class ProjectViewModel {
         undoManager?.endUndoGrouping()
         // Track in undo history panel
         appendToUndoHistory(actionName: actionName)
-        let undoMs = (CFAbsoluteTimeGetCurrent() - undoStart) * 1000
-        print("[PERF] registerUndo('\(actionName)'): \(String(format: "%.2f", undoMs))ms")
     }
 
     /// Adds an entry to the undo history, trimming any "future" entries above the cursor.
@@ -218,7 +215,6 @@ public final class ProjectViewModel {
 
         if activeCoalescedAction == actionName {
             // Same gesture — restart the idle timer but skip the snapshot
-            print("[PERF] registerUndoCoalesced('\(actionName)'): COALESCED (skipped snapshot)")
             coalescedUndoTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.closeCoalescedUndoGroup()
@@ -232,7 +228,6 @@ public final class ProjectViewModel {
 
         // Open a new coalesced group with a fresh snapshot + immediate undo registration
         activeCoalescedAction = actionName
-        print("[PERF] registerUndoCoalesced('\(actionName)'): NEW group (taking snapshot)")
         registerUndo(actionName: actionName)
 
         coalescedUndoTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
@@ -621,7 +616,7 @@ public final class ProjectViewModel {
     public func toggleMute(trackID: ID<Track>) {
         guard !project.songs.isEmpty else { return }
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
-        registerUndo(actionName: "Toggle Mute")
+        registerUndoCoalesced(actionName: "Toggle Mute")
         project.songs[currentSongIndex].tracks[index].isMuted.toggle()
         hasUnsavedChanges = true
     }
@@ -630,7 +625,7 @@ public final class ProjectViewModel {
     public func toggleSolo(trackID: ID<Track>) {
         guard !project.songs.isEmpty else { return }
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
-        registerUndo(actionName: "Toggle Solo")
+        registerUndoCoalesced(actionName: "Toggle Solo")
         project.songs[currentSongIndex].tracks[index].isSoloed.toggle()
         hasUnsavedChanges = true
     }
@@ -640,7 +635,7 @@ public final class ProjectViewModel {
         guard !project.songs.isEmpty else { return }
         guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
         guard project.songs[currentSongIndex].tracks[index].isRecordArmed != armed else { return }
-        registerUndo(actionName: armed ? "Arm Track" : "Disarm Track")
+        registerUndoCoalesced(actionName: armed ? "Arm Track" : "Disarm Track")
         project.songs[currentSongIndex].tracks[index].isRecordArmed = armed
         hasUnsavedChanges = true
     }
@@ -1579,6 +1574,51 @@ public final class ProjectViewModel {
         guard let bpIndex = project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints.firstIndex(where: { $0.id == breakpoint.id }) else { return }
         registerUndo(actionName: "Edit Breakpoint")
         project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints[bpIndex] = breakpoint
+        hasUnsavedChanges = true
+        onAutomationDataChanged?()
+    }
+
+    /// Replaces breakpoints in a position range on a container automation lane with new ones.
+    /// Used by the shape tool to stamp patterns into the automation.
+    public func replaceAutomationBreakpoints(
+        containerID: ID<Container>, laneID: ID<AutomationLane>,
+        startPosition: Double, endPosition: Double,
+        replacements: [AutomationBreakpoint]
+    ) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                if let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes.firstIndex(where: { $0.id == laneID }) {
+                    registerUndo(actionName: "Draw Automation Shape")
+                    // Remove existing breakpoints in the range
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.removeAll {
+                        $0.position >= startPosition && $0.position <= endPosition
+                    }
+                    // Add replacement breakpoints
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].automationLanes[laneIndex].breakpoints.append(contentsOf: replacements)
+                    markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .automation)
+                    hasUnsavedChanges = true
+                    onAutomationDataChanged?()
+                    return
+                }
+            }
+        }
+    }
+
+    /// Replaces breakpoints in a position range on a track-level automation lane with new ones.
+    public func replaceTrackAutomationBreakpoints(
+        trackID: ID<Track>, laneID: ID<AutomationLane>,
+        startPosition: Double, endPosition: Double,
+        replacements: [AutomationBreakpoint]
+    ) {
+        guard !project.songs.isEmpty else { return }
+        guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let laneIndex = project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes.firstIndex(where: { $0.id == laneID }) else { return }
+        registerUndo(actionName: "Draw Automation Shape")
+        project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints.removeAll {
+            $0.position >= startPosition && $0.position <= endPosition
+        }
+        project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes[laneIndex].breakpoints.append(contentsOf: replacements)
         hasUnsavedChanges = true
         onAutomationDataChanged?()
     }
@@ -2579,14 +2619,37 @@ public final class ProjectViewModel {
     }
 
     /// Returns waveform peaks for a container, if available.
+    /// Slices peaks to the visible portion of the source file, accounting for
+    /// `audioStartOffset` (left trim) and `lengthBars` (right trim) so the
+    /// waveform matches the actual audio playback position.
     public func waveformPeaks(for container: Container) -> [Float]? {
         // Check live recording peaks first (in-progress recording)
         if let livePeaks = liveRecordingPeaks[container.id], !livePeaks.isEmpty {
             return livePeaks
         }
         guard let recordingID = container.sourceRecordingID,
-              let recording = project.sourceRecordings[recordingID] else { return nil }
-        return recording.waveformPeaks
+              let recording = project.sourceRecordings[recordingID],
+              let allPeaks = recording.waveformPeaks, !allPeaks.isEmpty else { return nil }
+
+        // Compute the total file duration in bars to determine which
+        // slice of peaks corresponds to the container's visible region.
+        guard let totalFileBars = recordingDurationBars(for: container),
+              totalFileBars > 0 else { return allPeaks }
+
+        let offset = container.audioStartOffset
+        let length = container.lengthBars
+
+        // No trimming — container shows the full file
+        if offset < 0.001 && length >= totalFileBars - 0.01 {
+            return allPeaks
+        }
+
+        let peakCount = Double(allPeaks.count)
+        let startIdx = max(0, Int((offset / totalFileBars) * peakCount))
+        let endIdx = min(allPeaks.count, Int(((offset + length) / totalFileBars) * peakCount))
+
+        guard startIdx < endIdx else { return allPeaks }
+        return Array(allPeaks[startIdx..<endIdx])
     }
 
     /// Returns the total duration of the source recording in bars, or nil if unknown.

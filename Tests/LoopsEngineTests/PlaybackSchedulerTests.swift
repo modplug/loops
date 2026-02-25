@@ -9,6 +9,14 @@ import AVFoundation
 private let audioTestsEnabled =
     ProcessInfo.processInfo.environment["LOOPS_AUDIO_TESTS"] != nil
 
+private let clickAssetURL: URL? = {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let url = root.appendingPathComponent("assets/click.mp3")
+    return FileManager.default.fileExists(atPath: url.path) ? url : nil
+}()
+
+private let clickAssetTestsEnabled = audioTestsEnabled && clickAssetURL != nil
+
 @Suite("PlaybackScheduler Tests", .serialized)
 @MainActor
 struct PlaybackSchedulerTests {
@@ -2952,7 +2960,8 @@ struct PlaybackSchedulerTests {
     /// If both tracks are sample-accurate, summing should double the amplitude.
     private static func makeIdenticalTrackFixture(
         trackCount: Int = 2,
-        sampleRate: Double = 44100
+        sampleRate: Double = 44100,
+        amplitude: Float = 0.25
     ) throws -> (
         tempDir: URL,
         song: Song,
@@ -2968,13 +2977,13 @@ struct PlaybackSchedulerTests {
         let sampleCount = AVAudioFrameCount(4.0 * samplesPerBar)
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
 
-        // Create sine wave (440Hz, amplitude 0.25)
+        // Create sine wave (440Hz)
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
         buffer.frameLength = sampleCount
         if let data = buffer.floatChannelData {
             let freq = Float(440.0 * 2.0 * Double.pi / sampleRate)
             for frame in 0..<Int(sampleCount) {
-                data[0][frame] = sin(freq * Float(frame)) * 0.25
+                data[0][frame] = sin(freq * Float(frame)) * amplitude
             }
         }
 
@@ -3004,6 +3013,186 @@ struct PlaybackSchedulerTests {
 
         let song = Song(name: "Identical Track Test", tracks: tracks)
         return (tempDir, song, recordings)
+    }
+
+    /// Creates N unique stems, then duplicates that same set across multiple layers.
+    /// Layer 2+ reuses the exact same SourceRecording IDs as layer 1, mirroring
+    /// "first 5 tracks + same 5 tracks again" real-world sessions.
+    private static func makeDuplicatedStemFixture(
+        stemCount: Int = 5,
+        duplicateLayers: Int = 2,
+        sampleRate: Double = 44100,
+        amplitude: Float = 0.02
+    ) throws -> (
+        tempDir: URL,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording]
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let beatsPerBar = 4.0
+        let secondsPerBeat = 60.0 / 120.0
+        let samplesPerBar = beatsPerBar * secondsPerBeat * sampleRate
+        let sampleCount = AVAudioFrameCount(4.0 * samplesPerBar)
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+
+        var recordings: [ID<SourceRecording>: SourceRecording] = [:]
+        var stemRecordingIDs: [ID<SourceRecording>] = []
+        var tracks: [Track] = []
+
+        for stemIndex in 0..<stemCount {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+            buffer.frameLength = sampleCount
+            if let data = buffer.floatChannelData {
+                // Use distinct frequencies per stem so each stem is unique, but
+                // duplicates of the same stem remain phase-identical.
+                let frequency = 220.0 + Double(stemIndex) * 55.0
+                let phaseStep = Float(frequency * 2.0 * Double.pi / sampleRate)
+                for frame in 0..<Int(sampleCount) {
+                    data[0][frame] = sin(phaseStep * Float(frame)) * amplitude
+                }
+            }
+
+            let filename = "stem\(stemIndex).caf"
+            let fileURL = tempDir.appendingPathComponent(filename)
+            let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+            try file.write(from: buffer)
+
+            let recID = ID<SourceRecording>()
+            recordings[recID] = SourceRecording(
+                filename: filename,
+                sampleRate: sampleRate,
+                sampleCount: Int64(sampleCount)
+            )
+            stemRecordingIDs.append(recID)
+        }
+
+        for layer in 0..<duplicateLayers {
+            for stemIndex in 0..<stemCount {
+                let recID = stemRecordingIDs[stemIndex]
+                let container = Container(
+                    name: "Stem \(stemIndex) L\(layer)",
+                    startBar: 1,
+                    lengthBars: 4,
+                    sourceRecordingID: recID
+                )
+                tracks.append(Track(name: "Track L\(layer)S\(stemIndex)", kind: .audio, containers: [container]))
+            }
+        }
+
+        let song = Song(name: "Duplicated Stem Fixture", tracks: tracks)
+        return (tempDir, song, recordings)
+    }
+
+    /// Builds a duplicated-stem fixture from a real transient source file.
+    /// Each stem is imported from the same click asset, then layer 2+ reuses
+    /// the exact recording IDs from layer 1.
+    private static func makeClickAssetDuplicatedStemFixture(
+        assetURL: URL,
+        stemCount: Int = 5,
+        duplicateLayers: Int = 2,
+        containerLengthBars: Double = 16.0,
+        trackVolume: Float = 0.1
+    ) throws -> (
+        tempDir: URL,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording]
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        var recordings: [ID<SourceRecording>: SourceRecording] = [:]
+        var stemRecordingIDs: [ID<SourceRecording>] = []
+        let importer = AudioImporter()
+
+        for _ in 0..<stemCount {
+            let imported = try importer.importAudioFile(from: assetURL, to: tempDir)
+            recordings[imported.id] = imported
+            stemRecordingIDs.append(imported.id)
+        }
+
+        var tracks: [Track] = []
+        for layer in 0..<duplicateLayers {
+            for stemIndex in 0..<stemCount {
+                let recID = stemRecordingIDs[stemIndex]
+                let container = Container(
+                    name: "Click Stem \(stemIndex) L\(layer)",
+                    startBar: 1,
+                    lengthBars: containerLengthBars,
+                    sourceRecordingID: recID
+                )
+                tracks.append(
+                    Track(
+                        name: "Click L\(layer)S\(stemIndex)",
+                        kind: .audio,
+                        volume: trackVolume,
+                        containers: [container]
+                    )
+                )
+            }
+        }
+
+        let song = Song(name: "Click Asset Duplicated Stem Fixture", tracks: tracks)
+        return (tempDir, song, recordings)
+    }
+
+    /// Imports a click asset stem pool once, then returns two songs that share
+    /// the same recordings: one layer (N tracks) and duplicated layers (2N tracks).
+    private static func makeClickAssetLayerComparisonFixture(
+        assetURL: URL,
+        stemCount: Int = 32,
+        containerLengthBars: Double = 8.0,
+        trackVolume: Float = 0.01
+    ) throws -> (
+        tempDir: URL,
+        singleSong: Song,
+        doubleSong: Song,
+        recordings: [ID<SourceRecording>: SourceRecording]
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let importer = AudioImporter()
+        var recordings: [ID<SourceRecording>: SourceRecording] = [:]
+        var stemRecordingIDs: [ID<SourceRecording>] = []
+        for _ in 0..<stemCount {
+            let imported = try importer.importAudioFile(from: assetURL, to: tempDir)
+            recordings[imported.id] = imported
+            stemRecordingIDs.append(imported.id)
+        }
+
+        func buildSong(layers: Int, name: String) -> Song {
+            var tracks: [Track] = []
+            tracks.reserveCapacity(stemCount * layers)
+            for layer in 0..<layers {
+                for stemIndex in 0..<stemCount {
+                    let recID = stemRecordingIDs[stemIndex]
+                    let container = Container(
+                        name: "Click Stem \(stemIndex) L\(layer)",
+                        startBar: 1,
+                        lengthBars: containerLengthBars,
+                        sourceRecordingID: recID
+                    )
+                    tracks.append(
+                        Track(
+                            name: "Click L\(layer)S\(stemIndex)",
+                            kind: .audio,
+                            volume: trackVolume,
+                            containers: [container]
+                        )
+                    )
+                }
+            }
+            return Song(name: name, tracks: tracks)
+        }
+
+        let singleSong = buildSong(layers: 1, name: "Click Asset Single Layer")
+        let doubleSong = buildSong(layers: 2, name: "Click Asset Double Layer")
+        return (tempDir, singleSong, doubleSong, recordings)
     }
 
     /// Renders frames from an offline engine into a single output buffer.
@@ -3139,6 +3328,243 @@ struct PlaybackSchedulerTests {
         let ratio = singlePeak > 0 ? dualPeak / singlePeak : 0
         #expect(ratio > 1.8 && ratio < 2.2,
                 "Expected ~2x amplitude ratio, got \(ratio) (single=\(singlePeak), dual=\(dualPeak))")
+    }
+
+    @Test("Aligned duplicate tracks remain sample-accurate at 10 tracks",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(1)))
+    func multiTrackConstructiveInterferenceTenTracks() async throws {
+        // Use lower amplitude to avoid clipping at higher track counts.
+        let singleFixture = try Self.makeIdenticalTrackFixture(trackCount: 1, amplitude: 0.05)
+        defer { try? FileManager.default.removeItem(at: singleFixture.tempDir) }
+
+        let engine1 = try Self.makeRunningEngine()
+        let scheduler1 = PlaybackScheduler(engine: engine1, audioDirURL: singleFixture.tempDir)
+        await scheduler1.prepare(song: singleFixture.song, sourceRecordings: singleFixture.recordings)
+        scheduler1.play(
+            song: singleFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let totalFrames = Int(4.0 * samplesPerBar)
+        let singleOutput = try Self.renderToBuffer(engine: engine1, frameCount: totalFrames)
+        scheduler1.stop()
+        scheduler1.cleanup()
+        engine1.stop()
+
+        // 10-track version (representative of stacked duplicate-track playback).
+        let tenFixture = try Self.makeIdenticalTrackFixture(trackCount: 10, amplitude: 0.05)
+        defer { try? FileManager.default.removeItem(at: tenFixture.tempDir) }
+
+        let engine10 = try Self.makeRunningEngine()
+        let scheduler10 = PlaybackScheduler(engine: engine10, audioDirURL: tenFixture.tempDir)
+        await scheduler10.prepare(song: tenFixture.song, sourceRecordings: tenFixture.recordings)
+        scheduler10.play(
+            song: tenFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let tenOutput = try Self.renderToBuffer(engine: engine10, frameCount: totalFrames)
+        scheduler10.stop()
+        scheduler10.cleanup()
+        engine10.stop()
+
+        var singlePeak: Float = 0
+        var tenPeak: Float = 0
+        let startFrame = 256 // skip declick
+        let endFrame = min(Int(singleOutput.frameLength), Int(tenOutput.frameLength))
+        if let singleData = singleOutput.floatChannelData,
+           let tenData = tenOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                singlePeak = max(singlePeak, abs(singleData[0][frame]))
+                tenPeak = max(tenPeak, abs(tenData[0][frame]))
+            }
+        }
+
+        let ratio = singlePeak > 0 ? tenPeak / singlePeak : 0
+        #expect(ratio > 9.0 && ratio < 11.0,
+                "Expected ~10x amplitude ratio, got \(ratio) (single=\(singlePeak), ten=\(tenPeak))")
+    }
+
+    @Test("Aligned duplicate tracks remain sample-accurate at 64 tracks",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(2)))
+    func multiTrackConstructiveInterferenceSixtyFourTracks() async throws {
+        // Keep amplitude conservative to avoid clipping at 64x summing.
+        let singleFixture = try Self.makeIdenticalTrackFixture(trackCount: 1, amplitude: 0.005)
+        defer { try? FileManager.default.removeItem(at: singleFixture.tempDir) }
+
+        let engine1 = try Self.makeRunningEngine()
+        let scheduler1 = PlaybackScheduler(engine: engine1, audioDirURL: singleFixture.tempDir)
+        await scheduler1.prepare(song: singleFixture.song, sourceRecordings: singleFixture.recordings)
+        scheduler1.play(
+            song: singleFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let totalFrames = Int(4.0 * samplesPerBar)
+        let singleOutput = try Self.renderToBuffer(engine: engine1, frameCount: totalFrames)
+        scheduler1.stop()
+        scheduler1.cleanup()
+        engine1.stop()
+
+        let manyFixture = try Self.makeIdenticalTrackFixture(trackCount: 64, amplitude: 0.005)
+        defer { try? FileManager.default.removeItem(at: manyFixture.tempDir) }
+
+        let engineMany = try Self.makeRunningEngine()
+        let schedulerMany = PlaybackScheduler(engine: engineMany, audioDirURL: manyFixture.tempDir)
+        await schedulerMany.prepare(song: manyFixture.song, sourceRecordings: manyFixture.recordings)
+        schedulerMany.play(
+            song: manyFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let manyOutput = try Self.renderToBuffer(engine: engineMany, frameCount: totalFrames)
+        schedulerMany.stop()
+        schedulerMany.cleanup()
+        engineMany.stop()
+
+        var singlePeak: Float = 0
+        var manyPeak: Float = 0
+        let startFrame = 256 // skip declick
+        let endFrame = min(Int(singleOutput.frameLength), Int(manyOutput.frameLength))
+        if let singleData = singleOutput.floatChannelData,
+           let manyData = manyOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                singlePeak = max(singlePeak, abs(singleData[0][frame]))
+                manyPeak = max(manyPeak, abs(manyData[0][frame]))
+            }
+        }
+
+        let ratio = singlePeak > 0 ? manyPeak / singlePeak : 0
+        #expect(ratio > 58.0 && ratio < 70.0,
+                "Expected ~64x amplitude ratio, got \(ratio) (single=\(singlePeak), many=\(manyPeak))")
+    }
+
+    @Test("Duplicated stems on separate tracks remain phase-locked",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(2)))
+    func duplicatedStemLayersRemainSampleAccurate() async throws {
+        // Reference: 5 unique stems, one layer.
+        let singleLayerFixture = try Self.makeDuplicatedStemFixture(stemCount: 5, duplicateLayers: 1)
+        defer { try? FileManager.default.removeItem(at: singleLayerFixture.tempDir) }
+
+        let engine1 = try Self.makeRunningEngine()
+        let scheduler1 = PlaybackScheduler(engine: engine1, audioDirURL: singleLayerFixture.tempDir)
+        await scheduler1.prepare(song: singleLayerFixture.song, sourceRecordings: singleLayerFixture.recordings)
+        scheduler1.play(
+            song: singleLayerFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let totalFrames = Int(4.0 * samplesPerBar)
+        let singleOutput = try Self.renderToBuffer(engine: engine1, frameCount: totalFrames)
+        scheduler1.stop()
+        scheduler1.cleanup()
+        engine1.stop()
+
+        // Test: duplicate the same 5 stems into a second layer (10 tracks total).
+        // Both layers share the exact same SourceRecording IDs.
+        let doubleLayerFixture = try Self.makeDuplicatedStemFixture(stemCount: 5, duplicateLayers: 2)
+        defer { try? FileManager.default.removeItem(at: doubleLayerFixture.tempDir) }
+
+        let engine2 = try Self.makeRunningEngine()
+        let scheduler2 = PlaybackScheduler(engine: engine2, audioDirURL: doubleLayerFixture.tempDir)
+        await scheduler2.prepare(song: doubleLayerFixture.song, sourceRecordings: doubleLayerFixture.recordings)
+        scheduler2.play(
+            song: doubleLayerFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let doubleOutput = try Self.renderToBuffer(engine: engine2, frameCount: totalFrames)
+        scheduler2.stop()
+        scheduler2.cleanup()
+        engine2.stop()
+
+        var singlePeak: Float = 0
+        var doublePeak: Float = 0
+        let startFrame = 256 // skip declick region
+        let endFrame = min(Int(singleOutput.frameLength), Int(doubleOutput.frameLength))
+        if let singleData = singleOutput.floatChannelData,
+           let doubleData = doubleOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                singlePeak = max(singlePeak, abs(singleData[0][frame]))
+                doublePeak = max(doublePeak, abs(doubleData[0][frame]))
+            }
+        }
+
+        let ratio = singlePeak > 0 ? doublePeak / singlePeak : 0
+        #expect(ratio > 1.9 && ratio < 2.1,
+                "Expected duplicated stem layer ratio ~2x, got \(ratio) (single=\(singlePeak), double=\(doublePeak))")
+    }
+
+    @Test("Click asset duplicated layers remain phase-locked at 64 tracks",
+          .enabled(if: clickAssetTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 and provide assets/click.mp3"),
+          .timeLimit(.minutes(3)))
+    func clickAssetDuplicatedLayersRemainSampleAccurate() async throws {
+        guard let assetURL = clickAssetURL else { return }
+
+        let fixture = try Self.makeClickAssetLayerComparisonFixture(
+            assetURL: assetURL,
+            stemCount: 32,
+            containerLengthBars: 8.0,
+            trackVolume: 0.01
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine1 = try Self.makeRunningEngine()
+        let scheduler1 = PlaybackScheduler(engine: engine1, audioDirURL: fixture.tempDir)
+        await scheduler1.prepare(song: fixture.singleSong, sourceRecordings: fixture.recordings)
+        scheduler1.play(
+            song: fixture.singleSong, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let totalFrames = Int(4.0 * samplesPerBar)
+        let singleOutput = try Self.renderToBuffer(engine: engine1, frameCount: totalFrames)
+        scheduler1.stop()
+        scheduler1.cleanup()
+        engine1.stop()
+
+        let engine2 = try Self.makeRunningEngine()
+        let scheduler2 = PlaybackScheduler(engine: engine2, audioDirURL: fixture.tempDir)
+        await scheduler2.prepare(song: fixture.doubleSong, sourceRecordings: fixture.recordings)
+        scheduler2.play(
+            song: fixture.doubleSong, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let doubleOutput = try Self.renderToBuffer(engine: engine2, frameCount: totalFrames)
+        scheduler2.stop()
+        scheduler2.cleanup()
+        engine2.stop()
+
+        let startFrame = 4096 // skip startup declick + scheduling transition
+        let endFrame = min(Int(singleOutput.frameLength), Int(doubleOutput.frameLength))
+        guard endFrame > startFrame else {
+            Issue.record("Rendered output too short for RMS comparison")
+            return
+        }
+
+        var singleEnergy: Double = 0
+        var doubleEnergy: Double = 0
+        var sampleCount = 0
+        if let singleData = singleOutput.floatChannelData,
+           let doubleData = doubleOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                let s = Double(singleData[0][frame])
+                let d = Double(doubleData[0][frame])
+                singleEnergy += s * s
+                doubleEnergy += d * d
+                sampleCount += 1
+            }
+        }
+
+        let singleRMS = sampleCount > 0 ? sqrt(singleEnergy / Double(sampleCount)) : 0
+        let doubleRMS = sampleCount > 0 ? sqrt(doubleEnergy / Double(sampleCount)) : 0
+        #expect(singleRMS > 0.0001, "Click asset RMS too low for comparison (\(singleRMS))")
+
+        let ratio = singleRMS > 0 ? doubleRMS / singleRMS : 0
+        #expect(
+            ratio > 1.8 && ratio < 2.2,
+            "Expected click duplicated 32->64 track RMS ratio ~2x, got \(ratio) (single=\(singleRMS), double=\(doubleRMS))"
+        )
     }
 
     @Test("Phase cancellation with 48kHz sample rate",

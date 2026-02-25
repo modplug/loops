@@ -19,7 +19,7 @@ public enum TrackKind: String, Codable, Sendable, CaseIterable {
     }
 }
 
-public struct Track: Codable, Equatable, Sendable, Identifiable {
+public struct Track: Codable, Sendable, Identifiable {
     public var id: ID<Track>
     public var name: String
     public var kind: TrackKind
@@ -191,5 +191,41 @@ public struct Track: Codable, Equatable, Sendable, Identifiable {
             try c.encode(crossfades, forKey: .crossfades)
         }
         try c.encode(orderIndex, forKey: .orderIndex)
+    }
+}
+
+// MARK: - Equatable (custom: cheap scalar fields first, expensive arrays last)
+
+extension Track: Equatable {
+    public static func == (lhs: Track, rhs: Track) -> Bool {
+        // Identity
+        guard lhs.id == rhs.id else { return false }
+        // Frequently toggled scalars (mute, solo, arm, monitor)
+        guard lhs.isMuted == rhs.isMuted,
+              lhs.isSoloed == rhs.isSoloed,
+              lhs.isRecordArmed == rhs.isRecordArmed,
+              lhs.isMonitoring == rhs.isMonitoring else { return false }
+        // Continuous-change scalars (volume, pan)
+        guard lhs.volume == rhs.volume,
+              lhs.pan == rhs.pan else { return false }
+        // Other cheap scalars
+        guard lhs.name == rhs.name,
+              lhs.kind == rhs.kind,
+              lhs.isEffectChainBypassed == rhs.isEffectChainBypassed,
+              lhs.orderIndex == rhs.orderIndex,
+              lhs.instrumentComponent == rhs.instrumentComponent,
+              lhs.inputPortID == rhs.inputPortID,
+              lhs.outputPortID == rhs.outputPortID,
+              lhs.midiInputDeviceID == rhs.midiInputDeviceID,
+              lhs.midiInputChannel == rhs.midiInputChannel,
+              lhs.expressionPedalCC == rhs.expressionPedalCC,
+              lhs.expressionPedalTarget == rhs.expressionPedalTarget else { return false }
+        // Expensive array comparisons last (often O(1) via COW buffer identity)
+        guard lhs.containers == rhs.containers,
+              lhs.insertEffects == rhs.insertEffects,
+              lhs.sendLevels == rhs.sendLevels,
+              lhs.trackAutomationLanes == rhs.trackAutomationLanes,
+              lhs.crossfades == rhs.crossfades else { return false }
+        return true
     }
 }

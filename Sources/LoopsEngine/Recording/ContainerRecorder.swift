@@ -116,10 +116,8 @@ public final class ContainerRecorder: @unchecked Sendable {
         isTapInstalled = true
         lock.unlock()
 
-        print("[REC] Installing tap on inputNode...")
         let inputNode = engine.inputNode
         let format = inputNode.inputFormat(forBus: 0)
-        print("[REC] Input format: \(format.channelCount)ch, \(format.sampleRate)Hz")
 
         lock.lock()
         inputChannelCount = format.channelCount
@@ -130,7 +128,6 @@ public final class ContainerRecorder: @unchecked Sendable {
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             self?.handleInputBuffer(buffer)
         }
-        print("[REC] Tap installed successfully")
     }
 
     private func removeTap() {
@@ -145,15 +142,11 @@ public final class ContainerRecorder: @unchecked Sendable {
         engine.inputNode.removeTap(onBus: 0)
     }
 
-    private var bufferCount: Int = 0
-
     private func handleInputBuffer(_ buffer: AVAudioPCMBuffer) {
         let frameCount = Int(buffer.frameLength)
         guard frameCount > 0 else { return }
 
         lock.lock()
-        bufferCount += 1
-        let bc = bufferCount
         let armed = armedContainers
         let spb = samplesPerBar
         let startBar = playbackStartBar
@@ -169,13 +162,6 @@ public final class ContainerRecorder: @unchecked Sendable {
         }
 
         tapSampleCount += Int64(frameCount)
-
-        if bc == 1 {
-            print("[REC] First buffer: bar=\(String(format: "%.2f", currentBar)) armed=\(armed.count) spb=\(spb)")
-            for ac in armed {
-                print("[REC]   armed container bars=\(ac.startBar)-\(ac.endBar)")
-            }
-        }
 
         // Find which armed container (if any) the playhead is in
         var targetArmed: ArmedContainer?
@@ -213,9 +199,7 @@ public final class ContainerRecorder: @unchecked Sendable {
                     pendingSamples: []
                 )
                 activeRecording = recording
-                print("[REC] Started recording to \(filename) (\(channelCount)ch, \(sr)Hz)")
             } catch {
-                print("[REC] FAILED to create CAFWriter: \(error)")
             }
         }
 
@@ -231,9 +215,6 @@ public final class ContainerRecorder: @unchecked Sendable {
         do {
             try rec.writer.write(buffer)
         } catch {
-            if bc <= 3 {
-                print("[REC] Write FAILED: \(error) bufferFormat=\(buffer.format)")
-            }
         }
 
         // Extract samples for peak calculation (mono mix)

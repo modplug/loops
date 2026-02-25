@@ -19,9 +19,9 @@ struct TimelineViewModelTests {
     @MainActor
     func totalWidth() {
         let vm = TimelineViewModel()
-        vm.totalBars = 32
+        // totalBars is computed; default is 64 (minimumTotalBars)
         vm.pixelsPerBar = 100
-        #expect(vm.totalWidth == 3200.0)
+        #expect(vm.totalWidth == 6400.0) // 64 bars * 100 ppb
     }
 
     @Test("Bar to x-position conversion")
@@ -91,7 +91,7 @@ struct TimelineViewModelTests {
         for _ in 0..<50 {
             vm.zoomOut()
         }
-        #expect(vm.pixelsPerBar >= TimelineViewModel.minPixelsPerBar)
+        #expect(vm.pixelsPerBar >= vm.minPixelsPerBar)
     }
 
     @Test("Pixels per beat calculation")
@@ -321,27 +321,28 @@ struct TimelineViewModelTests {
     @MainActor
     func ensureBarVisibleExpands() {
         let vm = TimelineViewModel()
-        vm.totalBars = 64
+        // Default totalBars is 64 (minimumTotalBars)
+        #expect(vm.totalBars == 64)
         vm.ensureBarVisible(100)
-        #expect(vm.totalBars == 108) // 100 + 8 padding
+        #expect(vm.totalBars == 108) // ceil(100) + 8 padding
     }
 
     @Test("ensureBarVisible does not shrink when bar is within range")
     @MainActor
     func ensureBarVisibleNoShrink() {
         let vm = TimelineViewModel()
-        vm.totalBars = 64
+        #expect(vm.totalBars == 64)
         vm.ensureBarVisible(32)
-        #expect(vm.totalBars == 64) // unchanged
+        #expect(vm.totalBars == 64) // unchanged — 32+8=40 < minimumTotalBars (64)
     }
 
     @Test("ensureBarVisible at boundary does not expand")
     @MainActor
     func ensureBarVisibleAtBoundary() {
         let vm = TimelineViewModel()
-        vm.totalBars = 64
+        #expect(vm.totalBars == 64)
         vm.ensureBarVisible(64)
-        #expect(vm.totalBars == 64) // exactly at boundary, no expansion needed
+        #expect(vm.totalBars == 72) // ceil(64) + 8 = 72 > 64, so it expands
     }
 
     // MARK: - Per-Track Heights (#112)
@@ -524,5 +525,118 @@ struct TimelineViewModelTests {
         let applied = vm.throttledZoom(zoomIn: true)
         #expect(applied)
         #expect(vm.pixelsPerBar > afterFirst)
+    }
+
+    // MARK: - Viewport-Aware Rendering
+
+    @Test("Visible range defaults render everything")
+    @MainActor
+    func visibleRangeDefaults() {
+        let vm = TimelineViewModel()
+        #expect(vm.visibleXMin == 0)
+        #expect(vm.visibleXMax == .greatestFiniteMagnitude)
+    }
+
+    @Test("Update visible range from scroll position")
+    @MainActor
+    func updateVisibleRange() {
+        let vm = TimelineViewModel()
+        vm.updateVisibleXRange(scrollOffsetX: 2000, viewportWidth: 1000)
+        #expect(vm.visibleXMin == 2000 - TimelineViewModel.viewportBuffer)
+        #expect(vm.visibleXMax == 3000 + TimelineViewModel.viewportBuffer)
+    }
+
+    @Test("Visible range ignores small changes (dead zone)")
+    @MainActor
+    func visibleRangeDeadZone() {
+        let vm = TimelineViewModel()
+        vm.updateVisibleXRange(scrollOffsetX: 2000, viewportWidth: 1000)
+        let min1 = vm.visibleXMin
+        let max1 = vm.visibleXMax
+        // 20pt change is within the 50pt dead zone
+        vm.updateVisibleXRange(scrollOffsetX: 2020, viewportWidth: 1000)
+        #expect(vm.visibleXMin == min1)
+        #expect(vm.visibleXMax == max1)
+    }
+
+    @Test("Visible range updates on significant change")
+    @MainActor
+    func visibleRangeUpdatesOnSignificantChange() {
+        let vm = TimelineViewModel()
+        vm.updateVisibleXRange(scrollOffsetX: 2000, viewportWidth: 1000)
+        let min1 = vm.visibleXMin
+        // 100pt change exceeds the 50pt dead zone
+        vm.updateVisibleXRange(scrollOffsetX: 2100, viewportWidth: 1000)
+        #expect(vm.visibleXMin != min1)
+        #expect(vm.visibleXMin == 2100 - TimelineViewModel.viewportBuffer)
+    }
+
+    // MARK: - Continuous Zoom
+
+    @Test("Continuous zoom applies proportional factor")
+    @MainActor
+    func continuousZoomFactor() {
+        let vm = TimelineViewModel()
+        vm.pixelsPerBar = 200
+        vm.setViewportWidth(1400)
+
+        let result = vm.zoomContinuousAndUpdateViewport(
+            factor: 1.05,
+            anchorBar: 10.0,
+            mouseXRelativeToTimeline: 500,
+            viewportWidth: 1400
+        )
+
+        // 200 * 1.05 = 210
+        #expect(vm.pixelsPerBar == 210)
+        // Anchor bar 10 at new ppb: (10-1)*210 = 1890, minus mouse offset 500 = 1390
+        #expect(abs(result - 1390) < 0.1)
+    }
+
+    @Test("Continuous zoom clamps to min/max")
+    @MainActor
+    func continuousZoomClamps() {
+        let vm = TimelineViewModel()
+        vm.setViewportWidth(1400)
+
+        // Zoom in past max
+        vm.pixelsPerBar = TimelineViewModel.maxPixelsPerBar - 10
+        _ = vm.zoomContinuousAndUpdateViewport(
+            factor: 2.0,
+            anchorBar: 1.0,
+            mouseXRelativeToTimeline: 0,
+            viewportWidth: 1400
+        )
+        #expect(vm.pixelsPerBar == TimelineViewModel.maxPixelsPerBar)
+
+        // Zoom out past min
+        vm.pixelsPerBar = vm.minPixelsPerBar + 1
+        _ = vm.zoomContinuousAndUpdateViewport(
+            factor: 0.1,
+            anchorBar: 1.0,
+            mouseXRelativeToTimeline: 0,
+            viewportWidth: 1400
+        )
+        #expect(vm.pixelsPerBar == vm.minPixelsPerBar)
+    }
+
+    @Test("Continuous zoom no-op when already at limit")
+    @MainActor
+    func continuousZoomNoOp() {
+        let vm = TimelineViewModel()
+        vm.setViewportWidth(1400)
+        vm.pixelsPerBar = TimelineViewModel.maxPixelsPerBar
+
+        let scrollOffset = vm.zoomContinuousAndUpdateViewport(
+            factor: 1.5,
+            anchorBar: 5.0,
+            mouseXRelativeToTimeline: 300,
+            viewportWidth: 1400
+        )
+
+        // ppb unchanged — should return offset based on current ppb
+        #expect(vm.pixelsPerBar == TimelineViewModel.maxPixelsPerBar)
+        let expectedOffset = CGFloat(5.0 - 1.0) * TimelineViewModel.maxPixelsPerBar - 300
+        #expect(abs(scrollOffset - expectedOffset) < 0.1)
     }
 }

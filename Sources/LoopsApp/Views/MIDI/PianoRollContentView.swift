@@ -128,6 +128,11 @@ struct PianoRollContentView: View {
     var showKeyboard: Bool = true
     /// When true, disables all editing gestures and renders notes at reduced opacity.
     var isReadOnly: Bool = false
+    /// When true, wraps content in its own horizontal ScrollView. Set false for inline use
+    /// where the parent already provides horizontal scrolling (e.g., timeline ScrollView).
+    var useOwnHorizontalScroll: Bool = true
+    /// When false, hides the ruler bar indicator at the top. Inline mode uses the timeline ruler.
+    var showRuler: Bool = true
     /// Beat offset added to all editable note x-positions (for track-wide display).
     var editableBeatOffset: Double = 0
     /// Ghost note layers rendered behind editable notes (not interactive).
@@ -183,42 +188,52 @@ struct PianoRollContentView: View {
         beat - editableBeatOffset
     }
 
+    private var pianoRollContent: some View {
+        VStack(spacing: 0) {
+            if showRuler {
+                rulerView
+                Divider()
+            }
+            ZStack(alignment: .topLeading) {
+                gridBackground
+                editableRegionOverlay
+                    .allowsHitTesting(false)
+                notesCanvas
+                    .allowsHitTesting(false)
+                creationPreview
+                    .allowsHitTesting(false)
+                marqueeOverlay
+                    .allowsHitTesting(false)
+                playheadOverlay
+                    .allowsHitTesting(false)
+            }
+            .frame(width: totalWidth, height: totalHeight)
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                if !isReadOnly { handleHover(phase) }
+            }
+            .gesture(isReadOnly ? nil : unifiedDragGesture)
+            .onTapGesture(count: 2) { location in
+                if !isReadOnly { handleDoubleClick(at: location) }
+            }
+            .onTapGesture { location in
+                if !isReadOnly { handleSingleClick(at: location) }
+            }
+        }
+    }
+
     var body: some View {
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
                 if showKeyboard {
                     pianoKeyboard
                 }
-                ScrollView(.horizontal) {
-                    VStack(spacing: 0) {
-                        rulerView
-                        Divider()
-                        ZStack(alignment: .topLeading) {
-                            gridBackground
-                            editableRegionOverlay
-                                .allowsHitTesting(false)
-                            notesCanvas
-                                .allowsHitTesting(false)
-                            creationPreview
-                                .allowsHitTesting(false)
-                            marqueeOverlay
-                                .allowsHitTesting(false)
-                            playheadOverlay
-                                .allowsHitTesting(false)
-                        }
-                        .frame(width: totalWidth, height: totalHeight)
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            if !isReadOnly { handleHover(phase) }
-                        }
-                        .gesture(isReadOnly ? nil : unifiedDragGesture)
-                        .onTapGesture(count: 2) { location in
-                            if !isReadOnly { handleDoubleClick(at: location) }
-                        }
-                        .onTapGesture { location in
-                            if !isReadOnly { handleSingleClick(at: location) }
-                        }
+                if useOwnHorizontalScroll {
+                    ScrollView(.horizontal) {
+                        pianoRollContent
                     }
+                } else {
+                    pianoRollContent
                 }
             }
             .background(

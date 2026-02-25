@@ -135,6 +135,8 @@ struct InlinePianoRollView: View {
                 noteOpacity: 0.75,
                 showKeyboard: false,
                 isReadOnly: activeIsLinkedInherited,
+                useOwnHorizontalScroll: false,
+                showRuler: false,
                 editableBeatOffset: activeBeatOffset,
                 ghostLayers: computedGhostLayers,
                 editableRegion: editableRegionBeatRange,
@@ -224,36 +226,6 @@ struct InlinePianoRollView: View {
 
             Divider().frame(height: 14)
 
-            // Vertical zoom
-            Button(action: {
-                editorState.rowHeight = max(PianoRollLayout.minRowHeight, editorState.rowHeight - 2)
-            }) {
-                Image(systemName: "minus")
-            }
-            .buttonStyle(.plain)
-            .controlSize(.small)
-            .help("Vertical Zoom Out")
-
-            Button(action: {
-                editorState.rowHeight = min(PianoRollLayout.maxRowHeight, editorState.rowHeight + 2)
-            }) {
-                Image(systemName: "plus")
-            }
-            .buttonStyle(.plain)
-            .controlSize(.small)
-            .help("Vertical Zoom In")
-
-            Button(action: {
-                editorState.fitToNotes(sequence: activeSequence)
-            }) {
-                Image(systemName: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left")
-            }
-            .buttonStyle(.plain)
-            .controlSize(.small)
-            .help("Fit to Content")
-
-            Divider().frame(height: 14)
-
             // Pop-out to sheet
             Button(action: { onOpenSheet?() }) {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -306,7 +278,7 @@ struct InlinePianoRollView: View {
 
 /// Observes the horizontal scroll offset and visible width of the nearest
 /// horizontally-scrollable NSScrollView in the view hierarchy.
-private struct HorizontalScrollObserver: NSViewRepresentable {
+struct HorizontalScrollObserver: NSViewRepresentable {
     let onScrollChanged: (_ offset: CGFloat, _ visibleWidth: CGFloat) -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -385,3 +357,4 @@ private struct HorizontalScrollObserver: NSViewRepresentable {
         }
     }
 }
+

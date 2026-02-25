@@ -15,15 +15,19 @@ public struct TimelineView: View {
     let minHeight: CGFloat
     var pianoRollState: PianoRollEditorState?
     var ghostDropState: GhostTrackDropState?
+    var showRulerAndSections: Bool = true
     var onDropFilesToNewTracks: ((_ urls: [URL], _ startBar: Double) -> Void)?
     var onContainerDoubleClick: (() -> Void)?
     var onPlayheadPosition: ((Double) -> Void)?
     var onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)?
     var onOpenPianoRollSheet: (() -> Void)?
+    var onSectionSelect: ((ID<SectionRegion>) -> Void)?
+    var onRangeSelect: ((ClosedRange<Int>) -> Void)?
+    var onRangeDeselect: (() -> Void)?
 
     @State private var selectedBreakpointID: ID<AutomationBreakpoint>?
 
-    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, selectionState: SelectionState, clipboardState: ClipboardState? = nil, song: Song, tracks: [Track]? = nil, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, pianoRollState: PianoRollEditorState? = nil, ghostDropState: GhostTrackDropState? = nil, onDropFilesToNewTracks: ((_ urls: [URL], _ startBar: Double) -> Void)? = nil, onContainerDoubleClick: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil, onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)? = nil, onOpenPianoRollSheet: (() -> Void)? = nil) {
+    public init(viewModel: TimelineViewModel, projectViewModel: ProjectViewModel, selectionState: SelectionState, clipboardState: ClipboardState? = nil, song: Song, tracks: [Track]? = nil, trackHeight: CGFloat = 80, minHeight: CGFloat = 0, pianoRollState: PianoRollEditorState? = nil, ghostDropState: GhostTrackDropState? = nil, showRulerAndSections: Bool = true, onDropFilesToNewTracks: ((_ urls: [URL], _ startBar: Double) -> Void)? = nil, onContainerDoubleClick: (() -> Void)? = nil, onPlayheadPosition: ((Double) -> Void)? = nil, onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)? = nil, onOpenPianoRollSheet: (() -> Void)? = nil, onSectionSelect: ((ID<SectionRegion>) -> Void)? = nil, onRangeSelect: ((ClosedRange<Int>) -> Void)? = nil, onRangeDeselect: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.projectViewModel = projectViewModel
         self.selectionState = selectionState
@@ -34,11 +38,15 @@ public struct TimelineView: View {
         self.minHeight = minHeight
         self.pianoRollState = pianoRollState
         self.ghostDropState = ghostDropState
+        self.showRulerAndSections = showRulerAndSections
         self.onDropFilesToNewTracks = onDropFilesToNewTracks
         self.onContainerDoubleClick = onContainerDoubleClick
         self.onPlayheadPosition = onPlayheadPosition
         self.onNotePreview = onNotePreview
         self.onOpenPianoRollSheet = onOpenPianoRollSheet
+        self.onSectionSelect = onSectionSelect
+        self.onRangeSelect = onRangeSelect
+        self.onRangeDeselect = onRangeDeselect
     }
 
     public var totalContentHeight: CGFloat {
@@ -51,11 +59,125 @@ public struct TimelineView: View {
     }
 
     /// The height used for the grid and playhead — fills available space.
+    /// Includes ruler + section lane + track content (when ruler is shown).
+    /// Adds bottom padding so the grid extends below the last track,
+    /// giving visual breathing room above the horizontal scrollbar.
     private var displayHeight: CGFloat {
-        max(totalContentHeight, minHeight)
+        let headerHeight = showRulerAndSections ? TimelineCanvasView.trackAreaTop : CGFloat(0)
+        let contentHeight = headerHeight + totalContentHeight + 200
+        return max(contentHeight, minHeight)
     }
 
     public var body: some View {
+        if viewModel.useNSViewTimeline && viewModel.useMetalTimeline {
+            metalBody
+        } else if viewModel.useNSViewTimeline {
+            canvasBody
+        } else {
+            swiftUIBody
+        }
+    }
+
+    // MARK: - Metal GPU Rendering Path
+
+    /// Metal-accelerated rendering path. Identical data model to the CG canvas,
+    /// but all geometry (grid, containers, waveforms, MIDI, fades) is GPU-rendered.
+    /// Text labels are drawn via a CoreGraphics overlay layer.
+    private var metalBody: some View {
+        TimelineMetalRepresentable(
+            tracks: tracks,
+            viewModel: viewModel,
+            projectViewModel: projectViewModel,
+            selectionState: selectionState,
+            timeSignature: song.timeSignature,
+            minHeight: minHeight,
+            sections: song.sections,
+            showRulerAndSections: showRulerAndSections,
+            onPlayheadPosition: onPlayheadPosition,
+            onSectionSelect: onSectionSelect,
+            onRangeSelect: onRangeSelect,
+            onRangeDeselect: onRangeDeselect
+        )
+        .frame(
+            width: viewModel.quantizedFrameWidth,
+            height: displayHeight
+        )
+        .onDrop(of: [.fileURL], delegate: TimelineEmptyAreaDropDelegate(
+            ghostDropState: ghostDropState,
+            viewModel: viewModel,
+            song: song,
+            onPerformDrop: onDropFilesToNewTracks
+        ))
+        .onKeyPress("+") {
+            viewModel.zoomIn()
+            return .handled
+        }
+        .onKeyPress("-") {
+            viewModel.zoomOut()
+            return .handled
+        }
+        .onKeyPress(.delete) {
+            if let bpID = selectedBreakpointID {
+                deleteSelectedBreakpoint(bpID)
+                return .handled
+            }
+            deleteSelectedContainer()
+            return .handled
+        }
+    }
+
+    // MARK: - NSView Canvas Path
+
+    /// High-performance NSView rendering path.
+    /// Grid, containers, waveforms, MIDI minimaps, fades, crossfades, range selection,
+    /// playhead, and cursor are all rendered in a single draw(_:) call.
+    /// Pointer tracking and click-to-position are handled by the NSView itself.
+    private var canvasBody: some View {
+        TimelineCanvasRepresentable(
+            tracks: tracks,
+            viewModel: viewModel,
+            projectViewModel: projectViewModel,
+            selectionState: selectionState,
+            timeSignature: song.timeSignature,
+            minHeight: minHeight,
+            sections: song.sections,
+            showRulerAndSections: showRulerAndSections,
+            onPlayheadPosition: onPlayheadPosition,
+            onSectionSelect: onSectionSelect,
+            onRangeSelect: onRangeSelect,
+            onRangeDeselect: onRangeDeselect
+        )
+        .frame(
+            width: viewModel.quantizedFrameWidth,
+            height: displayHeight
+        )
+        .onDrop(of: [.fileURL], delegate: TimelineEmptyAreaDropDelegate(
+            ghostDropState: ghostDropState,
+            viewModel: viewModel,
+            song: song,
+            onPerformDrop: onDropFilesToNewTracks
+        ))
+        .onKeyPress("+") {
+            viewModel.zoomIn()
+            return .handled
+        }
+        .onKeyPress("-") {
+            viewModel.zoomOut()
+            return .handled
+        }
+        .onKeyPress(.delete) {
+            if let bpID = selectedBreakpointID {
+                deleteSelectedBreakpoint(bpID)
+                return .handled
+            }
+            deleteSelectedContainer()
+            return .handled
+        }
+    }
+
+    // MARK: - SwiftUI Path (original)
+
+    private var swiftUIBody: some View {
         ZStack(alignment: .topLeading) {
             // Grid overlay — fills available space, with click-to-position gesture and cursor tracking
             GridOverlayView(
@@ -63,7 +185,9 @@ public struct TimelineView: View {
                 pixelsPerBar: viewModel.pixelsPerBar,
                 timeSignature: song.timeSignature,
                 height: displayHeight,
-                gridMode: viewModel.gridMode
+                gridMode: viewModel.gridMode,
+                visibleXMin: viewModel.visibleXMin,
+                visibleXMax: viewModel.visibleXMax
             )
             .contentShape(Rectangle())
             .onTapGesture { location in
@@ -71,8 +195,11 @@ public struct TimelineView: View {
                 onPlayheadPosition?(bar)
             }
 
-            // Track lanes stacked vertically (lazy — off-screen tracks are not rendered)
-            LazyVStack(spacing: 0, pinnedViews: []) {
+            // Track lanes stacked vertically.
+            // Uses VStack (not LazyVStack) because there is no direct ScrollView parent—
+            // the outer vertical scroll is in MainContentView, so LazyVStack would render
+            // all items anyway but evaluate each body TWICE (measure + layout).
+            VStack(spacing: 0) {
                 ForEach(tracks) { track in
                     trackLaneSection(track: track, song: song)
                 }
@@ -330,12 +457,8 @@ public struct TimelineView: View {
                     }
                     selectionState.lastSelectedContainerID = containerID
                 } else if modifiers.contains(.shift) {
-                    // Shift+Click: range selection between last-clicked and this container
-                    guard let song = projectViewModel.currentSong else {
-                        selectionState.selectedContainerID = containerID
-                        return
-                    }
-                    let allContainers = song.tracks.flatMap(\.containers).sorted { $0.startBar < $1.startBar }
+                    // Shift+Click: range selection within this track
+                    let allContainers = track.containers.sorted { $0.startBar < $1.startBar }
                     let anchorID = selectionState.lastSelectedContainerID ?? selectionState.selectedContainerID
                     guard let anchor = anchorID,
                           let anchorIdx = allContainers.firstIndex(where: { $0.id == anchor }),
@@ -446,6 +569,24 @@ public struct TimelineView: View {
                     selectedBreakpointID = nil
                 }
             },
+            onReplaceBreakpoints: { containerID, laneID, startPos, endPos, breakpoints in
+                projectViewModel.replaceAutomationBreakpoints(
+                    containerID: containerID, laneID: laneID,
+                    startPosition: startPos, endPosition: endPos,
+                    replacements: breakpoints
+                )
+            },
+            onReplaceTrackBreakpoints: { laneID, startPos, endPos, breakpoints in
+                projectViewModel.replaceTrackAutomationBreakpoints(
+                    trackID: track.id, laneID: laneID,
+                    startPosition: startPos, endPosition: endPos,
+                    replacements: breakpoints
+                )
+            },
+            selectedAutomationTool: viewModel.selectedAutomationTool,
+            onAutomationToolChange: { tool in
+                viewModel.selectedAutomationTool = tool
+            },
             onSetEnterFade: { containerID, fade in
                 projectViewModel.setContainerEnterFade(containerID: containerID, fade: fade)
             },
@@ -494,6 +635,9 @@ public struct TimelineView: View {
             onSetCrossfadeCurveType: { crossfadeID, curveType in
                 projectViewModel.setCrossfadeCurveType(trackID: track.id, crossfadeID: crossfadeID, curveType: curveType)
             },
+            automationSnapResolution: viewModel.effectiveSnapResolution(timeSignature: song.timeSignature),
+            automationTimeSignature: song.timeSignature,
+            automationGridMode: viewModel.gridMode,
             multiSelectCount: selectionState.effectiveSelectedContainerIDs.count,
             onDeleteSelected: {
                 let trackContainerIDs = Set(track.containers.map(\.id))
@@ -522,7 +666,9 @@ public struct TimelineView: View {
                 for id in toSplit {
                     _ = projectViewModel.splitContainer(trackID: track.id, containerID: id, atBar: splitBar)
                 }
-            }
+            },
+            visibleXMin: viewModel.visibleXMin,
+            visibleXMax: viewModel.visibleXMax
         )
     }
 

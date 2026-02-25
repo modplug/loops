@@ -1,83 +1,109 @@
 import SwiftUI
+import QuartzCore
 import LoopsCore
 
 /// Renders waveform peak data as a visual waveform inside a container.
-/// Uses pixel-aware downsampling: for each pixel column, computes the max peak
-/// in that column's range, so drawing cost is O(pixels) not O(peaks).
-/// A 3-minute file (18,000 peaks) in a 300px container draws only ~300 segments.
+///
+/// Viewport-aware: only draws peaks within the visible range (`visibleMinX`...`visibleMaxX`),
+/// so even a 107,000pt-wide container at extreme zoom builds a path with ~100 segments
+/// instead of 4096+. Falls back to drawing everything when no visible range is specified.
+///
+/// No GeometryReader — Canvas gets its size directly from parent layout.
 public struct WaveformView: View {
     let peaks: [Float]
     let color: Color
-    /// Fraction of the total recording where the visible portion starts (0.0 = from start).
     let startFraction: CGFloat
-    /// Fraction of the total recording that is visible (1.0 = full recording).
     let lengthFraction: CGFloat
+    /// Visible horizontal range in the WaveformView's local coordinate space.
+    /// Used for viewport-aware rendering — only peaks in this range are drawn.
+    let visibleMinX: CGFloat
+    let visibleMaxX: CGFloat
 
     public init(peaks: [Float], color: Color = .white,
-                startFraction: CGFloat = 0.0, lengthFraction: CGFloat = 1.0) {
+                startFraction: CGFloat = 0.0, lengthFraction: CGFloat = 1.0,
+                visibleMinX: CGFloat = 0, visibleMaxX: CGFloat = .greatestFiniteMagnitude) {
         self.peaks = peaks
         self.color = color
         self.startFraction = startFraction
         self.lengthFraction = lengthFraction
+        self.visibleMinX = visibleMinX
+        self.visibleMaxX = visibleMaxX
     }
 
+    /// Maximum path segments when no viewport culling is active.
+    private static let maxSegments = 4096
+
     public var body: some View {
-        GeometryReader { geometry in
-            Canvas { context, size in
-                guard !peaks.isEmpty, size.width > 0, size.height > 0 else { return }
+        Canvas { context, size in
+            guard !peaks.isEmpty, size.width > 0, size.height > 0 else { return }
 
-                // Compute visible slice bounds (avoid Array copy — use indices directly)
-                let totalPeaks = peaks.count
-                let startIndex = max(0, min(Int(startFraction * CGFloat(totalPeaks)), totalPeaks))
-                let visibleCount = max(1, min(Int(lengthFraction * CGFloat(totalPeaks)), totalPeaks - startIndex))
-                let endIndex = startIndex + visibleCount
+            let totalPeaks = peaks.count
+            let startIndex = max(0, min(Int(startFraction * CGFloat(totalPeaks)), totalPeaks))
+            let visibleCount = max(1, min(Int(lengthFraction * CGFloat(totalPeaks)), totalPeaks - startIndex))
+            let endIndex = startIndex + visibleCount
 
-                guard visibleCount > 0 else { return }
+            guard visibleCount > 0 else { return }
 
-                let midY = size.height / 2
-                let pixelWidth = Int(ceil(size.width))
+            // Clamp visible range to canvas bounds
+            let clampedMinX = max(0, visibleMinX)
+            let clampedMaxX = min(size.width, visibleMaxX)
 
-                // When fewer peaks than pixels, draw one segment per peak (high zoom)
-                // When more peaks than pixels, downsample to one column per pixel
-                if visibleCount <= pixelWidth * 2 {
-                    // High zoom: draw individual peaks as a smooth path
-                    drawDetailedPath(
-                        context: &context, size: size, midY: midY,
-                        startIndex: startIndex, endIndex: endIndex, visibleCount: visibleCount
-                    )
-                } else {
-                    // Low zoom: pixel-column downsampling
-                    drawDownsampledPath(
-                        context: &context, size: size, midY: midY,
-                        startIndex: startIndex, endIndex: endIndex,
-                        visibleCount: visibleCount, pixelWidth: pixelWidth
-                    )
-                }
+            // Skip drawing entirely if visible range doesn't intersect the canvas
+            guard clampedMinX < size.width, clampedMaxX > 0 else { return }
+
+            let midY = size.height / 2
+
+            if visibleCount <= Self.maxSegments {
+                drawDetailedPath(
+                    context: &context, size: size, midY: midY,
+                    startIndex: startIndex, endIndex: endIndex, visibleCount: visibleCount,
+                    visibleMinX: clampedMinX, visibleMaxX: clampedMaxX
+                )
+            } else {
+                drawDownsampledPath(
+                    context: &context, size: size, midY: midY,
+                    startIndex: startIndex, endIndex: endIndex,
+                    visibleCount: visibleCount, columns: Self.maxSegments,
+                    visibleMinX: clampedMinX, visibleMaxX: clampedMaxX
+                )
             }
         }
     }
 
-    /// High-zoom rendering: one path segment per peak (smooth waveform shape).
+    /// High-zoom rendering: one path segment per peak, clipped to visible range.
     private func drawDetailedPath(
         context: inout GraphicsContext, size: CGSize, midY: CGFloat,
-        startIndex: Int, endIndex: Int, visibleCount: Int
+        startIndex: Int, endIndex: Int, visibleCount: Int,
+        visibleMinX: CGFloat, visibleMaxX: CGFloat
     ) {
         let peakWidth = size.width / CGFloat(visibleCount)
-        var path = Path()
 
-        // Top half
-        path.move(to: CGPoint(x: 0, y: midY))
-        for i in startIndex..<endIndex {
-            let localIndex = i - startIndex
+        // Compute which local indices fall within the visible range (+1 margin for path continuity)
+        let firstLocal = max(0, Int(floor(visibleMinX / peakWidth)) - 1)
+        let lastLocal = min(visibleCount - 1, Int(ceil(visibleMaxX / peakWidth)) + 1)
+        guard firstLocal <= lastLocal else { return }
+
+        var path = Path()
+        let firstX = CGFloat(firstLocal) * peakWidth + peakWidth / 2
+
+        // Top half (left to right)
+        path.move(to: CGPoint(x: firstX, y: midY))
+        for localIndex in firstLocal...lastLocal {
+            let i = startIndex + localIndex
+            guard i < endIndex else { break }
             let x = CGFloat(localIndex) * peakWidth + peakWidth / 2
             let amplitude = CGFloat(peaks[i]) * midY * 0.9
             path.addLine(to: CGPoint(x: x, y: midY - amplitude))
         }
-        path.addLine(to: CGPoint(x: size.width, y: midY))
 
-        // Bottom half (mirror)
-        for i in stride(from: endIndex - 1, through: startIndex, by: -1) {
-            let localIndex = i - startIndex
+        // Bridge to bottom half
+        let lastX = CGFloat(lastLocal) * peakWidth + peakWidth / 2
+        path.addLine(to: CGPoint(x: lastX, y: midY))
+
+        // Bottom half (right to left)
+        for localIndex in stride(from: lastLocal, through: firstLocal, by: -1) {
+            let i = startIndex + localIndex
+            guard i < endIndex else { continue }
             let x = CGFloat(localIndex) * peakWidth + peakWidth / 2
             let amplitude = CGFloat(peaks[i]) * midY * 0.9
             path.addLine(to: CGPoint(x: x, y: midY + amplitude))
@@ -88,36 +114,46 @@ public struct WaveformView: View {
         context.stroke(path, with: .color(color.opacity(0.7)), lineWidth: 0.5)
     }
 
-    /// Low-zoom rendering: one vertical column per pixel.
-    /// For each pixel column, finds the max peak in that column's range.
+    /// Downsampled rendering: fixed number of columns, clipped to visible range.
     private func drawDownsampledPath(
         context: inout GraphicsContext, size: CGSize, midY: CGFloat,
         startIndex: Int, endIndex: Int,
-        visibleCount: Int, pixelWidth: Int
+        visibleCount: Int, columns: Int,
+        visibleMinX: CGFloat, visibleMaxX: CGFloat
     ) {
-        let columns = min(pixelWidth, visibleCount)
         guard columns > 0 else { return }
 
-        var path = Path()
+        let columnWidth = size.width / CGFloat(columns)
 
-        // Top half: left to right
-        path.move(to: CGPoint(x: 0, y: midY))
-        for col in 0..<columns {
+        // Compute which columns fall within the visible range (+1 margin for path continuity)
+        let firstCol = max(0, Int(floor(visibleMinX / columnWidth)) - 1)
+        let lastCol = min(columns - 1, Int(ceil(visibleMaxX / columnWidth)) + 1)
+        guard firstCol <= lastCol else { return }
+
+        var path = Path()
+        let firstX = (CGFloat(firstCol) + 0.5) * columnWidth
+
+        // Top half (left to right)
+        path.move(to: CGPoint(x: firstX, y: midY))
+        for col in firstCol...lastCol {
             let peakStart = startIndex + (col * visibleCount) / columns
             let peakEnd = startIndex + ((col + 1) * visibleCount) / columns
             let maxPeak = maxInRange(from: peakStart, to: peakEnd)
-            let x = (CGFloat(col) + 0.5) * size.width / CGFloat(columns)
+            let x = (CGFloat(col) + 0.5) * columnWidth
             let amplitude = CGFloat(maxPeak) * midY * 0.9
             path.addLine(to: CGPoint(x: x, y: midY - amplitude))
         }
-        path.addLine(to: CGPoint(x: size.width, y: midY))
 
-        // Bottom half: right to left (mirror)
-        for col in stride(from: columns - 1, through: 0, by: -1) {
+        // Bridge to bottom half
+        let lastX = (CGFloat(lastCol) + 0.5) * columnWidth
+        path.addLine(to: CGPoint(x: lastX, y: midY))
+
+        // Bottom half (right to left)
+        for col in stride(from: lastCol, through: firstCol, by: -1) {
             let peakStart = startIndex + (col * visibleCount) / columns
             let peakEnd = startIndex + ((col + 1) * visibleCount) / columns
             let maxPeak = maxInRange(from: peakStart, to: peakEnd)
-            let x = (CGFloat(col) + 0.5) * size.width / CGFloat(columns)
+            let x = (CGFloat(col) + 0.5) * columnWidth
             let amplitude = CGFloat(maxPeak) * midY * 0.9
             path.addLine(to: CGPoint(x: x, y: midY + amplitude))
         }
@@ -126,7 +162,6 @@ public struct WaveformView: View {
         context.fill(path, with: .color(color.opacity(0.4)))
     }
 
-    /// Finds the maximum peak value in a range of the peaks array.
     @inline(__always)
     private func maxInRange(from start: Int, to end: Int) -> Float {
         guard start < end else { return 0 }
@@ -136,5 +171,28 @@ public struct WaveformView: View {
             if v > maxVal { maxVal = v }
         }
         return maxVal
+    }
+}
+
+// MARK: - Equatable
+
+extension WaveformView: Equatable {
+    public static func == (lhs: WaveformView, rhs: WaveformView) -> Bool {
+        lhs.color == rhs.color &&
+        lhs.startFraction == rhs.startFraction &&
+        lhs.lengthFraction == rhs.lengthFraction &&
+        lhs.visibleMinX == rhs.visibleMinX &&
+        lhs.visibleMaxX == rhs.visibleMaxX &&
+        peaksEqual(lhs.peaks, rhs.peaks)
+    }
+
+    /// O(1) peaks identity check — count + sentinel samples.
+    /// Peaks change rarely (only on import/recording).
+    private static func peaksEqual(_ a: [Float], _ b: [Float]) -> Bool {
+        guard a.count == b.count else { return false }
+        guard !a.isEmpty else { return true }
+        return a[0] == b[0] &&
+               a[a.count / 2] == b[a.count / 2] &&
+               a[a.count - 1] == b[a.count - 1]
     }
 }
