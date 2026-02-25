@@ -99,7 +99,8 @@ public final class PlaybackGridRenderer {
         scene: PlaybackGridScene,
         snapshot: PlaybackGridSnapshot,
         canvasSize: CGSize,
-        visibleRect: CGRect
+        visibleRect: CGRect,
+        focusedPick: GridPickObject = .none
     ) {
         let ppb = Float(snapshot.pixelsPerBar)
         let visibleMinX = Float(visibleRect.minX)
@@ -309,6 +310,7 @@ public final class PlaybackGridRenderer {
                         lanes: cl.container.automationLanes,
                         container: cl.container,
                         rect: rect,
+                        focusedPick: focusedPick,
                         lines: &lines,
                         rects: &rects
                     )
@@ -641,6 +643,7 @@ public final class PlaybackGridRenderer {
         lanes: [AutomationLane],
         container: Container,
         rect: CGRect,
+        focusedPick: GridPickObject,
         lines: inout [PlaybackGridLineInstance],
         rects: inout [PlaybackGridRectInstance]
     ) {
@@ -652,8 +655,12 @@ public final class PlaybackGridRenderer {
             SIMD4(0.65, 0.95, 0.45, 0.9),
             SIMD4(0.95, 0.45, 0.85, 0.9)
         ]
-        let handleSize: Float = 6
+        let handleBaseSize: Float = 7
+        let focusedHandleScale: Float = 1.45
         let barsToPixels = rect.width / CGFloat(container.lengthBars)
+        let isFocusedContainer = focusedPick.containerID == container.id
+        let yMin = Float(rect.minY) + 2
+        let yMax = Float(rect.maxY) - 2
 
         for (laneIndex, lane) in lanes.enumerated() {
             let color = laneColors[laneIndex % laneColors.count]
@@ -666,26 +673,160 @@ public final class PlaybackGridRenderer {
             for bp in sorted {
                 let x = Float(rect.minX + (CGFloat(bp.position) * barsToPixels))
                 let y = Float(rect.maxY - (CGFloat(bp.value) * rect.height))
+                let isFocused = isFocusedContainer
+                    && focusedPick.kind == .automationBreakpoint
+                    && focusedPick.automationLaneID == lane.id
+                    && focusedPick.automationBreakpointID == bp.id
+
+                let handleSize = isFocused ? handleBaseSize * focusedHandleScale : handleBaseSize
+                let handleRadius = handleSize * 0.5
+                let shadowSize = handleSize + (isFocused ? 7 : 4)
+                let shadowRadius = shadowSize * 0.5
+                let ringSize = handleSize + 4
+                let ringRadius = ringSize * 0.5
+                let highlightSize = max(2, handleSize * 0.34)
+                let highlightRadius = highlightSize * 0.5
+
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(x - shadowRadius, y - shadowRadius + 1.3),
+                    size: SIMD2(shadowSize, shadowSize),
+                    color: SIMD4(0, 0, 0, isFocused ? 0.30 : 0.16),
+                    cornerRadius: shadowRadius
+                ))
+                if isFocused {
+                    rects.append(PlaybackGridRectInstance(
+                        origin: SIMD2(x - ringRadius, y - ringRadius),
+                        size: SIMD2(ringSize, ringSize),
+                        color: SIMD4(color.x, color.y, color.z, 0.52),
+                        cornerRadius: ringRadius
+                    ))
+                    rects.append(PlaybackGridRectInstance(
+                        origin: SIMD2(x - ringRadius + 1.6, y - ringRadius + 1.6),
+                        size: SIMD2(max(ringSize - 3.2, 1), max(ringSize - 3.2, 1)),
+                        color: SIMD4(0.10, 0.11, 0.13, 0.90),
+                        cornerRadius: max(ringRadius - 1.6, 0)
+                    ))
+                }
+
+                let handleColor: SIMD4<Float>
+                if isFocused {
+                    handleColor = SIMD4(
+                        min(color.x * 0.62 + 0.38, 1.0),
+                        min(color.y * 0.62 + 0.38, 1.0),
+                        min(color.z * 0.62 + 0.38, 1.0),
+                        1.0
+                    )
+                } else {
+                    handleColor = color
+                }
+
                 points.append(SIMD2(x, y))
                 rects.append(PlaybackGridRectInstance(
-                    origin: SIMD2(x - handleSize / 2, y - handleSize / 2),
+                    origin: SIMD2(x - handleRadius, y - handleRadius),
                     size: SIMD2(handleSize, handleSize),
-                    color: color,
-                    cornerRadius: 2
+                    color: handleColor,
+                    cornerRadius: handleRadius
+                ))
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(x - handleRadius + 1, y - handleRadius + 1),
+                    size: SIMD2(max(handleSize - 2, 1), max(handleSize - 2, 1)),
+                    color: SIMD4(0, 0, 0, 0.18),
+                    cornerRadius: max(handleRadius - 1, 0)
+                ))
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(x - handleRadius * 0.45, y - handleRadius * 0.45),
+                    size: SIMD2(highlightSize, highlightSize),
+                    color: SIMD4(1, 1, 1, isFocused ? 0.80 : 0.48),
+                    cornerRadius: highlightRadius
                 ))
             }
 
             if points.count >= 2 {
-                for i in 0..<(points.count - 1) {
-                    lines.append(PlaybackGridLineInstance(
-                        start: points[i],
-                        end: points[i + 1],
-                        color: color,
-                        width: 1.5
-                    ))
-                }
+                let smoothed = smoothedAutomationPoints(points: points, yMin: yMin, yMax: yMax)
+                appendAutomationCurve(points: smoothed, color: color, lines: &lines)
             }
         }
+    }
+
+    private func appendAutomationCurve(
+        points: [SIMD2<Float>],
+        color: SIMD4<Float>,
+        lines: inout [PlaybackGridLineInstance]
+    ) {
+        guard points.count >= 2 else { return }
+        let shadowColor = SIMD4<Float>(0, 0, 0, 0.22)
+        let glowColor = SIMD4<Float>(color.x, color.y, color.z, 0.24)
+        let mainColor = SIMD4<Float>(color.x, color.y, color.z, min(color.w + 0.08, 1.0))
+
+        for i in 0..<(points.count - 1) {
+            let start = points[i]
+            let end = points[i + 1]
+            lines.append(PlaybackGridLineInstance(
+                start: SIMD2(start.x, start.y + 1.2),
+                end: SIMD2(end.x, end.y + 1.2),
+                color: shadowColor,
+                width: 3.0
+            ))
+            lines.append(PlaybackGridLineInstance(
+                start: start,
+                end: end,
+                color: glowColor,
+                width: 3.2
+            ))
+            lines.append(PlaybackGridLineInstance(
+                start: start,
+                end: end,
+                color: mainColor,
+                width: 1.8
+            ))
+        }
+    }
+
+    private func smoothedAutomationPoints(
+        points: [SIMD2<Float>],
+        yMin: Float,
+        yMax: Float
+    ) -> [SIMD2<Float>] {
+        guard points.count >= 3 else { return points }
+        var smoothed: [SIMD2<Float>] = [points[0]]
+        smoothed.reserveCapacity(points.count * 10)
+
+        for i in 0..<(points.count - 1) {
+            let p0 = i > 0 ? points[i - 1] : points[i]
+            let p1 = points[i]
+            let p2 = points[i + 1]
+            let p3 = (i + 2) < points.count ? points[i + 2] : points[i + 1]
+            let dx = p2.x - p1.x
+            let dy = p2.y - p1.y
+            let distance = sqrt((dx * dx) + (dy * dy))
+            let samples = min(max(Int(distance / 18), 6), 28)
+
+            for sample in 1...samples {
+                let t = Float(sample) / Float(samples)
+                var point = catmullRomPoint(p0: p0, p1: p1, p2: p2, p3: p3, t: t)
+                point.x = min(max(point.x, p1.x), p2.x)
+                point.y = min(max(point.y, yMin), yMax)
+                smoothed.append(point)
+            }
+        }
+
+        return smoothed
+    }
+
+    private func catmullRomPoint(
+        p0: SIMD2<Float>,
+        p1: SIMD2<Float>,
+        p2: SIMD2<Float>,
+        p3: SIMD2<Float>,
+        t: Float
+    ) -> SIMD2<Float> {
+        let t2 = t * t
+        let t3 = t2 * t
+        let a = 2 * p1
+        let b = -p0 + p2
+        let c = (2 * p0) - (5 * p1) + (4 * p2) - p3
+        let d = -p0 + (3 * p1) - (3 * p2) + p3
+        return 0.5 * (a + (b * t) + (c * t2) + (d * t3))
     }
 
     private func buildCrossfade(

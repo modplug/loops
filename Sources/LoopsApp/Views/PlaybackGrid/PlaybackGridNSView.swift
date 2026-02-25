@@ -26,6 +26,8 @@ public final class PlaybackGridNSView: NSView {
     private var scrollObservers: [NSObjectProtocol] = []
     private var lastObservedVisibleRect: CGRect = .null
     private var lastCursorXSent: CGFloat?
+    private var lastCursorPoint: CGPoint?
+    private var hoveredPick: GridPickObject = .none
 
     public var waveformPeaksProvider: ((_ container: Container) -> [Float]?)? {
         didSet { sceneBuilder.waveformPeaksProvider = waveformPeaksProvider }
@@ -337,16 +339,46 @@ public final class PlaybackGridNSView: NSView {
 
     public override func mouseMoved(with event: NSEvent) {
         let local = convert(event.locationInWindow, from: nil)
-        if let last = lastCursorXSent, abs(last - local.x) < 0.5 {
+        if let last = lastCursorPoint,
+           abs(last.x - local.x) < 0.5,
+           abs(last.y - local.y) < 0.5 {
             return
         }
-        lastCursorXSent = local.x
-        onCursorPosition?(local.x)
+        lastCursorPoint = local
+
+        if let last = lastCursorXSent, abs(last - local.x) >= 0.5 {
+            lastCursorXSent = local.x
+            onCursorPosition?(local.x)
+        } else if lastCursorXSent == nil {
+            lastCursorXSent = local.x
+            onCursorPosition?(local.x)
+        }
+
+        guard let snapshot else { return }
+        let pick = pickingRenderer.pick(
+            at: local,
+            scene: scene,
+            snapshot: snapshot,
+            visibleRect: visibleRect,
+            canvasWidth: bounds.width
+        )
+        let newHoveredPick: GridPickObject = pick.kind == .automationBreakpoint ? pick : .none
+        if newHoveredPick != hoveredPick {
+            hoveredPick = newHoveredPick
+            needsBufferRebuild = true
+            needsDisplay = true
+        }
     }
 
     public override func mouseExited(with event: NSEvent) {
         lastCursorXSent = nil
+        lastCursorPoint = nil
         onCursorPosition?(nil)
+        if hoveredPick != .none {
+            hoveredPick = .none
+            needsBufferRebuild = true
+            needsDisplay = true
+        }
     }
 
     public override func mouseDown(with event: NSEvent) {
@@ -411,7 +443,8 @@ public final class PlaybackGridNSView: NSView {
                 scene: scene,
                 snapshot: snapshot,
                 canvasSize: bounds.size,
-                visibleRect: visible
+                visibleRect: visible,
+                focusedPick: hoveredPick
             )
             needsBufferRebuild = false
         }
