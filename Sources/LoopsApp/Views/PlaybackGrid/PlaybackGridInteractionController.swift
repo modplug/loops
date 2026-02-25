@@ -83,8 +83,18 @@ public final class PlaybackGridInteractionController {
         case .midiNote:
             guard let containerID = pick.containerID,
                   let trackID = pick.trackID,
-                  let noteID = pick.midiNoteID,
-                  let (_, container) = containerAndTrack(containerID: containerID, trackID: trackID, in: snapshot.tracks),
+                  let noteID = pick.midiNoteID else {
+                state = .idle
+                return
+            }
+
+            if event.modifierFlags.contains(.option) {
+                sink?.removeMIDINote(containerID, noteID: noteID)
+                state = .idle
+                return
+            }
+
+            guard let (_, container) = containerAndTrack(containerID: containerID, trackID: trackID, in: snapshot.tracks),
                   let note = container.midiSequence?.notes.first(where: { $0.id == noteID }) ?? container.resolved(using: { id in
                       snapshot.tracks
                           .flatMap(\.containers)
@@ -119,6 +129,13 @@ public final class PlaybackGridInteractionController {
                 state = .idle
                 return
             }
+
+            if event.modifierFlags.contains(.option) {
+                sink?.removeAutomationBreakpoint(containerID, laneID: laneID, breakpointID: breakpointID)
+                state = .idle
+                return
+            }
+
             sink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
             state = .draggingAutomationBreakpoint(context: PlaybackGridAutomationBreakpointDragContext(
                 containerID: containerID,

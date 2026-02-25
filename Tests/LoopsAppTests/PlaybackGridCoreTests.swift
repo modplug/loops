@@ -422,6 +422,77 @@ struct PlaybackGridCoreTests {
         #expect(sink.lastEnterFade?.curve == .exponential)
     }
 
+    @Test("Option click deletes MIDI notes and automation breakpoints")
+    func optionClickDeletesMIDINoteAndAutomationBreakpoint() {
+        let note = MIDINoteEvent(pitch: 60, startBeat: 0, duration: 1)
+        let lane = AutomationLane(
+            targetPath: .trackVolume(trackID: ID()),
+            breakpoints: [AutomationBreakpoint(position: 1.0, value: 0.5)]
+        )
+        let container = Container(
+            name: "Clip",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            automationLanes: [lane],
+            midiSequence: MIDISequence(notes: [note])
+        )
+        let track = Track(name: "MIDI 1", kind: .midi, containers: [container])
+
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            defaultTrackHeight: 80,
+            gridMode: .adaptive,
+            selectedContainerIDs: [],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let sink = CommandSinkSpy()
+        let controller = PlaybackGridInteractionController(sink: sink)
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: [.option]),
+            point: CGPoint(x: 10, y: PlaybackGridLayout.trackAreaTop + 70),
+            pick: GridPickObject(
+                id: 100,
+                kind: .midiNote,
+                containerID: container.id,
+                trackID: track.id,
+                midiNoteID: note.id
+            ),
+            snapshot: snapshot
+        )
+
+        #expect(sink.lastRemovedMIDINote?.containerID == container.id)
+        #expect(sink.lastRemovedMIDINote?.noteID == note.id)
+
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: [.option]),
+            point: CGPoint(x: 120, y: PlaybackGridLayout.trackAreaTop + 40),
+            pick: GridPickObject(
+                id: 101,
+                kind: .automationBreakpoint,
+                containerID: container.id,
+                trackID: track.id,
+                automationLaneID: lane.id,
+                automationBreakpointID: lane.breakpoints[0].id
+            ),
+            snapshot: snapshot
+        )
+
+        #expect(sink.lastRemovedAutomationBreakpoint?.containerID == container.id)
+        #expect(sink.lastRemovedAutomationBreakpoint?.laneID == lane.id)
+        #expect(sink.lastRemovedAutomationBreakpoint?.breakpointID == lane.breakpoints[0].id)
+    }
+
     private func makeMouseEvent(
         type: NSEvent.EventType,
         modifiers: NSEvent.ModifierFlags,
@@ -450,6 +521,8 @@ private final class CommandSinkSpy: PlaybackGridCommandSink {
     var lastOpenEditor: (containerID: ID<Container>, trackID: ID<Track>)?
     var lastEnterFade: FadeSettings?
     var lastExitFade: FadeSettings?
+    var lastRemovedMIDINote: (containerID: ID<Container>, noteID: ID<MIDINoteEvent>)?
+    var lastRemovedAutomationBreakpoint: (containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>)?
 
     func setPlayhead(bar: Double) {
         lastPlayheadBar = bar
@@ -481,5 +554,13 @@ private final class CommandSinkSpy: PlaybackGridCommandSink {
 
     func setContainerExitFade(_ containerID: ID<Container>, fade: FadeSettings?) {
         lastExitFade = fade
+    }
+
+    func removeMIDINote(_ containerID: ID<Container>, noteID: ID<MIDINoteEvent>) {
+        lastRemovedMIDINote = (containerID, noteID)
+    }
+
+    func removeAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>) {
+        lastRemovedAutomationBreakpoint = (containerID, laneID, breakpointID)
     }
 }
