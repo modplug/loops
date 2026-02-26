@@ -9,6 +9,8 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
     var selectionState: SelectionState
     let timeSignature: TimeSignature
     let sections: [SectionRegion]
+    var inlineMIDILaneHeights: [ID<Track>: CGFloat] = [:]
+    var inlineMIDIConfigs: [ID<Track>: PlaybackGridMIDIConfig] = [:]
     var showRulerAndSections: Bool = true
     var bottomPadding: CGFloat = PlaybackGridLayout.bottomPadding
     var minimumContentHeight: CGFloat = 0
@@ -32,14 +34,25 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
     var onContainerTrimRight: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ newLengthBars: Double) -> Void)?
     var onSetContainerEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
     var onSetContainerExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
+    var onCreateContainer: ((_ trackID: ID<Track>, _ startBar: Double, _ lengthBars: Double) -> Bool)?
+    var onSetInlineMIDILaneHeight: ((_ trackID: ID<Track>, _ height: CGFloat) -> Void)?
+    var onAdjustInlineMIDIRowHeight: ((_ trackID: ID<Track>, _ delta: CGFloat) -> Void)? = nil
+    var onShiftInlineMIDIPitchRange: ((_ trackID: ID<Track>, _ semitoneDelta: Int) -> Void)? = nil
+    var onPreviewMIDINote: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)? = nil
     var onAddMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?
     var onUpdateMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?
     var onRemoveMIDINote: ((_ containerID: ID<Container>, _ noteID: ID<MIDINoteEvent>) -> Void)?
     var onAddAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onUpdateAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onRemoveAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
+    var onReplaceAutomationBreakpoints: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
+    var onAddTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    var onUpdateTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    var onRemoveTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
+    var onReplaceTrackAutomationBreakpoints: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
 
     public func makeNSView(context: Context) -> PlaybackGridNSView {
+        PlaybackGridPerfLogger.bump("swiftui.representable.makeNSView")
         let view = PlaybackGridNSView(frame: .zero)
         view.debugLabel = debugLabel ?? "grid"
 
@@ -62,11 +75,16 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
     }
 
     public func updateNSView(_ nsView: PlaybackGridNSView, context: Context) {
+        PlaybackGridPerfLogger.bump("swiftui.representable.updateNSView")
+        let updateStart = PlaybackGridPerfLogger.begin()
         nsView.debugLabel = debugLabel ?? "grid"
         configure(nsView)
+        PlaybackGridPerfLogger.end("swiftui.representable.updateNSView.ms", updateStart)
     }
 
     private func configure(_ view: PlaybackGridNSView) {
+        PlaybackGridPerfLogger.bump("swiftui.representable.configure.calls")
+        let configureStart = PlaybackGridPerfLogger.begin()
         let adapter = CommandAdapter(
             onPlayheadPosition: onPlayheadPosition,
             onSectionSelect: onSectionSelect,
@@ -86,12 +104,22 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
             onContainerTrimRight: onContainerTrimRight,
             onSetContainerEnterFade: onSetContainerEnterFade,
             onSetContainerExitFade: onSetContainerExitFade,
+            onCreateContainer: onCreateContainer,
+            onSetInlineMIDILaneHeight: onSetInlineMIDILaneHeight,
+            onAdjustInlineMIDIRowHeight: onAdjustInlineMIDIRowHeight,
+            onShiftInlineMIDIPitchRange: onShiftInlineMIDIPitchRange,
+            onPreviewMIDINote: onPreviewMIDINote,
             onAddMIDINote: onAddMIDINote,
             onUpdateMIDINote: onUpdateMIDINote,
             onRemoveMIDINote: onRemoveMIDINote,
             onAddAutomationBreakpoint: onAddAutomationBreakpoint,
             onUpdateAutomationBreakpoint: onUpdateAutomationBreakpoint,
-            onRemoveAutomationBreakpoint: onRemoveAutomationBreakpoint
+            onRemoveAutomationBreakpoint: onRemoveAutomationBreakpoint,
+            onReplaceAutomationBreakpoints: onReplaceAutomationBreakpoints,
+            onAddTrackAutomationBreakpoint: onAddTrackAutomationBreakpoint,
+            onUpdateTrackAutomationBreakpoint: onUpdateTrackAutomationBreakpoint,
+            onRemoveTrackAutomationBreakpoint: onRemoveTrackAutomationBreakpoint,
+            onReplaceTrackAutomationBreakpoints: onReplaceTrackAutomationBreakpoints
         )
         view.setCommandSink(adapter)
 
@@ -105,8 +133,14 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
             pixelsPerBar: viewModel.pixelsPerBar,
             totalBars: viewModel.totalBars,
             trackHeights: viewModel.trackHeights,
+            inlineMIDILaneHeights: inlineMIDILaneHeights,
+            inlineMIDIConfigs: inlineMIDIConfigs,
+            automationExpandedTrackIDs: viewModel.automationExpanded,
+            automationSubLaneHeight: TimelineViewModel.automationSubLaneHeight,
+            automationToolbarHeight: TimelineViewModel.automationToolbarHeight,
             defaultTrackHeight: TimelineViewModel.defaultTrackHeight,
             gridMode: viewModel.gridMode,
+            selectedAutomationTool: viewModel.selectedAutomationTool,
             selectedContainerIDs: selectionState.effectiveSelectedContainerIDs,
             selectedSectionID: selectionState.selectedSectionID,
             selectedRange: viewModel.selectedRange,
@@ -118,6 +152,7 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
             bottomPadding: bottomPadding,
             minimumContentHeight: minimumContentHeight
         ))
+        PlaybackGridPerfLogger.end("swiftui.representable.configure.ms", configureStart)
     }
 }
 
@@ -140,12 +175,22 @@ private final class CommandAdapter: PlaybackGridCommandSink {
     private let onContainerTrimRight: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ newLengthBars: Double) -> Void)?
     private let onSetContainerEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
     private let onSetContainerExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?
+    private let onCreateContainer: ((_ trackID: ID<Track>, _ startBar: Double, _ lengthBars: Double) -> Bool)?
+    private let onSetInlineMIDILaneHeight: ((_ trackID: ID<Track>, _ height: CGFloat) -> Void)?
+    private let onAdjustInlineMIDIRowHeight: ((_ trackID: ID<Track>, _ delta: CGFloat) -> Void)?
+    private let onShiftInlineMIDIPitchRange: ((_ trackID: ID<Track>, _ semitoneDelta: Int) -> Void)?
+    private let onPreviewMIDINote: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)?
     private let onAddMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?
     private let onUpdateMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?
     private let onRemoveMIDINote: ((_ containerID: ID<Container>, _ noteID: ID<MIDINoteEvent>) -> Void)?
     private let onAddAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     private let onUpdateAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     private let onRemoveAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
+    private let onReplaceAutomationBreakpoints: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
+    private let onAddTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    private let onUpdateTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
+    private let onRemoveTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
+    private let onReplaceTrackAutomationBreakpoints: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
 
     init(
         onPlayheadPosition: ((Double) -> Void)?,
@@ -166,12 +211,22 @@ private final class CommandAdapter: PlaybackGridCommandSink {
         onContainerTrimRight: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ newLengthBars: Double) -> Void)?,
         onSetContainerEnterFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?,
         onSetContainerExitFade: ((_ containerID: ID<Container>, _ fade: FadeSettings?) -> Void)?,
+        onCreateContainer: ((_ trackID: ID<Track>, _ startBar: Double, _ lengthBars: Double) -> Bool)?,
+        onSetInlineMIDILaneHeight: ((_ trackID: ID<Track>, _ height: CGFloat) -> Void)?,
+        onAdjustInlineMIDIRowHeight: ((_ trackID: ID<Track>, _ delta: CGFloat) -> Void)?,
+        onShiftInlineMIDIPitchRange: ((_ trackID: ID<Track>, _ semitoneDelta: Int) -> Void)?,
+        onPreviewMIDINote: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)?,
         onAddMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?,
         onUpdateMIDINote: ((_ containerID: ID<Container>, _ note: MIDINoteEvent) -> Void)?,
         onRemoveMIDINote: ((_ containerID: ID<Container>, _ noteID: ID<MIDINoteEvent>) -> Void)?,
         onAddAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?,
         onUpdateAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?,
-        onRemoveAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
+        onRemoveAutomationBreakpoint: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?,
+        onReplaceAutomationBreakpoints: ((_ containerID: ID<Container>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?,
+        onAddTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?,
+        onUpdateTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?,
+        onRemoveTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?,
+        onReplaceTrackAutomationBreakpoints: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
     ) {
         self.onPlayheadPosition = onPlayheadPosition
         self.onSectionSelect = onSectionSelect
@@ -191,12 +246,22 @@ private final class CommandAdapter: PlaybackGridCommandSink {
         self.onContainerTrimRight = onContainerTrimRight
         self.onSetContainerEnterFade = onSetContainerEnterFade
         self.onSetContainerExitFade = onSetContainerExitFade
+        self.onCreateContainer = onCreateContainer
+        self.onSetInlineMIDILaneHeight = onSetInlineMIDILaneHeight
+        self.onAdjustInlineMIDIRowHeight = onAdjustInlineMIDIRowHeight
+        self.onShiftInlineMIDIPitchRange = onShiftInlineMIDIPitchRange
+        self.onPreviewMIDINote = onPreviewMIDINote
         self.onAddMIDINote = onAddMIDINote
         self.onUpdateMIDINote = onUpdateMIDINote
         self.onRemoveMIDINote = onRemoveMIDINote
         self.onAddAutomationBreakpoint = onAddAutomationBreakpoint
         self.onUpdateAutomationBreakpoint = onUpdateAutomationBreakpoint
         self.onRemoveAutomationBreakpoint = onRemoveAutomationBreakpoint
+        self.onReplaceAutomationBreakpoints = onReplaceAutomationBreakpoints
+        self.onAddTrackAutomationBreakpoint = onAddTrackAutomationBreakpoint
+        self.onUpdateTrackAutomationBreakpoint = onUpdateTrackAutomationBreakpoint
+        self.onRemoveTrackAutomationBreakpoint = onRemoveTrackAutomationBreakpoint
+        self.onReplaceTrackAutomationBreakpoints = onReplaceTrackAutomationBreakpoints
     }
 
     func setPlayhead(bar: Double) {
@@ -271,15 +336,38 @@ private final class CommandAdapter: PlaybackGridCommandSink {
         onSetContainerExitFade?(containerID, fade)
     }
 
+    func createContainer(trackID: ID<Track>, startBar: Double, lengthBars: Double) -> Bool {
+        onCreateContainer?(trackID, startBar, lengthBars) ?? false
+    }
+
+    func setInlineMIDILaneHeight(trackID: ID<Track>, height: CGFloat) {
+        onSetInlineMIDILaneHeight?(trackID, height)
+    }
+
+    func adjustInlineMIDIRowHeight(trackID: ID<Track>, delta: CGFloat) {
+        onAdjustInlineMIDIRowHeight?(trackID, delta)
+    }
+
+    func shiftInlineMIDIPitchRange(trackID: ID<Track>, semitoneDelta: Int) {
+        onShiftInlineMIDIPitchRange?(trackID, semitoneDelta)
+    }
+
+    func previewMIDINote(pitch: UInt8, isNoteOn: Bool) {
+        onPreviewMIDINote?(pitch, isNoteOn)
+    }
+
     func addMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent) {
+        PlaybackGridPerfLogger.bump("sink.addMIDINote")
         onAddMIDINote?(containerID, note)
     }
 
     func updateMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent) {
+        PlaybackGridPerfLogger.bump("sink.updateMIDINote")
         onUpdateMIDINote?(containerID, note)
     }
 
     func removeMIDINote(_ containerID: ID<Container>, noteID: ID<MIDINoteEvent>) {
+        PlaybackGridPerfLogger.bump("sink.removeMIDINote")
         onRemoveMIDINote?(containerID, noteID)
     }
 
@@ -293,6 +381,38 @@ private final class CommandAdapter: PlaybackGridCommandSink {
 
     func removeAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>) {
         onRemoveAutomationBreakpoint?(containerID, laneID, breakpointID)
+    }
+
+    func replaceAutomationBreakpoints(
+        _ containerID: ID<Container>,
+        laneID: ID<AutomationLane>,
+        startPosition: Double,
+        endPosition: Double,
+        breakpoints: [AutomationBreakpoint]
+    ) {
+        onReplaceAutomationBreakpoints?(containerID, laneID, startPosition, endPosition, breakpoints)
+    }
+
+    func addTrackAutomationBreakpoint(trackID: ID<Track>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {
+        onAddTrackAutomationBreakpoint?(trackID, laneID, breakpoint)
+    }
+
+    func updateTrackAutomationBreakpoint(trackID: ID<Track>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {
+        onUpdateTrackAutomationBreakpoint?(trackID, laneID, breakpoint)
+    }
+
+    func removeTrackAutomationBreakpoint(trackID: ID<Track>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>) {
+        onRemoveTrackAutomationBreakpoint?(trackID, laneID, breakpointID)
+    }
+
+    func replaceTrackAutomationBreakpoints(
+        trackID: ID<Track>,
+        laneID: ID<AutomationLane>,
+        startPosition: Double,
+        endPosition: Double,
+        breakpoints: [AutomationBreakpoint]
+    ) {
+        onReplaceTrackAutomationBreakpoints?(trackID, laneID, startPosition, endPosition, breakpoints)
     }
 }
 

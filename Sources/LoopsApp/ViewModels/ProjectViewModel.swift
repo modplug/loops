@@ -2737,14 +2737,26 @@ public final class ProjectViewModel {
 
     /// Updates a MIDI note in a container's sequence (move, resize, velocity change).
     public func updateMIDINote(containerID: ID<Container>, note: MIDINoteEvent) {
+        PlaybackGridPerfLogger.bump("model.updateMIDINote.calls")
+        let updateStart = PlaybackGridPerfLogger.begin()
+        defer { PlaybackGridPerfLogger.end("model.updateMIDINote.total.ms", updateStart) }
         guard !project.songs.isEmpty else { return }
         for trackIndex in project.songs[currentSongIndex].tracks.indices {
             if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
                 guard var sequence = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence else { return }
                 guard let noteIndex = sequence.notes.firstIndex(where: { $0.id == note.id }) else { return }
-                registerUndo(actionName: "Edit MIDI Note")
+                // During drag edits this is called at pointer-rate. Skip model churn when
+                // the snapped note did not change and coalesce undo when it does.
+                if sequence.notes[noteIndex] == note {
+                    PlaybackGridPerfLogger.bump("model.updateMIDINote.unchanged")
+                    return
+                }
+                let undoStart = PlaybackGridPerfLogger.begin()
+                registerUndoCoalesced(actionName: "Edit MIDI Note")
+                PlaybackGridPerfLogger.end("model.updateMIDINote.undo.ms", undoStart)
                 sequence.notes[noteIndex] = note
                 project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence = sequence
+                PlaybackGridPerfLogger.bump("model.updateMIDINote.updated")
                 markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .midiSequence)
                 hasUnsavedChanges = true
                 return

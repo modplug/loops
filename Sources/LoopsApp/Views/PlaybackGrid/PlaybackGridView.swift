@@ -122,6 +122,7 @@ public struct PlaybackGridView: View {
     }
 
     public var body: some View {
+        let _ = PlaybackGridPerfLogger.tick("swiftui.playbackGridView.body")
         PlaybackGridRepresentable(
             tracks: tracks,
             viewModel: viewModel,

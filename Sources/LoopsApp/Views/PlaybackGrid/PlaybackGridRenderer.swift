@@ -29,6 +29,8 @@ public final class PlaybackGridRenderer {
 
     private var midiBuffer: MTLBuffer?
     private var midiCount = 0
+    private var midiOverlayBuffer: MTLBuffer?
+    private var midiOverlayCount = 0
 
     private var fadeVertexBuffer: MTLBuffer?
     private var fadeVertexCount = 0
@@ -139,7 +141,7 @@ public final class PlaybackGridRenderer {
         let gridBottom = max(canvasHeight, visibleMaxY)
         let startBar = max(0, Int(floor(visibleMinX / ppb)) - 2)
         let endBar = Int(ceil(visibleMaxX / ppb)) + 2
-        let shadingColor = SIMD4<Float>(0.56, 0.64, 0.76, 0.014)
+        let shadingColor = SIMD4<Float>(0.56, 0.64, 0.76, 0.010)
 
         for bar in startBar..<endBar where bar % 2 == 0 {
             let x = Float(bar) * ppb
@@ -150,7 +152,7 @@ public final class PlaybackGridRenderer {
             ))
         }
 
-        let barLineColor = SIMD4<Float>(0.78, 0.84, 0.95, 0.075)
+        let barLineColor = SIMD4<Float>(0.78, 0.84, 0.95, 0.060)
         for bar in startBar...endBar {
             let x = Float(bar) * ppb
             lines.append(PlaybackGridLineInstance(
@@ -163,7 +165,7 @@ public final class PlaybackGridRenderer {
 
         let pixelsPerBeat = ppb / Float(snapshot.timeSignature.beatsPerBar)
         if pixelsPerBeat >= 20 {
-            let beatLineColor = SIMD4<Float>(0.72, 0.79, 0.90, 0.028)
+            let beatLineColor = SIMD4<Float>(0.72, 0.79, 0.90, 0.020)
             for bar in startBar...endBar {
                 let barX = Float(bar) * ppb
                 for beat in 1..<snapshot.timeSignature.beatsPerBar {
@@ -544,10 +546,65 @@ public final class PlaybackGridRenderer {
             rectCount: rectCount,
             lineCount: lineCount,
             waveformCount: waveformParamsList.count,
-            midiCount: midiCount,
+            midiCount: midiCount + midiOverlayCount,
             fadeVertexCount: fadeVertexCount,
             borderCount: borderCount
         )
+    }
+
+    public func buildMIDIOverlayBuffer(
+        scene: PlaybackGridScene,
+        snapshot: PlaybackGridSnapshot,
+        midiOverlays: [PlaybackGridMIDINoteOverlay]
+    ) {
+        guard !midiOverlays.isEmpty else {
+            midiOverlayBuffer = nil
+            midiOverlayCount = 0
+            return
+        }
+
+        var byTrack: [ID<Track>: PlaybackGridTrackLayout] = [:]
+        var byContainer: [ID<Container>: PlaybackGridContainerLayout] = [:]
+        for trackLayout in scene.trackLayouts {
+            byTrack[trackLayout.track.id] = trackLayout
+            for containerLayout in trackLayout.containers {
+                byContainer[containerLayout.container.id] = containerLayout
+            }
+        }
+
+        var output: [PlaybackGridMIDINoteInstance] = []
+        output.reserveCapacity(midiOverlays.count * 4)
+
+        for overlay in midiOverlays {
+            guard let trackLayout = byTrack[overlay.trackID],
+                  let containerLayout = byContainer[overlay.containerID] else {
+                continue
+            }
+            let midiRect = midiEditorRect(
+                trackLayout: trackLayout,
+                containerRect: containerLayout.rect,
+                trackID: trackLayout.track.id,
+                snapshot: snapshot
+            )
+            let resolved = PlaybackGridMIDIViewResolver.resolveTrackLayout(
+                trackLayout: trackLayout,
+                laneHeight: midiRect.height,
+                snapshot: snapshot
+            )
+            buildMIDINoteOverlays(
+                overlays: [overlay],
+                containerID: overlay.containerID,
+                trackID: overlay.trackID,
+                containerLengthBars: containerLayout.container.lengthBars,
+                rect: midiRect,
+                resolved: resolved,
+                timeSignature: snapshot.timeSignature,
+                into: &output
+            )
+        }
+
+        midiOverlayBuffer = output.isEmpty ? nil : makeBuffer(output)
+        midiOverlayCount = output.count
     }
 
     public func encode(
@@ -626,6 +683,20 @@ public final class PlaybackGridRenderer {
             )
         }
 
+        if midiOverlayCount > 0, let buf = midiOverlayBuffer {
+            encoder.setRenderPipelineState(midiPipeline)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<PlaybackGridUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: 6,
+                indexType: .uint16,
+                indexBuffer: quadIndexBuffer,
+                indexBufferOffset: 0,
+                instanceCount: midiOverlayCount
+            )
+        }
+
         if fadeVertexCount > 0, let buf = fadeVertexBuffer {
             encoder.setRenderPipelineState(fadePipeline)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<PlaybackGridUniforms>.stride, index: 0)
@@ -687,9 +758,9 @@ public final class PlaybackGridRenderer {
             focusedPick.kind == .midiNote && focusedPick.containerID == container.id
             ? focusedPick.midiNoteID
             : nil
-        let noteBaseColor = SIMD4<Float>(0.83, 0.36, 0.67, 0.98)
-        let noteFocusedColor = SIMD4<Float>(0.97, 0.54, 0.81, 1.0)
-        let noteBorderColor = SIMD4<Float>(0.30, 0.12, 0.28, 0.86)
+        let noteBaseColor = SIMD4<Float>(0.84, 0.36, 0.67, 0.98)
+        let noteFocusedColor = SIMD4<Float>(0.96, 0.58, 0.83, 1.0)
+        let noteBorderColor = SIMD4<Float>(0.22, 0.08, 0.22, 0.88)
 
         for note in notes {
             guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
@@ -697,8 +768,7 @@ public final class PlaybackGridRenderer {
                 containerLengthBars: container.lengthBars,
                 laneRect: rect,
                 timeSignature: timeSignature,
-                resolved: resolved,
-                minimumWidth: 12
+                resolved: resolved
             ) else { continue }
             let noteX = Float(noteRect.minX)
             let noteY = Float(noteRect.minY)
@@ -716,14 +786,15 @@ public final class PlaybackGridRenderer {
                 )
 
             let shadowOffset: Float = isFocused ? 1.6 : 1.0
-            let baseRadius = min(noteH * 0.38, noteW * 0.24)
-            let outerRadius = max(1.2, baseRadius)
-            let innerRadius = max(1.0, min(outerRadius - 0.35, noteH * 0.28))
-            let shineRadius = max(0.8, min(innerRadius - 0.25, noteH * 0.20))
+            // Keep notes mostly rectangular (Bitwig-style) and avoid diamond/pill
+            // silhouettes for short notes.
+            let outerRadius = max(0.8, min(noteH * 0.12, noteW * 0.06))
+            let innerRadius = max(0.7, min(outerRadius, noteH * 0.10))
+            let shineRadius = max(0.6, min(innerRadius, noteH * 0.08))
             output.append(PlaybackGridMIDINoteInstance(
                 origin: SIMD2(noteX, noteY + shadowOffset),
                 size: SIMD2(noteW, noteH),
-                color: SIMD4(0, 0, 0, isFocused ? 0.22 : 0.13),
+                color: SIMD4(0, 0, 0, isFocused ? 0.24 : 0.15),
                 cornerRadius: outerRadius
             ))
             output.append(PlaybackGridMIDINoteInstance(
@@ -741,7 +812,7 @@ public final class PlaybackGridRenderer {
             output.append(PlaybackGridMIDINoteInstance(
                 origin: SIMD2(noteX + 1.5, noteY + 1.5),
                 size: SIMD2(max(noteW - 3, 2), max(min(noteH * 0.24, noteH - 2), 1)),
-                color: SIMD4(1.0, 0.85, 0.95, isFocused ? 0.52 : 0.32),
+                color: SIMD4(1.0, 0.89, 0.96, isFocused ? 0.46 : 0.25),
                 cornerRadius: shineRadius
             ))
 
@@ -759,6 +830,73 @@ public final class PlaybackGridRenderer {
                     size: SIMD2(1.6, gripHeight),
                     color: SIMD4(1, 1, 1, 0.58),
                     cornerRadius: 0.8
+                ))
+            }
+        }
+    }
+
+    private func buildMIDINoteOverlays(
+        overlays: [PlaybackGridMIDINoteOverlay],
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        containerLengthBars: Double,
+        rect: CGRect,
+        resolved: PlaybackGridMIDIResolvedLayout,
+        timeSignature: TimeSignature,
+        into output: inout [PlaybackGridMIDINoteInstance]
+    ) {
+        for overlay in overlays where overlay.containerID == containerID && overlay.trackID == trackID {
+            guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+                note: overlay.note,
+                containerLengthBars: containerLengthBars,
+                laneRect: rect,
+                timeSignature: timeSignature,
+                resolved: resolved
+            ) else { continue }
+
+            let x = Float(noteRect.minX)
+            let y = Float(noteRect.minY)
+            let w = Float(noteRect.width)
+            let h = Float(noteRect.height)
+            let radius = max(0.8, min(h * 0.12, w * 0.06))
+
+            if overlay.isGhost {
+                output.append(PlaybackGridMIDINoteInstance(
+                    origin: SIMD2(x + 0.6, y + 1.3),
+                    size: SIMD2(max(w - 1.2, 2), max(h - 1.3, 2)),
+                    color: SIMD4(0.05, 0.07, 0.10, 0.20),
+                    cornerRadius: radius
+                ))
+                output.append(PlaybackGridMIDINoteInstance(
+                    origin: SIMD2(x, y),
+                    size: SIMD2(w, h),
+                    color: SIMD4(0.97, 0.72, 0.90, 0.30),
+                    cornerRadius: radius
+                ))
+                output.append(PlaybackGridMIDINoteInstance(
+                    origin: SIMD2(x + 1, y + 1),
+                    size: SIMD2(max(w - 2, 1), max(h - 2, 1)),
+                    color: SIMD4(0.96, 0.62, 0.85, 0.12),
+                    cornerRadius: max(radius - 0.8, 0)
+                ))
+            } else {
+                output.append(PlaybackGridMIDINoteInstance(
+                    origin: SIMD2(x + 0.8, y + 1.4),
+                    size: SIMD2(max(w - 1.6, 2), max(h - 1.6, 2)),
+                    color: SIMD4(0.00, 0.00, 0.00, 0.22),
+                    cornerRadius: radius
+                ))
+                output.append(PlaybackGridMIDINoteInstance(
+                    origin: SIMD2(x, y),
+                    size: SIMD2(w, h),
+                    color: SIMD4(0.99, 0.70, 0.90, 0.85),
+                    cornerRadius: radius
+                ))
+                output.append(PlaybackGridMIDINoteInstance(
+                    origin: SIMD2(x + 1, y + 1),
+                    size: SIMD2(max(w - 2, 1), max(h - 2, 1)),
+                    color: SIMD4(0.96, 0.50, 0.80, 0.92),
+                    cornerRadius: max(radius - 0.9, 0)
                 ))
             }
         }
@@ -823,24 +961,27 @@ public final class PlaybackGridRenderer {
         let highNote = Int(layout.highPitch)
         let rows = layout.rows
         let rowHeight = Float(layout.rowHeight)
+        let horizontalStride = rowHeight < 6 ? 2 : 1
 
         for i in 0..<rows {
             let midi = highNote - i
             let y = yMin + (Float(i) * rowHeight)
+            if y >= (yMin + laneHeight) { break }
             let noteClass = midi % 12
             let isBlackKey = [1, 3, 6, 8, 10].contains(noteClass)
-            if isBlackKey {
+            if isBlackKey, rowHeight >= 4 {
                 rects.append(PlaybackGridRectInstance(
                     origin: SIMD2(xMin, y),
-                    size: SIMD2(xMax - xMin, rowHeight),
-                    color: SIMD4(0, 0, 0, 0.011)
+                    size: SIMD2(xMax - xMin, min(rowHeight, (yMin + laneHeight) - y)),
+                    color: SIMD4(0, 0, 0, 0.006)
                 ))
             }
+            if (i % horizontalStride) != 0 { continue }
             let isC = noteClass == 0
             lines.append(PlaybackGridLineInstance(
                 start: SIMD2(xMin, y),
                 end: SIMD2(xMax, y),
-                color: isC ? SIMD4(1, 1, 1, 0.040) : SIMD4(1, 1, 1, 0.010),
+                color: isC ? SIMD4(1, 1, 1, 0.024) : SIMD4(1, 1, 1, 0.0045),
                 width: 1
             ))
         }
@@ -848,18 +989,19 @@ public final class PlaybackGridRenderer {
         lines.append(PlaybackGridLineInstance(
             start: SIMD2(xMin, yBottom),
             end: SIMD2(xMax, yBottom),
-            color: SIMD4(1, 1, 1, 0.065),
+            color: SIMD4(1, 1, 1, 0.048),
             width: 1
         ))
         lines.append(PlaybackGridLineInstance(
             start: SIMD2(xMin, yBottom - 2),
             end: SIMD2(xMax, yBottom - 2),
-            color: SIMD4(1, 1, 1, 0.024),
+            color: SIMD4(1, 1, 1, 0.015),
             width: 1
         ))
 
         let safePPB = max(pixelsPerBar, 1)
-        let beatWidth = safePPB / 4
+        let beatsPerBar = max(Float(snapshot.timeSignature.beatsPerBar), 1)
+        let beatWidth = safePPB / beatsPerBar
         let barStart = floor(xMin / safePPB) - 1
         let barEnd = ceil(xMax / safePPB) + 1
         for bar in Int(barStart)...Int(barEnd) {
@@ -867,15 +1009,15 @@ public final class PlaybackGridRenderer {
             lines.append(PlaybackGridLineInstance(
                 start: SIMD2(barX, yMin),
                 end: SIMD2(barX, yBottom),
-                color: SIMD4(1, 1, 1, 0.060),
+                color: SIMD4(1, 1, 1, 0.028),
                 width: 1
             ))
-            for beat in 1..<4 {
+            for beat in 1..<Int(beatsPerBar) {
                 let beatX = barX + (Float(beat) * beatWidth)
                 lines.append(PlaybackGridLineInstance(
                     start: SIMD2(beatX, yMin),
                     end: SIMD2(beatX, yBottom),
-                    color: SIMD4(1, 1, 1, 0.014),
+                    color: SIMD4(1, 1, 1, 0.0055),
                     width: 1
                 ))
             }
@@ -987,21 +1129,13 @@ public final class PlaybackGridRenderer {
             let yMax = Float(laneRect.maxY) - 2
             let color = laneColors[laneIndex % laneColors.count]
             let sorted = lane.breakpoints.sorted { $0.position < $1.position }
-            let guideRatios: [Float] = [0, 0.25, 0.5, 0.75, 1.0]
-            for ratio in guideRatios {
+            for guide in automationGuides(for: lane) {
+                let ratio = guide.normalized
                 let y = Float(laneRect.maxY) - (ratio * Float(laneRect.height))
-                let alpha: Float
-                if ratio == 0 || ratio == 1 {
-                    alpha = 0.14
-                } else if ratio == 0.5 {
-                    alpha = 0.11
-                } else {
-                    alpha = 0.07
-                }
                 lines.append(PlaybackGridLineInstance(
                     start: SIMD2(Float(laneRect.minX), y),
                     end: SIMD2(Float(laneRect.maxX), y),
-                    color: SIMD4(color.x, color.y, color.z, alpha),
+                    color: SIMD4(color.x, color.y, color.z, guide.alpha),
                     width: 1
                 ))
             }
@@ -1113,6 +1247,15 @@ public final class PlaybackGridRenderer {
                 let sorted = trackLane.breakpoints.sorted { $0.position < $1.position }
                 var points: [SIMD2<Float>] = []
                 points.reserveCapacity(sorted.count)
+                for guide in automationGuides(for: trackLane) {
+                    let y = Float(laneLayout.rect.maxY) - (guide.normalized * Float(laneLayout.rect.height))
+                    lines.append(PlaybackGridLineInstance(
+                        start: SIMD2(Float(max(visibleMinX, Float(laneLayout.rect.minX))), y),
+                        end: SIMD2(Float(min(visibleMaxX, Float(laneLayout.rect.maxX))), y),
+                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, guide.alpha * 0.9),
+                        width: 1
+                    ))
+                }
 
                 for bp in sorted {
                     let x = Float(bp.position) * ppb
@@ -1152,6 +1295,15 @@ public final class PlaybackGridRenderer {
                 let sorted = lane.breakpoints.sorted { $0.position < $1.position }
                 var points: [SIMD2<Float>] = []
                 points.reserveCapacity(sorted.count)
+                for guide in automationGuides(for: lane) {
+                    let y = Float(laneLayout.rect.maxY) - (guide.normalized * Float(laneLayout.rect.height))
+                    lines.append(PlaybackGridLineInstance(
+                        start: SIMD2(Float(containerLayout.rect.minX), y),
+                        end: SIMD2(Float(containerLayout.rect.maxX), y),
+                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, guide.alpha * 0.86),
+                        width: 1
+                    ))
+                }
                 for bp in sorted {
                     let x = Float(containerLayout.rect.minX + (CGFloat(bp.position) * barsToPixels))
                     let y = Float(laneLayout.rect.maxY - (CGFloat(bp.value) * laneLayout.rect.height))
@@ -1207,6 +1359,93 @@ public final class PlaybackGridRenderer {
                 width: 1.8
             ))
         }
+    }
+
+    private struct AutomationGuideLine {
+        let normalized: Float
+        let alpha: Float
+    }
+
+    private func automationGuides(for lane: AutomationLane) -> [AutomationGuideLine] {
+        let minValue = Double(lane.parameterMin ?? 0)
+        let maxValue = Double(lane.parameterMax ?? 1)
+        let unit = (lane.parameterUnit ?? "").lowercased()
+
+        // Frequency-like params read far better on logarithmic reference guides.
+        if unit.contains("hz"), minValue > 0, maxValue > minValue {
+            let anchors: [Double] = [20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000]
+            let ratio = maxValue / minValue
+            var guides: [AutomationGuideLine] = []
+            for value in anchors where value >= minValue && value <= maxValue {
+                let normalized = Float(log(value / minValue) / log(ratio))
+                let isMajor = value == 100 || value == 1_000 || value == 10_000
+                guides.append(AutomationGuideLine(
+                    normalized: max(0, min(1, normalized)),
+                    alpha: isMajor ? 0.14 : 0.08
+                ))
+            }
+            if guides.isEmpty {
+                return defaultAutomationGuides()
+            }
+            return dedupedAutomationGuides(guides)
+        }
+
+        if maxValue > minValue {
+            let span = maxValue - minValue
+            if span >= 16 && span <= 512 {
+                let majorStep: Double
+                if span <= 64 {
+                    majorStep = 8
+                } else if span <= 128 {
+                    majorStep = 16
+                } else {
+                    majorStep = 32
+                }
+                var guides: [AutomationGuideLine] = []
+                var value = ceil(minValue / majorStep) * majorStep
+                while value <= maxValue + 0.0001 {
+                    let normalized = Float((value - minValue) / span)
+                    let isBoundary = abs(value - minValue) < 0.0001 || abs(value - maxValue) < 0.0001
+                    guides.append(AutomationGuideLine(
+                        normalized: max(0, min(1, normalized)),
+                        alpha: isBoundary ? 0.14 : 0.09
+                    ))
+                    value += majorStep
+                }
+                if guides.count >= 3 {
+                    return dedupedAutomationGuides(guides)
+                }
+            }
+        }
+
+        return defaultAutomationGuides()
+    }
+
+    private func defaultAutomationGuides() -> [AutomationGuideLine] {
+        [
+            AutomationGuideLine(normalized: 0.0, alpha: 0.14),
+            AutomationGuideLine(normalized: 0.25, alpha: 0.08),
+            AutomationGuideLine(normalized: 0.5, alpha: 0.11),
+            AutomationGuideLine(normalized: 0.75, alpha: 0.08),
+            AutomationGuideLine(normalized: 1.0, alpha: 0.14)
+        ]
+    }
+
+    private func dedupedAutomationGuides(_ guides: [AutomationGuideLine]) -> [AutomationGuideLine] {
+        var buckets: [Int: AutomationGuideLine] = [:]
+        for guide in guides {
+            let bucket = Int((guide.normalized * 1000).rounded())
+            if let existing = buckets[bucket] {
+                if guide.alpha > existing.alpha {
+                    buckets[bucket] = guide
+                }
+            } else {
+                buckets[bucket] = guide
+            }
+        }
+        return buckets
+            .values
+            .sorted { $0.normalized < $1.normalized }
     }
 
     private func smoothedAutomationPoints(
@@ -1330,17 +1569,17 @@ private struct PlaybackGridTrackMetalColors {
 
     init(kind: TrackKind) {
         let base = Self.baseColor(for: kind)
-        fillNormal = SIMD4(base.x, base.y, base.z, 0.24)
-        fillSelected = SIMD4(base.x, base.y, base.z, 0.40)
-        fillFocused = SIMD4(base.x, base.y, base.z, 0.33)
+        fillNormal = SIMD4(base.x, base.y, base.z, 0.30)
+        fillSelected = SIMD4(base.x, base.y, base.z, 0.46)
+        fillFocused = SIMD4(base.x, base.y, base.z, 0.38)
         fillArmed = SIMD4(1, 0.23, 0.19, 0.15)
-        borderNormal = SIMD4(base.x, base.y, base.z, 0.42)
+        borderNormal = SIMD4(base.x, base.y, base.z, 0.50)
         borderSelected = SIMD4(0.33, 0.72, 1.0, 1.0)
         borderFocused = SIMD4(0.78, 0.90, 1.0, 0.90)
         borderArmed = SIMD4(1, 0.23, 0.19, 1.0)
         switch kind {
         case .audio, .backing:
-            waveformFill = SIMD4(0.95, 0.98, 1.0, 0.995)
+            waveformFill = SIMD4(0.96, 0.99, 1.0, 1.0)
             waveformFocused = SIMD4(1.0, 1.0, 1.0, 1.0)
         case .midi:
             waveformFill = SIMD4(0.90, 0.44, 0.72, 0.96)

@@ -34,6 +34,9 @@ public struct ToolbarView: View {
     /// Current grid mode (adaptive or fixed resolution).
     @Binding var gridMode: GridMode
 
+    /// Selected automation editing tool for timeline/grid automation lanes.
+    @Binding var selectedAutomationTool: AutomationTool
+
     /// Binding to show/hide the virtual MIDI keyboard.
     @Binding var isVirtualKeyboardVisible: Bool
 
@@ -60,6 +63,7 @@ public struct ToolbarView: View {
         availableOutputPorts: [OutputPort] = [],
         isSnapEnabled: Binding<Bool> = .constant(true),
         gridMode: Binding<GridMode> = .constant(.adaptive),
+        selectedAutomationTool: Binding<AutomationTool> = .constant(.pointer),
         isVirtualKeyboardVisible: Binding<Bool> = .constant(false)
     ) {
         self.viewModel = viewModel
@@ -76,6 +80,7 @@ public struct ToolbarView: View {
         self.availableOutputPorts = availableOutputPorts
         self._isSnapEnabled = isSnapEnabled
         self._gridMode = gridMode
+        self._selectedAutomationTool = selectedAutomationTool
         self._isVirtualKeyboardVisible = isVirtualKeyboardVisible
     }
 
@@ -367,6 +372,32 @@ public struct ToolbarView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("Grid Resolution")
+
+            // Automation tool menu
+            Menu {
+                ForEach(AutomationTool.allCases, id: \.self) { tool in
+                    Button(action: { selectedAutomationTool = tool }) {
+                        HStack {
+                            Image(systemName: tool.iconName)
+                            Text(tool.label)
+                            if selectedAutomationTool == tool {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: selectedAutomationTool.iconName)
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(selectedAutomationTool.label)
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(Color.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Automation Tool")
 
             Divider().frame(height: 24)
 

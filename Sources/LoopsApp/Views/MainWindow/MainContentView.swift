@@ -234,6 +234,7 @@ public struct MainContentView: View {
     }
 
     public var body: some View {
+        let _ = PlaybackGridPerfLogger.tick("swiftui.mainContentView.body")
         mainSplitView
         .sheet(isPresented: $showContainerDetailEditor) {
             containerDetailEditorSheet
@@ -2272,7 +2273,10 @@ final class TimelineHorizontalScrollCoordinator {
 
     private var observer: NSObjectProtocol?
     private var isApplyingProgrammaticOffset = false
-    private static let debugLogsEnabled = true
+    private static let debugLogsEnabled: Bool = {
+        ProcessInfo.processInfo.environment["LOOPS_GRID_DEBUG"] == "1"
+        || UserDefaults.standard.bool(forKey: "PlaybackGridDebugLogs")
+    }()
 
     func attachScrollView(_ scrollView: NSScrollView) {
         if self.scrollView === scrollView { return }
@@ -2338,7 +2342,10 @@ final class TimelineVerticalScrollCoordinator {
     private var headerObserver: NSObjectProtocol?
     private var gridObserver: NSObjectProtocol?
     private var isSyncing = false
-    private static let debugLogsEnabled = true
+    private static let debugLogsEnabled: Bool = {
+        ProcessInfo.processInfo.environment["LOOPS_GRID_DEBUG"] == "1"
+        || UserDefaults.standard.bool(forKey: "PlaybackGridDebugLogs")
+    }()
 
     func attachHeaderScrollView(_ scrollView: NSScrollView) {
         if headerScrollView === scrollView { return }

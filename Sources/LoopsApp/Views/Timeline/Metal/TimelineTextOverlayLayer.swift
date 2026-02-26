@@ -230,11 +230,11 @@ final class TimelineTextOverlayLayer: CALayer {
         if !midiNoteLabels.isEmpty {
             let labelAttrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-                .foregroundColor: NSColor(calibratedWhite: 0.12, alpha: 0.86)
+                .foregroundColor: NSColor(calibratedWhite: 0.98, alpha: 0.82)
             ]
             let focusedAttrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 10, weight: .bold),
-                .foregroundColor: NSColor(calibratedWhite: 0.04, alpha: 0.95)
+                .foregroundColor: NSColor(calibratedWhite: 1.0, alpha: 0.97)
             ]
             for label in midiNoteLabels {
                 guard label.worldRect.maxX >= vpMinX, label.worldRect.minX <= vpMaxX else { continue }
@@ -301,12 +301,16 @@ final class TimelineTextOverlayLayer: CALayer {
     private static func fingerprint(midiLabels: [MIDINoteLabelLayout]) -> Int {
         var hasher = Hasher()
         hasher.combine(midiLabels.count)
+        @inline(__always)
+        func q(_ value: CGFloat) -> Int {
+            Int((value * 8).rounded())
+        }
         for label in midiLabels {
             hasher.combine(label.text)
-            hasher.combine(Int(label.worldRect.minX.rounded()))
-            hasher.combine(Int(label.worldRect.minY.rounded()))
-            hasher.combine(Int(label.worldRect.width.rounded()))
-            hasher.combine(Int(label.worldRect.height.rounded()))
+            hasher.combine(q(label.worldRect.minX))
+            hasher.combine(q(label.worldRect.minY))
+            hasher.combine(q(label.worldRect.width))
+            hasher.combine(q(label.worldRect.height))
             hasher.combine(label.isFocused)
         }
         return hasher.finalize()

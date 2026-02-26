@@ -59,6 +59,10 @@ public struct LoopsRootView: View {
                         get: { timelineViewModel.gridMode },
                         set: { timelineViewModel.gridMode = $0 }
                     ),
+                    selectedAutomationTool: Binding(
+                        get: { timelineViewModel.selectedAutomationTool },
+                        set: { timelineViewModel.selectedAutomationTool = $0 }
+                    ),
                     isVirtualKeyboardVisible: $isVirtualKeyboardVisible
                 )
                 Divider()

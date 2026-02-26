@@ -34,9 +34,10 @@ struct PlaybackGridWaveformParams {
 };
 
 struct PlaybackGridMIDINoteInstance {
-    float2 center;
-    float halfSize;
+    float2 origin;
+    float2 size;
     float4 color;
+    float cornerRadius;
 };
 
 struct PlaybackGridFadeVertex {
@@ -81,9 +82,14 @@ fragment float4 pg_rect_fragment(RectVertexOut in [[stage_in]]) {
 
     if (in.cornerRadius > 0.0) {
         float2 halfSize = in.rectSize * 0.5;
+        float maxRadius = max(0.0, min(halfSize.x, halfSize.y) - 0.001);
+        float radius = min(in.cornerRadius, maxRadius);
+        if (radius <= 0.0) {
+            return color;
+        }
         float2 center = halfSize;
-        float2 d = abs(in.localPos - center) - halfSize + in.cornerRadius;
-        float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - in.cornerRadius;
+        float2 d = abs(in.localPos - center) - halfSize + radius;
+        float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
         float alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
         color.a *= alpha;
     }
@@ -161,6 +167,9 @@ fragment float4 pg_waveform_fragment(WaveformVertexOut in [[stage_in]]) {
 struct MIDIVertexOut {
     float4 position [[position]];
     float4 color;
+    float2 localPos;
+    float2 rectSize;
+    float cornerRadius;
 };
 
 vertex MIDIVertexOut pg_midi_vertex(
@@ -170,23 +179,38 @@ vertex MIDIVertexOut pg_midi_vertex(
     constant PlaybackGridMIDINoteInstance *instances [[buffer(1)]]
 ) {
     PlaybackGridMIDINoteInstance inst = instances[instanceID];
-    float2 offsets[4] = {
-        float2(0, -inst.halfSize),
-        float2(inst.halfSize, 0),
-        float2(0, inst.halfSize),
-        float2(-inst.halfSize, 0)
+    float2 unitQuad[4] = {
+        float2(0, 0), float2(1, 0),
+        float2(0, 1), float2(1, 1)
     };
-
-    float2 worldPos = inst.center + offsets[vertexID];
+    float2 uv = unitQuad[vertexID];
+    float2 worldPos = inst.origin + uv * inst.size;
 
     MIDIVertexOut out;
     out.position = uniforms.projectionMatrix * float4(worldPos, 0, 1);
     out.color = inst.color;
+    out.localPos = uv * inst.size;
+    out.rectSize = inst.size;
+    out.cornerRadius = inst.cornerRadius;
     return out;
 }
 
 fragment float4 pg_midi_fragment(MIDIVertexOut in [[stage_in]]) {
-    return in.color;
+    float4 color = in.color;
+    if (in.cornerRadius > 0.0) {
+        float2 halfSize = in.rectSize * 0.5;
+        float maxRadius = max(0.0, min(halfSize.x, halfSize.y) - 0.001);
+        float radius = min(in.cornerRadius, maxRadius);
+        if (radius <= 0.0) {
+            return color;
+        }
+        float2 center = halfSize;
+        float2 d = abs(in.localPos - center) - halfSize + radius;
+        float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
+        float alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
+        color.a *= alpha;
+    }
+    return color;
 }
 
 struct FadeVertexOut {

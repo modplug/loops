@@ -270,7 +270,8 @@ public final class PlaybackGridPickingRenderer {
                 timeSignature: timeSignature,
                 resolved: resolved
             ) else { continue }
-            let hitRect = noteRect.insetBy(dx: -2, dy: -2)
+            // Larger hit target improves edge-resize ergonomics on short notes.
+            let hitRect = noteRect.insetBy(dx: -5, dy: -4)
             if hitRect.contains(point) {
                 let zone = midiNoteZone(point: point, noteRect: noteRect)
                 return MIDINoteHit(note: note, zone: zone)
@@ -325,8 +326,6 @@ public final class PlaybackGridPickingRenderer {
         trackLayout: PlaybackGridTrackLayout,
         snapshot: PlaybackGridSnapshot
     ) -> (containerID: ID<Container>?, laneID: ID<AutomationLane>)? {
-        guard snapshot.selectedAutomationTool != .pointer else { return nil }
-
         for laneLayout in trackLayout.automationLaneLayouts {
             guard laneLayout.rect.contains(point) else { continue }
 
@@ -357,10 +356,10 @@ public final class PlaybackGridPickingRenderer {
     }
 
     private func midiEdgeThreshold(noteWidth: CGFloat) -> CGFloat {
-        guard noteWidth >= 5 else { return 0 }
-        if noteWidth <= 18 { return max(3.2, noteWidth * 0.5) }
-        if noteWidth <= 40 { return max(5.0, min(16.0, noteWidth * 0.35)) }
-        return max(7.0, min(20.0, noteWidth * 0.22))
+        guard noteWidth >= 3 else { return 0 }
+        if noteWidth <= 24 { return max(5.0, noteWidth * 0.48) }
+        if noteWidth <= 64 { return max(8.0, min(20.0, noteWidth * 0.32)) }
+        return max(11.0, min(24.0, noteWidth * 0.24))
     }
 
     private func midiEditorRect(

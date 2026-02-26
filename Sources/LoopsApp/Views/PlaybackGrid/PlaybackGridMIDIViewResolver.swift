@@ -23,10 +23,22 @@ enum PlaybackGridMIDIViewResolver {
 
         let configuredRowHeight = snapshot.inlineMIDIConfigs[trackID]?.rowHeight
         let rowHeight: CGFloat
-        if hasExplicitConfig, let configuredRowHeight, configuredRowHeight > 0 {
-            // Keep explicit pitch windows stable: the user controls zoom/range,
-            // so we should not silently recenter/crop.
-            rowHeight = max(4, configuredRowHeight)
+        if hasExplicitConfig {
+            if let configuredRowHeight, configuredRowHeight > 0 {
+                rowHeight = max(2, configuredRowHeight)
+                let maxVisibleRows = max(1, Int(floor(laneHeight / rowHeight)))
+                if rows > maxVisibleRows {
+                    // Inline MIDI lane has no vertical scroll yet.
+                    // Mirror the header keyboard behavior by keeping the top pitch
+                    // anchored and reducing the visible window to what the lane can
+                    // display at the configured row height.
+                    high = Int(baseHigh)
+                    low = max(Int(baseLow), high - maxVisibleRows + 1)
+                    rows = max(high - low + 1, 1)
+                }
+            } else {
+                rowHeight = max(2, laneHeight / CGFloat(max(rows, 1)))
+            }
         } else {
             // Auto mode keeps the visible density readable by capping the
             // effective row count to what a target row height can display.

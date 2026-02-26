@@ -13,13 +13,39 @@ public final class PlaybackGridSceneBuilder {
         var yOffset: CGFloat = snapshot.showRulerAndSections ? PlaybackGridLayout.trackAreaTop : 0
 
         for track in snapshot.tracks {
-            let height = snapshot.trackHeights[track.id] ?? snapshot.defaultTrackHeight
+            let baseHeight = snapshot.trackHeights[track.id] ?? snapshot.defaultTrackHeight
+            let midiExtraHeight = snapshot.inlineMIDILaneHeights[track.id] ?? 0
+            let lanePaths = automationLanePaths(for: track)
+            let automationExpanded = snapshot.automationExpandedTrackIDs.contains(track.id) && !lanePaths.isEmpty
+            let toolbarHeight = automationExpanded ? snapshot.automationToolbarHeight : 0
+            let automationLaneLayouts: [PlaybackGridAutomationLaneLayout]
+            if automationExpanded {
+                let laneOriginY = yOffset + baseHeight + toolbarHeight
+                automationLaneLayouts = lanePaths.enumerated().map { index, targetPath in
+                    let laneY = laneOriginY + (CGFloat(index) * snapshot.automationSubLaneHeight)
+                    return PlaybackGridAutomationLaneLayout(
+                        targetPath: targetPath,
+                        rect: CGRect(
+                            x: 0,
+                            y: laneY,
+                            width: CGFloat(snapshot.totalBars) * snapshot.pixelsPerBar,
+                            height: snapshot.automationSubLaneHeight
+                        )
+                    )
+                }
+            } else {
+                automationLaneLayouts = []
+            }
+            let totalTrackHeight = baseHeight
+                + toolbarHeight
+                + (CGFloat(automationLaneLayouts.count) * snapshot.automationSubLaneHeight)
+                + midiExtraHeight
 
             var containerLayouts: [PlaybackGridContainerLayout] = []
             for container in track.containers {
                 let x = CGFloat(container.startBar - 1.0) * snapshot.pixelsPerBar
                 let width = CGFloat(container.lengthBars) * snapshot.pixelsPerBar
-                let rect = CGRect(x: x, y: yOffset, width: width, height: height)
+                let rect = CGRect(x: x, y: yOffset, width: width, height: baseHeight)
                 let peaks = waveformPeaksProvider?(container)
                 let durationBars = audioDurationBarsProvider?(container)
                 let notes = resolvedMIDISequenceProvider?(container)?.notes
@@ -39,11 +65,14 @@ public final class PlaybackGridSceneBuilder {
             trackLayouts.append(PlaybackGridTrackLayout(
                 track: track,
                 yOrigin: yOffset,
-                height: height,
+                clipHeight: baseHeight,
+                automationToolbarHeight: toolbarHeight,
+                automationLaneLayouts: automationLaneLayouts,
+                height: totalTrackHeight,
                 containers: containerLayouts
             ))
 
-            yOffset += height
+            yOffset += totalTrackHeight
         }
 
         var sectionLayouts: [PlaybackGridSectionLayout] = []
@@ -68,6 +97,24 @@ public final class PlaybackGridSceneBuilder {
             sectionLayouts: sectionLayouts,
             contentHeight: contentHeight
         )
+    }
+
+    private func automationLanePaths(for track: Track) -> [EffectPath] {
+        var seen = Set<EffectPath>()
+        var ordered: [EffectPath] = []
+        for lane in track.trackAutomationLanes {
+            if seen.insert(lane.targetPath).inserted {
+                ordered.append(lane.targetPath)
+            }
+        }
+        for container in track.containers {
+            for lane in container.automationLanes {
+                if seen.insert(lane.targetPath).inserted {
+                    ordered.append(lane.targetPath)
+                }
+            }
+        }
+        return ordered
     }
 }
 
