@@ -1,0 +1,129 @@
+Starting Ralph [containers-ui]: up to 20 iterations for PRD #131
+
+=== [containers-ui] Iteration 1 of 20 ===
+Done with Issue #132. Here's a summary:
+
+**Issue #132: Multi-Track Audio Sync — Sample-Accurate Playback** - CLOSED
+
+**Problem**: When multiple tracks started at the same bar, sequential `player.play()` calls introduced small timing drift between tracks.
+
+**Fix** (`PlaybackScheduler.swift`):
+- Added `syncStartHostTime()` — computes a host time 1ms in the future using Mach timebase
+- `scheduleContainer()` now accepts `deferPlay: Bool` parameter and returns the player node, allowing callers to batch-start
+- `play()` collects all scheduled player nodes in phase 1, then batch-starts them with `player.play(at: sharedStartTime)` in phase 2
+- `playChangedTracks()` uses the same batch-start pattern
+- Single-container callers (`scheduleLinkedContainer`, `triggerStart`) still use immediate play (default `deferPlay: false`)
+
+**Tests** (`PlaybackSchedulerTests.swift`):
+- Phase cancellation test: normal + inverted sine = silence (proves sample alignment)
+- Constructive interference: 2 identical tracks produce ~2x amplitude
+- 48kHz variant: same phase cancellation at different sample rate
+- All tests use `enableManualRenderingMode(.offline)` — no audio hardware needed
+
+=== [containers-ui] Iteration 2 of 20 ===
+## Iteration 1 Complete
+
+**Issue #137: Timeline Scroll & Zoom Performance Optimization** — Done.
+
+### Summary of changes across 10 files (+208/-37 lines):
+
+| Change | Impact |
+|--------|--------|
+| `drawingGroup()` on ContainerView ZStack | Flattens 10+ overlay layers into single Metal-backed bitmap |
+| `drawingGroup()` on automation sub-lanes | Efficient compositing during scroll |
+| `Equatable` + `.equatable()` on GridOverlayView | Grid skips redraws when inputs unchanged |
+| `Equatable` + `.equatable()` on AutomationSubLaneView | Automation lanes skip unnecessary re-evaluation |
+| Removed GeometryReader from WaveformView | Eliminates redundant layout pass (Canvas already provides size) |
+| Throttled zoom (60fps cap) | Prevents cascading relayout from rapid scroll wheel events |
+| 10 new tests | Covers GridOverlayView/AutomationSubLaneView memoization + throttle behavior |
+
+All 1126 tests pass. Build clean.
+
+=== [containers-ui] Iteration 3 of 20 ===
+Issue #136 is complete. Here's a summary of what was implemented:
+
+**Issue #136: Marquee Selection for Automation Breakpoints**
+
+### Changes across 3 files:
+
+1. **AutomationSubLaneView.swift** — Major rewrite of both `AutomationSubLaneContainerView` and `TrackAutomationSubLaneView`:
+   - Multi-select state: `selectedBreakpointIDs: Set<ID<AutomationBreakpoint>>` replaces single `selectedBreakpointID`
+   - **Marquee selection**: Click-drag on empty space draws a rectangle; all breakpoints within are selected
+   - **Cmd+Click**: Toggles individual breakpoints in/out of selection
+   - **Group drag**: Dragging a selected breakpoint when multiple are selected moves all selected breakpoints in the lane, preserving relative positions and values
+   - **Visual distinction**: Selected breakpoints render as filled circles with white ring; unselected render as outlined circles only
+   - Marquee rectangle drawn in Canvas with accent color fill + border
+
+2. **TrackLaneView.swift** — Pass-through updates for the new property types and callback signature
+
+3. **TimelineView.swift** — Selection state management:
+   - **Delete key** removes all selected breakpoints
+   - **Cmd+A** selects all breakpoints in expanded automation lanes
+   - Selection state held as `@State` `Set<ID<AutomationBreakpoint>>`
+
+=== [containers-ui] Iteration 4 of 20 ===
+Done with iteration 1. Here's a summary of what was completed:
+
+**Issue #138: Piano Roll Inline Tools — Right-Align Next to Inspector**
+
+The inline piano roll toolbar was positioned at the far right of the total scrollable content width (thousands of pixels), making buttons inaccessible without scrolling to the end.
+
+**Changes (3 files, +35/-8 lines):**
+
+1. **`MainContentView.swift`** — Added `.coordinateSpace(name: "timelineHScroll")` to the timeline's horizontal ScrollView, creating a named reference frame for scroll position tracking.
+
+2. **`InlinePianoRollView.swift`** — Core fix:
+   - Added `viewportWidth` parameter and `toolbarScrollOffset` state
+   - Created `ToolbarScrollOffsetKey` PreferenceKey that reads the toolbar's `minX` in the scroll view's coordinate space
+   - Toolbar HStack is now `.frame(width: viewportWidth)` with `.offset(x: toolbarScrollOffset)` to stay pinned to the visible viewport
+   - `.frame(maxWidth: .infinity, alignment: .leading)` ensures the toolbar doesn't shrink the parent VStack
+   - Opaque background on the toolbar for clean visual separation
+   - 0.5pt threshold on offset updates to prevent sub-pixel re-renders
+
+3. **`TimelineView.swift`** — Passes `viewModel.viewportWidth` to the InlinePianoRollView.
+
+All 1116 tests pass, build succeeds.
+
+=== [containers-ui] Iteration 5 of 20 ===
+Issue #139 is complete. Here's a summary of what was implemented:
+
+**Issue #139: Container Overlap with Auto-Crossfade and Manual Adjustment**
+
+**Files changed (9):**
+- **New:** `Sources/LoopsCore/Models/Crossfade.swift` — `Crossfade` model and `CrossfadeCurveType` enum with linear, equalPower, and sCurve types
+- `Sources/LoopsCore/Models/FadeSettings.swift` — Added `equalPower` case to `CurveType` using `sin(t * π/2)` 
+- `Sources/LoopsCore/Models/Track.swift` — Added `crossfades: [Crossfade]` with backward-compatible decoding
+- `Sources/LoopsApp/ViewModels/ProjectViewModel.swift` — Removed overlap blocking from move/resize/trim; auto-creates/removes crossfades; syncs container fades with crossfade settings
+- `Sources/LoopsApp/Views/Timeline/TrackLaneView.swift` — X-pattern crossfade overlay with `CrossfadeXShape`
+- `Sources/LoopsApp/Views/Timeline/ContainerView.swift` — Crossfade curve type context menu
+- `Sources/LoopsApp/Views/Timeline/TimelineView.swift` — Wired crossfade callback
+- `Sources/LoopsApp/Views/Inspector/ContainerInspector.swift` — Added "Equal Power" display name
+- `Tests/LoopsAppTests/ProjectViewModelTests.swift` — Updated overlap tests to verify crossfade creation
+
+**Key design decisions:**
+- Crossfade duration is derived from container overlap (no separate duration property)
+- Crossfade gains are applied via existing enter/exit fade infrastructure — no audio engine changes needed
+- Equal-power crossfade uses `cos(t*π/2)` / `sin(t*π/2)` for complementary gain curves
+
+=== [containers-ui] Iteration 6 of 20 ===
+Issue #140 is complete. Here's a summary of what was done:
+
+## Completed: Issue #140 — Multi-Select Containers
+
+**7 files changed, 258 insertions, 45 deletions**
+
+### Key changes:
+
+1. **SelectionState.swift** — Added multi-select helpers: `isContainerSelected()`, `effectiveSelectedContainerIDs`, `selectContainer()`, `toggleContainerInMultiSelection()`, `selectContainerRange()`, and `lastSelectedContainerID` for Shift+Click anchoring.
+
+2. **ContainerView.swift** — Fixed `isSelected` to check both `selectedContainerID` and `selectedContainerIDs`. Added `onGroupMove` callback. Updated context menu to show batch labels ("Delete 3 Containers") when multi-selected. Modifier flags passed through `onSelect`.
+
+3. **TrackLaneView.swift** — Updated `onContainerSelect` signature to include `NSEvent.ModifierFlags`. Added `onGroupMove` pass-through.
+
+4. **TimelineView.swift** — Wired Cmd+Click (toggle), Shift+Click (range), plain click (single select). Added `deleteSelectedContainers()`, `moveSelectedContainers()`, `splitSelectedContainers()`, `duplicateSelectedContainers()`. Empty track lane click deselects all.
+
+5. **ProjectViewModel.swift** — Added `moveContainers(ids:barDelta:tracks:)` with pre-validation against non-moving containers. Updated `removeContainer` to clean up `selectedContainerIDs`. Enhanced `selectAllContainers()` to prefer focused track.
+
+6. **MainContentView.swift** — Updated `handleDuplicate()` to work with multi-selection.
+
+=== [containers-ui] Iteration 7 of 20 ===

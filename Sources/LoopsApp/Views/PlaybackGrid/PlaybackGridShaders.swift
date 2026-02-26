@@ -100,6 +100,9 @@ fragment float4 pg_rect_fragment(RectVertexOut in [[stage_in]]) {
 struct LineVertexOut {
     float4 position [[position]];
     float4 color;
+    float2 localPos;
+    float halfWidth;
+    float lineLength;
 };
 
 vertex LineVertexOut pg_line_vertex(
@@ -120,15 +123,31 @@ vertex LineVertexOut pg_line_vertex(
         inst.end   + norm * halfW,
         inst.end   - norm * halfW
     };
+    float2 localPositions[4] = {
+        float2(0.0, halfW),
+        float2(0.0, -halfW),
+        float2(len, halfW),
+        float2(len, -halfW)
+    };
 
     LineVertexOut out;
     out.position = uniforms.projectionMatrix * float4(positions[vertexID], 0, 1);
     out.color = inst.color;
+    out.localPos = localPositions[vertexID];
+    out.halfWidth = max(halfW, 0.5);
+    out.lineLength = max(len, 0.001);
     return out;
 }
 
 fragment float4 pg_line_fragment(LineVertexOut in [[stage_in]]) {
-    return in.color;
+    float sideDist = abs(in.localPos.y) - max(in.halfWidth - 0.5, 0.0);
+    float capDist = max(-in.localPos.x, in.localPos.x - in.lineLength);
+    float edgeDist = max(sideDist, capDist);
+    float aa = max(fwidth(edgeDist), 0.35);
+    float alpha = 1.0 - smoothstep(0.0, aa, edgeDist);
+    float4 color = in.color;
+    color.a *= alpha;
+    return color;
 }
 
 struct WaveformVertexOut {

@@ -1,0 +1,73 @@
+Starting Ralph [automation]: up to 20 iterations for PRD #131
+
+=== [automation] Iteration 1 of 20 ===
+Done. Issue **#134 — Automation Snapping to Grid Resolution** is complete.
+
+**Summary of changes:**
+
+1. **`AutomationOverlayView.swift`** — Added two new static methods to `AutomationCoordinateMapping`:
+   - `snappedPosition(_:snapResolution:timeSignature:)` — snaps 0-based bar offset using `SnapResolution.snap()`
+   - `snappedValue(_:parameterMin:parameterMax:parameterUnit:)` — snaps normalized 0–1 values based on parameter metadata (dB → 0.5 steps, % → 1% steps, pan → integer, generic → 5% of range)
+
+2. **`AutomationSubLaneView.swift`** — Both container-level and track-level automation views now:
+   - Accept `snapResolution`, `timeSignature`, `gridMode` parameters
+   - Apply snap to click-to-add, drag-to-move, and tooltip display
+   - Cmd key inverts snap behavior (matching existing timeline pattern)
+   - Render `GridOverlayView` at 50% opacity for visual grid reference
+
+3. **`TrackLaneView.swift`** — Added `automationSnapResolution`, `automationTimeSignature`, `automationGridMode` properties and threads them to `AutomationSubLaneView`
+
+4. **`TimelineView.swift`** — Passes snap state from `TimelineViewModel` when constructing `TrackLaneView`
+
+5. **Tests** — 12 new unit tests covering position snap (quarter/eighth/whole/sixteenth, 4/4 and 3/4 time signatures, negative clamping) and value snap (dB, %, pan, generic, no metadata, clamping)
+
+=== [automation] Iteration 2 of 20 ===
+Issue #135 is complete. Here's a summary of what was implemented:
+
+**Issue #135: Automation Toolbar with Shaping Tools (Line, Curve, LFO)**
+
+### New files:
+- `Sources/LoopsCore/Models/AutomationShapeGenerator.swift` — `AutomationTool` enum (8 tools) + `AutomationShapeGenerator` with math for all shape types
+- `Sources/LoopsApp/Views/Timeline/AutomationToolbarView.swift` — Toolbar view (unused standalone, toolbar is inline in TrackLaneView)
+
+### Modified files:
+- **`TimelineViewModel`** — Added `selectedAutomationTool`, `automationToolbarHeight` (26pt), updated `trackHeight` to include toolbar
+- **`ProjectViewModel`** — Added `replaceAutomationBreakpoints` and `replaceTrackAutomationBreakpoints` with undo support
+- **`AutomationSubLaneView`** — Added shape tool props, drag-to-draw gesture with live dashed preview, conditional pointer/shape mode switching
+- **`TrackLaneView`** — Added automation toolbar row above sub-lanes, new callbacks and props for tool state
+- **`TimelineView`** — Wired tool selection, grid spacing, and replace callbacks through to TrackLaneView
+- **3 test files** — Updated height assertions to account for new toolbar height
+
+### Key behaviors:
+- **Pointer tool** (default): Existing behavior — click to add, drag to move breakpoints
+- **Shape tools**: Drag from start to end to draw shape; live dashed preview while dragging; on release, replaces existing breakpoints in the range with shape-generated ones
+- **Periodic tools** (sine/triangle/square): Period = grid spacing, 8 breakpoints per cycle for smooth curves
+- All shape operations support undo via `registerUndo`
+
+=== [automation] Iteration 3 of 20 ===
+The linter changes look consistent with what I implemented — no issues there. The iteration is complete.
+
+**Summary: Issue #136 — Marquee Selection for Automation Breakpoints**
+
+All acceptance criteria met:
+- Marquee selection via click-drag on empty space
+- Group drag of selected breakpoints
+- Delete key removes all selected
+- Cmd+Click toggles individual selection
+- Cmd+A selects all in active lane
+- Distinct visual for selected (accent color + ring) vs unselected
+- Multi-select state (`Set<ID<AutomationBreakpoint>>`) replaces single-select
+
+Build passes, all 1116 tests pass, committed as `8a2c85e`.
+
+=== [automation] Iteration 4 of 20 ===
+The two remaining open issues referencing #131 are:
+- **#142** (Glue/Consolidate) — tagged `Worktree: containers-ui`
+- **#143** (Shadow Overlay) — tagged `Worktree: containers-ui`
+
+Both belong to the `containers-ui` worktree cluster, not the `automation` cluster I'm working in. The automation sub-PRD file (`prd-daw-polish-automation.md`) and progress file (`progress-automation.txt`) don't exist — the existing `progress.txt` shows 19 iterations completing all automation and performance issues through #130.
+
+All automation-cluster issues from PRD #131 have been completed.
+
+<promise>COMPLETE</promise>
+=== [automation] COMPLETE after 4 iterations ===

@@ -31,6 +31,7 @@ public final class PlaybackGridNSView: NSView {
     private var midiRangeScrollAccumulator: CGFloat = 0
     private var hoveredPick: GridPickObject = .none
     private var cachedMIDINoteLabels: [TimelineTextOverlayLayer.MIDINoteLabelLayout] = []
+    private var lastSuppressedAutomationLanes: Set<PlaybackGridAutomationSuppression> = []
 
     public var waveformPeaksProvider: ((_ container: Container) -> [Float]?)? {
         didSet { sceneBuilder.waveformPeaksProvider = waveformPeaksProvider }
@@ -507,6 +508,7 @@ public final class PlaybackGridNSView: NSView {
             snapshot: snapshot,
             modifiers: event.modifierFlags
         )
+        needsDisplay = true
     }
 
     public override func scrollWheel(with event: NSEvent) {
@@ -608,6 +610,13 @@ public final class PlaybackGridNSView: NSView {
         }
         PlaybackGridPerfLogger.end("grid.updateLayer.semaphoreWait.ms", waitStart)
         let midiOverlays = interactionController.activeMIDINoteOverlays
+        let automationOverlays = interactionController.activeAutomationBreakpointOverlays
+        let automationShapeOverlays = interactionController.activeAutomationShapeOverlays
+        let suppressedAutomationLanes = interactionController.activeAutomationSuppressedLanes
+        if suppressedAutomationLanes != lastSuppressedAutomationLanes {
+            lastSuppressedAutomationLanes = suppressedAutomationLanes
+            needsBufferRebuild = true
+        }
 
         if needsBufferRebuild {
             PlaybackGridPerfLogger.bump("grid.updateLayer.bufferRebuild")
@@ -617,7 +626,8 @@ public final class PlaybackGridNSView: NSView {
                 snapshot: snapshot,
                 canvasSize: bounds.size,
                 visibleRect: visible,
-                focusedPick: hoveredPick
+                focusedPick: hoveredPick,
+                suppressedAutomationLanes: suppressedAutomationLanes
             )
             PlaybackGridPerfLogger.end("grid.updateLayer.buildBuffers.ms", rebuildStart)
             needsBufferRebuild = false
@@ -629,6 +639,20 @@ public final class PlaybackGridNSView: NSView {
             midiOverlays: midiOverlays
         )
         PlaybackGridPerfLogger.end("grid.updateLayer.midiOverlayBuffer.ms", overlayBufferStart)
+        let automationOverlayStart = PlaybackGridPerfLogger.begin()
+        renderer.buildAutomationOverlayBuffer(
+            scene: scene,
+            snapshot: snapshot,
+            overlays: automationOverlays
+        )
+        PlaybackGridPerfLogger.end("grid.updateLayer.automationOverlayBuffer.ms", automationOverlayStart)
+        let automationShapeOverlayStart = PlaybackGridPerfLogger.begin()
+        renderer.buildAutomationShapeOverlayBuffer(
+            scene: scene,
+            snapshot: snapshot,
+            overlays: automationShapeOverlays
+        )
+        PlaybackGridPerfLogger.end("grid.updateLayer.automationShapeOverlayBuffer.ms", automationShapeOverlayStart)
 
         if Self.debugLogsEnabled {
             let now = CACurrentMediaTime()

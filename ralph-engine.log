@@ -1,0 +1,167 @@
+Starting Ralph [engine-transport]: up to 20 iterations for PRD #131
+
+=== [engine-transport] Iteration 1 of 20 ===
+Done with issue #132. Here's a summary:
+
+## Completed: Issue #132 — Multi-Track Audio Sync — Sample-Accurate Playback
+
+### Problem
+When multiple tracks with the same audio started at the same bar, they could play out of sync because each `playerNode.play()` was called sequentially at slightly different wall-clock times.
+
+### Changes
+
+**`PlaybackScheduler.swift`** (+40 lines):
+- Added `computeSharedPlayTime()` — computes a single `AVAudioTime` with a host-time anchor (10ms headroom) for all player nodes. Returns nil in offline/manual rendering mode where sync is inherent.
+- Modified `scheduleContainer()` to accept a `sharedPlayTime` parameter — calls `player.play(at: sharedPlayTime)` instead of `player.play()`
+- Updated `play()` and `playChangedTracks()` to compute the shared time before the scheduling loop and pass it to all containers
+
+**`PlaybackSchedulerTests.swift`** (+216 lines):
+- `makeIdenticalMultiTrackFixture()` — creates N tracks sharing the same 440Hz sine wave audio file
+- `renderToSamples()` — renders audio offline and captures mono samples
+- Phase cancellation test (2 tracks): verifies 2-track output is exactly 2x single-track output
+- Phase cancellation test (4 tracks): same verification at 4x
+- Offline mode test: verifies `isInManualRenderingMode` is true for manual rendering engines
+
+### Quality Gates
+- `swift build`: passes
+- `swift test`: 1117/1119 pass (2 pre-existing failures in "Bypassed effects" test, unrelated)
+
+=== [engine-transport] Iteration 2 of 20 ===
+Issue #133 (Return-to-Start Transport Behavior) is complete. Here's a summary:
+
+**Changes made:**
+1. **TransportManager.stop()** — Fixed the core behavior: when `returnToStartEnabled` is false, the playhead now stays at its current position instead of snapping to bar 1. When enabled, the double-stop pattern works correctly (first stop → play-start position, second stop → bar 1).
+
+2. **TransportViewModel.stop()** — Perform mode now explicitly moves playhead to bar 1 after stopping, since the disabled flag no longer implies "go to bar 1".
+
+3. **Debug prints** — Removed all `[PERF]`, `[PLAY]`, and `[REC]` debug print statements from TransportViewModel (18 print calls total).
+
+4. **Tests** — Added 2 new tests (seek-during-playback preserves start position), updated 4 existing tests to match the new semantics. All 1118 tests pass.
+
+**Already implemented (verified):**
+- UserDefaults persistence for return-to-start toggle
+- Visual toggle state in ToolbarView (accent color when on, secondary when off, descriptive help text)
+
+=== [engine-transport] Iteration 3 of 20 ===
+Issue #136 is complete. Here's a summary of what was implemented:
+
+**Issue #136: Marquee Selection for Automation Breakpoints**
+
+### Changes across 5 files:
+
+1. **SelectionState.swift** — Added `selectedBreakpointIDs: Set<ID<AutomationBreakpoint>>` for multi-select, cleared in `deselectAll()`
+
+2. **ProjectViewModel.swift** — Added 3 batch methods:
+   - `batchUpdateAutomationBreakpoints` (container-level, single undo group)
+   - `batchUpdateTrackAutomationBreakpoints` (track-level, single undo group)
+   - `deleteBreakpoints(ids:)` (cross-track batch delete, single undo group)
+
+3. **AutomationSubLaneView.swift** — Major rewrite of both container and track automation views:
+   - Marquee selection: click-drag on empty space draws selection rectangle, breakpoints within are selected
+   - Cmd+Click: toggles individual breakpoints in/out of selection
+   - Visual: selected = filled accent color + white ring; unselected = outlined with translucent fill
+   - Group drag: dragging a selected breakpoint moves all selected, preserving relative positions/values
+   - Cmd+Marquee: adds to existing selection
+
+4. **TrackLaneView.swift** — Updated API: `selectedBreakpointID` → `selectedBreakpointIDs`, added group move callbacks
+
+5. **TimelineView.swift** — Replaced local `@State` with `selectionState.selectedBreakpointIDs`, added Cmd+A (select all in expanded lanes), batch Delete key handler
+
+All 1116 tests pass, build succeeds.
+
+=== [engine-transport] Iteration 4 of 20 ===
+**Iteration 1 complete — Issue #138 closed.**
+
+**Summary of changes:**
+- **Problem**: The inline piano roll toolbar controls (snap resolution, zoom, open/close buttons) were positioned at the far-right edge of the total scrollable timeline width, making them inaccessible without scrolling.
+- **Solution**: Added a `HorizontalScrollObserver` (NSViewRepresentable) that walks up the AppKit view hierarchy to find the enclosing horizontal `NSScrollView` and observes both `boundsDidChangeNotification` and `frameDidChangeNotification` on its clip view. The toolbar is then constrained to the viewport width and offset by the scroll position, keeping it pinned to the visible area at all times.
+- **Files changed**: `Sources/LoopsApp/Views/MIDI/InlinePianoRollView.swift`
+- **Quality gates**: Build passes, all 1116 tests pass.
+
+=== [engine-transport] Iteration 5 of 20 ===
+Issue #139 is complete. Here's a summary of what was implemented:
+
+## Issue #139: Container Overlap with Auto-Crossfade — Complete
+
+### Files changed (9 files, +346/-47 lines):
+
+**New file:**
+- `Sources/LoopsCore/Models/Crossfade.swift` — New model with `leadingContainerID`, `trailingContainerID`, and `curveType`
+
+**Model changes:**
+- `FadeSettings.swift` — Added `equalPower` curve type (`sin(t * π/2)`)
+- `Track.swift` — Added `crossfades: [Crossfade]` array with Codable backward compatibility
+- `ContainerInspector.swift` — Added `equalPower` display name
+
+**Logic changes:**
+- `ProjectViewModel.swift` — Move/resize/trim now allow overlaps and auto-manage crossfades via `updateCrossfades()`; added `setCrossfadeCurveType()` and `crossfadeDuration()` helper
+- `PlaybackScheduler.swift` — Added `applyCrossfadeFades()` to inject crossfade gain envelopes during audio scheduling
+
+**UI changes:**
+- `TrackLaneView.swift` — Added `CrossfadeOverlayView` (X-pattern curves) and `CrossfadeXShape`, with context menu for curve type selection
+- `TimelineView.swift` — Wired crossfade curve type callback
+
+**Tests:**
+- Updated 2 existing overlap tests to verify crossfade creation
+- Added 4 new tests (creation, removal, curve type change, duration computation)
+- All **1120 tests pass**
+
+=== [engine-transport] Iteration 6 of 20 ===
+Issue #140 is complete. Here's a summary of what was implemented:
+
+**Issue #140: Multi-Select Containers (Cmd+Click, Shift+Click, Group Operations)**
+
+### Changes across 6 files (+262 / -40 lines):
+
+**SelectionState.swift** — Added `lastSelectedContainerID` (shift-click anchor), `isContainerSelected()` helper, and `effectiveSelectedContainerIDs` computed property that unifies single and multi-selection state.
+
+**ContainerView.swift** — Updated `isSelected` to use `isContainerSelected()` so multi-selected containers show the blue accent border. Changed `onSelect` callback to pass `NSEvent.ModifierFlags`. Added multi-select context menu with batch operations (delete/duplicate/copy/split N containers). Added `multiSelectCount` to Equatable comparison.
+
+**TrackLaneView.swift** — Propagated modifier flags through `onContainerSelect` callback and new batch operation callbacks.
+
+**TimelineView.swift** — Implemented `handleContainerSelect()` with Cmd+Click toggle, Shift+Click range selection (same track, ordered by startBar), and plain click. Updated `deleteSelectedContainer()` to handle all effective selections. Added `duplicateSelectedContainers()`, `copySelectedContainers()`, `splitSelectedContainers()`. Empty space click deselects all. Group move: computes bar delta from dragged container and calls `moveContainers`.
+
+**ProjectViewModel.swift** — Added `moveContainers(ids:barDelta:)` for group move with Set-based overlap exclusion. Added `hasOverlap(excluding: Set<ID<Container>>)` overload.
+
+**ViewMemoizationTests.swift** — Updated closure signatures for new `onSelect` and `onContainerSelect` parameter types.
+
+=== [engine-transport] Iteration 7 of 20 ===
+Issue #141 is complete. Here's a summary of what was implemented:
+
+**Issue #141: Multi-Select Tracks (Cmd+Click, Batch Solo/Mute/Delete)** — Closed
+
+### Changes across 4 files (+380 lines, -8 lines):
+
+**SelectionState.swift** — Core multi-selection state:
+- Added `selectedTrackIDs: Set<ID<Track>>` with mutual exclusion (clears single selection & container selection)
+- `isTrackSelected()` — checks both single and multi-select
+- `allSelectedTrackIDs` — computed union of single + multi
+- `toggleTrackInMultiSelect()` — Cmd+Click logic, promotes single→multi, demotes multi→single when 1 left
+- `selectTrackRange()` — Shift+Click logic, selects contiguous range from anchor
+
+**ProjectViewModel.swift** — Batch operations:
+- `toggleMuteSelectedTracks()` — if any unmuted, mutes all; else unmutes all
+- `toggleSoloSelectedTracks()` — same logic for solo
+- `removeSelectedTracks()` — removes all non-master tracks in set
+- `moveSelectedTracks()` — reorders group via IndexSet
+- Added `selectedTrackIDs` delegation property
+
+**MainContentView.swift** — UI integration:
+- Updated click gesture: Cmd+Click toggles multi-select, Shift+Click range-selects
+- `isTrackSelected` now uses `selectionState.isTrackSelected()` (covers both modes)
+- Context menu shows batch mute/solo/delete when multiple tracks selected
+- `TrackDropDelegate` updated to drag all selected tracks as a group
+- Added `isDraggingTrack()` helper for drag opacity on multi-selected tracks
+
+**SelectionStateTests.swift** — 12 new tests covering all multi-select state management (1127 total tests passing).
+
+=== [engine-transport] Iteration 8 of 20 ===
+The disk is completely full. I can't write any files until disk space is freed. Could you free up some disk space? You could try:
+
+1. Empty the trash (`Cmd+Shift+Delete` in Finder)
+2. Clear build caches: `rm -rf ~/Library/Developer/Xcode/DerivedData/*`
+3. Clear other temp files: `rm -rf /tmp/claude-*`
+
+Once there's enough space I can continue implementing the glue/consolidate feature.
+
+=== [engine-transport] Iteration 9 of 20 ===

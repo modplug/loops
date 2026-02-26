@@ -31,6 +31,14 @@ public final class PlaybackGridRenderer {
     private var midiCount = 0
     private var midiOverlayBuffer: MTLBuffer?
     private var midiOverlayCount = 0
+    private var automationOverlayLineBuffer: MTLBuffer?
+    private var automationOverlayLineCount = 0
+    private var automationOverlayRectBuffer: MTLBuffer?
+    private var automationOverlayRectCount = 0
+    private var automationShapeOverlayLineBuffer: MTLBuffer?
+    private var automationShapeOverlayLineCount = 0
+    private var automationShapeOverlayRectBuffer: MTLBuffer?
+    private var automationShapeOverlayRectCount = 0
 
     private var fadeVertexBuffer: MTLBuffer?
     private var fadeVertexCount = 0
@@ -102,7 +110,8 @@ public final class PlaybackGridRenderer {
         snapshot: PlaybackGridSnapshot,
         canvasSize: CGSize,
         visibleRect: CGRect,
-        focusedPick: GridPickObject = .none
+        focusedPick: GridPickObject = .none,
+        suppressedAutomationLanes: Set<PlaybackGridAutomationSuppression> = []
     ) {
         let ppb = Float(snapshot.pixelsPerBar)
         let visibleMinX = Float(visibleRect.minX)
@@ -424,9 +433,11 @@ public final class PlaybackGridRenderer {
                     buildAutomationOverlay(
                         lanes: cl.container.automationLanes,
                         container: cl.container,
+                        trackID: trackLayout.track.id,
                         rect: rect,
                         focusedPick: focusedPick,
                         selectedAutomationTool: snapshot.selectedAutomationTool,
+                        suppressedAutomationLanes: suppressedAutomationLanes,
                         lines: &lines,
                         rects: &rects
                     )
@@ -440,6 +451,7 @@ public final class PlaybackGridRenderer {
                     visibleMinX: visibleMinX,
                     visibleMaxX: visibleMaxX,
                     focusedPick: focusedPick,
+                    suppressedAutomationLanes: suppressedAutomationLanes,
                     lines: &lines,
                     rects: &rects
                 )
@@ -607,6 +619,234 @@ public final class PlaybackGridRenderer {
         midiOverlayCount = output.count
     }
 
+    public func buildAutomationOverlayBuffer(
+        scene: PlaybackGridScene,
+        snapshot: PlaybackGridSnapshot,
+        overlays: [PlaybackGridAutomationBreakpointOverlay]
+    ) {
+        guard !overlays.isEmpty else {
+            automationOverlayLineBuffer = nil
+            automationOverlayLineCount = 0
+            automationOverlayRectBuffer = nil
+            automationOverlayRectCount = 0
+            return
+        }
+
+        var trackLayoutsByID: [ID<Track>: PlaybackGridTrackLayout] = [:]
+        var containerLayoutsByID: [ID<Container>: PlaybackGridContainerLayout] = [:]
+        for trackLayout in scene.trackLayouts {
+            trackLayoutsByID[trackLayout.track.id] = trackLayout
+            for containerLayout in trackLayout.containers {
+                containerLayoutsByID[containerLayout.container.id] = containerLayout
+            }
+        }
+
+        var lines: [PlaybackGridLineInstance] = []
+        var rects: [PlaybackGridRectInstance] = []
+        lines.reserveCapacity(overlays.count * 12)
+        rects.reserveCapacity(overlays.count * 6)
+        let ppb = Float(snapshot.pixelsPerBar)
+
+        for overlay in overlays {
+            guard overlay.laneRect.width > 0.5, overlay.laneRect.height > 0.5 else { continue }
+
+            let laneColor: SIMD4<Float>
+            if let containerID = overlay.containerID,
+               let containerLayout = containerLayoutsByID[containerID],
+               let laneIndex = containerLayout.container.automationLanes.firstIndex(where: { $0.id == overlay.laneID }) {
+                laneColor = automationLaneColor(at: laneIndex)
+            } else if let trackLayout = trackLayoutsByID[overlay.trackID],
+                      let laneIndex = trackLayout.track.trackAutomationLanes.firstIndex(where: { $0.id == overlay.laneID }) {
+                laneColor = automationLaneColor(at: laneIndex)
+            } else {
+                laneColor = SIMD4(1.0, 0.30, 0.34, 0.92)
+            }
+
+            let point: SIMD2<Float>?
+            var curvePoints: [SIMD2<Float>] = []
+            if let containerID = overlay.containerID {
+                guard let containerLayout = containerLayoutsByID[containerID],
+                      let lane = containerLayout.container.automationLanes.first(where: { $0.id == overlay.laneID }) else {
+                    continue
+                }
+                let barsToPixels = containerLayout.rect.width / max(CGFloat(containerLayout.container.lengthBars), 0.0001)
+                var breakpoints = lane.breakpoints
+                if let index = breakpoints.firstIndex(where: { $0.id == overlay.breakpoint.id }) {
+                    breakpoints[index] = overlay.breakpoint
+                } else {
+                    breakpoints.append(overlay.breakpoint)
+                }
+                breakpoints.sort { $0.position < $1.position }
+                curvePoints.reserveCapacity(breakpoints.count)
+                for bp in breakpoints {
+                    let x = Float(containerLayout.rect.minX + (CGFloat(bp.position) * barsToPixels))
+                    let y = Float(overlay.laneRect.maxY - (CGFloat(bp.value) * overlay.laneRect.height))
+                    curvePoints.append(SIMD2(x, y))
+                }
+                let x = Float(containerLayout.rect.minX + (CGFloat(overlay.breakpoint.position) * barsToPixels))
+                let y = Float(overlay.laneRect.maxY - (CGFloat(overlay.breakpoint.value) * overlay.laneRect.height))
+                point = SIMD2(x, y)
+            } else {
+                guard let trackLayout = trackLayoutsByID[overlay.trackID],
+                      let lane = trackLayout.track.trackAutomationLanes.first(where: { $0.id == overlay.laneID }) else {
+                    continue
+                }
+                var breakpoints = lane.breakpoints
+                if let index = breakpoints.firstIndex(where: { $0.id == overlay.breakpoint.id }) {
+                    breakpoints[index] = overlay.breakpoint
+                } else {
+                    breakpoints.append(overlay.breakpoint)
+                }
+                breakpoints.sort { $0.position < $1.position }
+                curvePoints.reserveCapacity(breakpoints.count)
+                for bp in breakpoints {
+                    let x = Float(bp.position) * ppb
+                    let y = Float(overlay.laneRect.maxY - (CGFloat(bp.value) * overlay.laneRect.height))
+                    curvePoints.append(SIMD2(x, y))
+                }
+                let x = Float(overlay.breakpoint.position) * ppb
+                let y = Float(overlay.laneRect.maxY - (CGFloat(overlay.breakpoint.value) * overlay.laneRect.height))
+                point = SIMD2(x, y)
+            }
+
+            guard let handlePoint = point else { continue }
+
+            if curvePoints.count >= 2 {
+                let alpha: Float = overlay.isGhost ? 0.28 : min(laneColor.w + 0.06, 1.0)
+                appendAutomationCurve(
+                    points: curvePoints,
+                    color: SIMD4(laneColor.x, laneColor.y, laneColor.z, alpha),
+                    lines: &lines
+                )
+            }
+
+            let size: Float = overlay.isGhost ? 7.0 : 8.8
+            let radius = size * 0.5
+            if overlay.isGhost {
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(handlePoint.x - radius, handlePoint.y - radius),
+                    size: SIMD2(size, size),
+                    color: SIMD4(laneColor.x, laneColor.y, laneColor.z, 0.35),
+                    cornerRadius: radius
+                ))
+            } else {
+                let glowSize = size + 4.4
+                let glowRadius = glowSize * 0.5
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(handlePoint.x - glowRadius, handlePoint.y - glowRadius),
+                    size: SIMD2(glowSize, glowSize),
+                    color: SIMD4(laneColor.x, laneColor.y, laneColor.z, 0.42),
+                    cornerRadius: glowRadius
+                ))
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(handlePoint.x - radius, handlePoint.y - radius),
+                    size: SIMD2(size, size),
+                    color: SIMD4(min(laneColor.x * 0.65 + 0.35, 1.0), min(laneColor.y * 0.65 + 0.35, 1.0), min(laneColor.z * 0.65 + 0.35, 1.0), 0.98),
+                    cornerRadius: radius
+                ))
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(handlePoint.x - radius + 1.2, handlePoint.y - radius + 1.2),
+                    size: SIMD2(max(size - 2.4, 1), max(size - 2.4, 1)),
+                    color: SIMD4(0.08, 0.10, 0.13, 0.26),
+                    cornerRadius: max(radius - 1.2, 0)
+                ))
+            }
+        }
+
+        automationOverlayLineBuffer = lines.isEmpty ? nil : makeBuffer(lines)
+        automationOverlayLineCount = lines.count
+        automationOverlayRectBuffer = rects.isEmpty ? nil : makeBuffer(rects)
+        automationOverlayRectCount = rects.count
+    }
+
+    public func buildAutomationShapeOverlayBuffer(
+        scene: PlaybackGridScene,
+        snapshot: PlaybackGridSnapshot,
+        overlays: [PlaybackGridAutomationShapeOverlay]
+    ) {
+        guard !overlays.isEmpty else {
+            automationShapeOverlayLineBuffer = nil
+            automationShapeOverlayLineCount = 0
+            automationShapeOverlayRectBuffer = nil
+            automationShapeOverlayRectCount = 0
+            return
+        }
+
+        var trackLayoutsByID: [ID<Track>: PlaybackGridTrackLayout] = [:]
+        var containerLayoutsByID: [ID<Container>: PlaybackGridContainerLayout] = [:]
+        for trackLayout in scene.trackLayouts {
+            trackLayoutsByID[trackLayout.track.id] = trackLayout
+            for containerLayout in trackLayout.containers {
+                containerLayoutsByID[containerLayout.container.id] = containerLayout
+            }
+        }
+
+        var lines: [PlaybackGridLineInstance] = []
+        var rects: [PlaybackGridRectInstance] = []
+        lines.reserveCapacity(overlays.count * 16)
+        rects.reserveCapacity(overlays.count * 8)
+        let ppb = Float(snapshot.pixelsPerBar)
+
+        for overlay in overlays {
+            guard overlay.laneRect.width > 0.5, overlay.laneRect.height > 0.5 else { continue }
+            guard !overlay.breakpoints.isEmpty else { continue }
+
+            let laneColor: SIMD4<Float>
+            if let containerID = overlay.containerID,
+               let containerLayout = containerLayoutsByID[containerID],
+               let laneIndex = containerLayout.container.automationLanes.firstIndex(where: { $0.id == overlay.laneID }) {
+                laneColor = automationLaneColor(at: laneIndex)
+            } else if let trackLayout = trackLayoutsByID[overlay.trackID],
+                      let laneIndex = trackLayout.track.trackAutomationLanes.firstIndex(where: { $0.id == overlay.laneID }) {
+                laneColor = automationLaneColor(at: laneIndex)
+            } else {
+                laneColor = SIMD4(1.0, 0.30, 0.34, 0.92)
+            }
+
+            let sorted = overlay.breakpoints.sorted { $0.position < $1.position }
+            var points: [SIMD2<Float>] = []
+            points.reserveCapacity(sorted.count)
+            if let containerID = overlay.containerID,
+               let containerLayout = containerLayoutsByID[containerID] {
+                let barsToPixels = containerLayout.rect.width / max(CGFloat(containerLayout.container.lengthBars), 0.0001)
+                for bp in sorted {
+                    let x = Float(containerLayout.rect.minX + (CGFloat(bp.position) * barsToPixels))
+                    let y = Float(overlay.laneRect.maxY - (CGFloat(bp.value) * overlay.laneRect.height))
+                    points.append(SIMD2(x, y))
+                }
+            } else {
+                for bp in sorted {
+                    let x = Float(bp.position) * ppb
+                    let y = Float(overlay.laneRect.maxY - (CGFloat(bp.value) * overlay.laneRect.height))
+                    points.append(SIMD2(x, y))
+                }
+            }
+
+            let alpha: Float = overlay.isGhost ? 0.30 : 1.0
+            appendAutomationCurve(
+                points: points,
+                color: SIMD4(laneColor.x, laneColor.y, laneColor.z, laneColor.w * alpha),
+                lines: &lines
+            )
+
+            if let last = points.last {
+                let size: Float = overlay.isGhost ? 7.0 : 8.6
+                let radius = size * 0.5
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(last.x - radius, last.y - radius),
+                    size: SIMD2(size, size),
+                    color: SIMD4(laneColor.x, laneColor.y, laneColor.z, overlay.isGhost ? 0.32 : 0.96),
+                    cornerRadius: radius
+                ))
+            }
+        }
+
+        automationShapeOverlayLineBuffer = lines.isEmpty ? nil : makeBuffer(lines)
+        automationShapeOverlayLineCount = lines.count
+        automationShapeOverlayRectBuffer = rects.isEmpty ? nil : makeBuffer(rects)
+        automationShapeOverlayRectCount = rects.count
+    }
+
     public func encode(
         into encoder: MTLRenderCommandEncoder,
         visibleRect: CGRect,
@@ -717,6 +957,62 @@ public final class PlaybackGridRenderer {
                 indexBuffer: quadIndexBuffer,
                 indexBufferOffset: 0,
                 instanceCount: borderCount
+            )
+        }
+
+        if automationOverlayLineCount > 0, let buf = automationOverlayLineBuffer {
+            encoder.setRenderPipelineState(linePipeline)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<PlaybackGridUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: 6,
+                indexType: .uint16,
+                indexBuffer: quadIndexBuffer,
+                indexBufferOffset: 0,
+                instanceCount: automationOverlayLineCount
+            )
+        }
+
+        if automationOverlayRectCount > 0, let buf = automationOverlayRectBuffer {
+            encoder.setRenderPipelineState(rectPipeline)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<PlaybackGridUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: 6,
+                indexType: .uint16,
+                indexBuffer: quadIndexBuffer,
+                indexBufferOffset: 0,
+                instanceCount: automationOverlayRectCount
+            )
+        }
+
+        if automationShapeOverlayLineCount > 0, let buf = automationShapeOverlayLineBuffer {
+            encoder.setRenderPipelineState(linePipeline)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<PlaybackGridUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: 6,
+                indexType: .uint16,
+                indexBuffer: quadIndexBuffer,
+                indexBufferOffset: 0,
+                instanceCount: automationShapeOverlayLineCount
+            )
+        }
+
+        if automationShapeOverlayRectCount > 0, let buf = automationShapeOverlayRectBuffer {
+            encoder.setRenderPipelineState(rectPipeline)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<PlaybackGridUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: 6,
+                indexType: .uint16,
+                indexBuffer: quadIndexBuffer,
+                indexBufferOffset: 0,
+                instanceCount: automationShapeOverlayRectCount
             )
         }
     }
@@ -1075,9 +1371,11 @@ public final class PlaybackGridRenderer {
     private func buildAutomationOverlay(
         lanes: [AutomationLane],
         container: Container,
+        trackID: ID<Track>,
         rect: CGRect,
         focusedPick: GridPickObject,
         selectedAutomationTool: AutomationTool,
+        suppressedAutomationLanes: Set<PlaybackGridAutomationSuppression>,
         lines: inout [PlaybackGridLineInstance],
         rects: inout [PlaybackGridRectInstance]
     ) {
@@ -1119,14 +1417,17 @@ public final class PlaybackGridRenderer {
         }
 
         for (laneIndex, lane) in lanes.enumerated() {
+            let isSuppressed = suppressedAutomationLanes.contains(
+                .init(trackID: trackID, containerID: container.id, laneID: lane.id)
+            )
+            let lineAlphaMul: Float = isSuppressed ? 0.20 : 1.0
+            let handleAlphaMul: Float = isSuppressed ? 0.35 : 1.0
             let laneRect = CGRect(
                 x: bandRect.minX,
                 y: bandRect.minY + CGFloat(laneIndex) * laneHeight,
                 width: bandRect.width,
                 height: laneHeight
             )
-            let yMin = Float(laneRect.minY) + 2
-            let yMax = Float(laneRect.maxY) - 2
             let color = laneColors[laneIndex % laneColors.count]
             let sorted = lane.breakpoints.sorted { $0.position < $1.position }
             for guide in automationGuides(for: lane) {
@@ -1135,7 +1436,7 @@ public final class PlaybackGridRenderer {
                 lines.append(PlaybackGridLineInstance(
                     start: SIMD2(Float(laneRect.minX), y),
                     end: SIMD2(Float(laneRect.maxX), y),
-                    color: SIMD4(color.x, color.y, color.z, guide.alpha),
+                    color: SIMD4(color.x, color.y, color.z, guide.alpha * lineAlphaMul),
                     width: 1
                 ))
             }
@@ -1164,14 +1465,14 @@ public final class PlaybackGridRenderer {
                 rects.append(PlaybackGridRectInstance(
                     origin: SIMD2(x - shadowRadius, y - shadowRadius + 1.3),
                     size: SIMD2(shadowSize, shadowSize),
-                    color: SIMD4(0, 0, 0, isFocused ? 0.30 : 0.16),
+                    color: SIMD4(0, 0, 0, (isFocused ? 0.30 : 0.16) * handleAlphaMul),
                     cornerRadius: shadowRadius
                 ))
                 if isFocused {
                     rects.append(PlaybackGridRectInstance(
                         origin: SIMD2(x - ringRadius, y - ringRadius),
                         size: SIMD2(ringSize, ringSize),
-                        color: SIMD4(color.x, color.y, color.z, 0.52),
+                        color: SIMD4(color.x, color.y, color.z, 0.52 * handleAlphaMul),
                         cornerRadius: ringRadius
                     ))
                     rects.append(PlaybackGridRectInstance(
@@ -1188,10 +1489,10 @@ public final class PlaybackGridRenderer {
                         min(color.x * 0.62 + 0.38, 1.0),
                         min(color.y * 0.62 + 0.38, 1.0),
                         min(color.z * 0.62 + 0.38, 1.0),
-                        1.0
+                        1.0 * handleAlphaMul
                     )
                 } else {
-                    handleColor = color
+                    handleColor = SIMD4(color.x, color.y, color.z, color.w * handleAlphaMul)
                 }
 
                 points.append(SIMD2(x, y))
@@ -1204,20 +1505,23 @@ public final class PlaybackGridRenderer {
                 rects.append(PlaybackGridRectInstance(
                     origin: SIMD2(x - handleRadius + 1, y - handleRadius + 1),
                     size: SIMD2(max(handleSize - 2, 1), max(handleSize - 2, 1)),
-                    color: SIMD4(0, 0, 0, 0.18),
+                    color: SIMD4(0, 0, 0, 0.18 * handleAlphaMul),
                     cornerRadius: max(handleRadius - 1, 0)
                 ))
                 rects.append(PlaybackGridRectInstance(
                     origin: SIMD2(x - handleRadius * 0.45, y - handleRadius * 0.45),
                     size: SIMD2(highlightSize, highlightSize),
-                    color: SIMD4(1, 1, 1, isFocused ? 0.80 : 0.48),
+                    color: SIMD4(1, 1, 1, (isFocused ? 0.80 : 0.48) * handleAlphaMul),
                     cornerRadius: highlightRadius
                 ))
             }
 
             if points.count >= 2 {
-                let smoothed = smoothedAutomationPoints(points: points, yMin: yMin, yMax: yMax)
-                appendAutomationCurve(points: smoothed, color: color, lines: &lines)
+                appendAutomationCurve(
+                    points: points,
+                    color: SIMD4(color.x, color.y, color.z, color.w * lineAlphaMul),
+                    lines: &lines
+                )
             }
         }
     }
@@ -1228,6 +1532,7 @@ public final class PlaybackGridRenderer {
         visibleMinX: Float,
         visibleMaxX: Float,
         focusedPick: GridPickObject,
+        suppressedAutomationLanes: Set<PlaybackGridAutomationSuppression>,
         lines: inout [PlaybackGridLineInstance],
         rects: inout [PlaybackGridRectInstance]
     ) {
@@ -1244,6 +1549,11 @@ public final class PlaybackGridRenderer {
             let laneColor = automationLaneColor(at: laneIndex)
 
             if let trackLane = trackLayout.track.trackAutomationLanes.first(where: { $0.targetPath == laneLayout.targetPath }) {
+                let isSuppressed = suppressedAutomationLanes.contains(
+                    .init(trackID: trackLayout.track.id, containerID: nil, laneID: trackLane.id)
+                )
+                let lineAlphaMul: Float = isSuppressed ? 0.20 : 1.0
+                let handleAlphaMul: Float = isSuppressed ? 0.35 : 1.0
                 let sorted = trackLane.breakpoints.sorted { $0.position < $1.position }
                 var points: [SIMD2<Float>] = []
                 points.reserveCapacity(sorted.count)
@@ -1252,7 +1562,7 @@ public final class PlaybackGridRenderer {
                     lines.append(PlaybackGridLineInstance(
                         start: SIMD2(Float(max(visibleMinX, Float(laneLayout.rect.minX))), y),
                         end: SIMD2(Float(min(visibleMaxX, Float(laneLayout.rect.maxX))), y),
-                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, guide.alpha * 0.9),
+                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, guide.alpha * 0.9 * lineAlphaMul),
                         width: 1
                     ))
                 }
@@ -1271,24 +1581,33 @@ public final class PlaybackGridRenderer {
                     rects.append(PlaybackGridRectInstance(
                         origin: SIMD2(x - (handleSize * 0.5), y - (handleSize * 0.5)),
                         size: SIMD2(handleSize, handleSize),
-                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, isFocused ? 0.98 : 0.84),
+                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, (isFocused ? 0.98 : 0.84) * handleAlphaMul),
                         cornerRadius: handleSize * 0.25
                     ))
                 }
-                appendAutomationCurve(points: points, color: laneColor, lines: &lines)
+                appendAutomationCurve(
+                    points: points,
+                    color: SIMD4(laneColor.x, laneColor.y, laneColor.z, laneColor.w * lineAlphaMul),
+                    lines: &lines
+                )
             }
 
             for containerLayout in trackLayout.containers {
                 guard let lane = containerLayout.container.automationLanes.first(where: { $0.targetPath == laneLayout.targetPath }) else {
                     continue
                 }
+                let isSuppressed = suppressedAutomationLanes.contains(
+                    .init(trackID: trackLayout.track.id, containerID: containerLayout.container.id, laneID: lane.id)
+                )
+                let lineAlphaMul: Float = isSuppressed ? 0.20 : 1.0
+                let handleAlphaMul: Float = isSuppressed ? 0.35 : 1.0
                 if Float(containerLayout.rect.maxX) < visibleMinX || Float(containerLayout.rect.minX) > visibleMaxX {
                     continue
                 }
                 rects.append(PlaybackGridRectInstance(
                     origin: SIMD2(Float(containerLayout.rect.minX), Float(laneLayout.rect.minY)),
                     size: SIMD2(Float(containerLayout.rect.width), Float(laneLayout.rect.height)),
-                    color: SIMD4(laneColor.x, laneColor.y, laneColor.z, 0.045)
+                    color: SIMD4(laneColor.x, laneColor.y, laneColor.z, 0.045 * lineAlphaMul)
                 ))
 
                 let barsToPixels = containerLayout.rect.width / max(CGFloat(containerLayout.container.lengthBars), 0.0001)
@@ -1300,7 +1619,7 @@ public final class PlaybackGridRenderer {
                     lines.append(PlaybackGridLineInstance(
                         start: SIMD2(Float(containerLayout.rect.minX), y),
                         end: SIMD2(Float(containerLayout.rect.maxX), y),
-                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, guide.alpha * 0.86),
+                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, guide.alpha * 0.86 * lineAlphaMul),
                         width: 1
                     ))
                 }
@@ -1318,11 +1637,15 @@ public final class PlaybackGridRenderer {
                     rects.append(PlaybackGridRectInstance(
                         origin: SIMD2(x - (handleSize * 0.5), y - (handleSize * 0.5)),
                         size: SIMD2(handleSize, handleSize),
-                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, isFocused ? 0.98 : 0.84),
+                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, (isFocused ? 0.98 : 0.84) * handleAlphaMul),
                         cornerRadius: handleSize * 0.25
                     ))
                 }
-                appendAutomationCurve(points: points, color: laneColor, lines: &lines)
+                appendAutomationCurve(
+                    points: points,
+                    color: SIMD4(laneColor.x, laneColor.y, laneColor.z, laneColor.w * lineAlphaMul),
+                    lines: &lines
+                )
             }
         }
     }
@@ -1333,30 +1656,41 @@ public final class PlaybackGridRenderer {
         lines: inout [PlaybackGridLineInstance]
     ) {
         guard points.count >= 2 else { return }
-        let shadowColor = SIMD4<Float>(0, 0, 0, 0.22)
-        let glowColor = SIMD4<Float>(color.x, color.y, color.z, 0.24)
-        let mainColor = SIMD4<Float>(color.x, color.y, color.z, min(color.w + 0.08, 1.0))
+        let shadowColor = SIMD4<Float>(0, 0, 0, 0.18 * color.w)
+        let glowColor = SIMD4<Float>(color.x, color.y, color.z, 0.16 * color.w)
+        let mainColor = SIMD4<Float>(color.x, color.y, color.z, min(color.w + 0.06, 1.0))
+
+        @inline(__always)
+        func snapped(_ p: SIMD2<Float>) -> SIMD2<Float> {
+            SIMD2(
+                (round(p.x * 2) * 0.5),
+                (round(p.y * 2) * 0.5)
+            )
+        }
 
         for i in 0..<(points.count - 1) {
-            let start = points[i]
-            let end = points[i + 1]
+            let start = snapped(points[i])
+            let end = snapped(points[i + 1])
+            let dx = end.x - start.x
+            let dy = end.y - start.y
+            if (dx * dx) + (dy * dy) < 0.25 { continue }
             lines.append(PlaybackGridLineInstance(
                 start: SIMD2(start.x, start.y + 1.2),
                 end: SIMD2(end.x, end.y + 1.2),
                 color: shadowColor,
-                width: 3.0
+                width: 2.4
             ))
             lines.append(PlaybackGridLineInstance(
                 start: start,
                 end: end,
                 color: glowColor,
-                width: 3.2
+                width: 2.6
             ))
             lines.append(PlaybackGridLineInstance(
                 start: start,
                 end: end,
                 color: mainColor,
-                width: 1.8
+                width: 1.55
             ))
         }
     }
@@ -1446,53 +1780,6 @@ public final class PlaybackGridRenderer {
         return buckets
             .values
             .sorted { $0.normalized < $1.normalized }
-    }
-
-    private func smoothedAutomationPoints(
-        points: [SIMD2<Float>],
-        yMin: Float,
-        yMax: Float
-    ) -> [SIMD2<Float>] {
-        guard points.count >= 3 else { return points }
-        var smoothed: [SIMD2<Float>] = [points[0]]
-        smoothed.reserveCapacity(points.count * 10)
-
-        for i in 0..<(points.count - 1) {
-            let p0 = i > 0 ? points[i - 1] : points[i]
-            let p1 = points[i]
-            let p2 = points[i + 1]
-            let p3 = (i + 2) < points.count ? points[i + 2] : points[i + 1]
-            let dx = p2.x - p1.x
-            let dy = p2.y - p1.y
-            let distance = sqrt((dx * dx) + (dy * dy))
-            let samples = min(max(Int(distance / 18), 6), 28)
-
-            for sample in 1...samples {
-                let t = Float(sample) / Float(samples)
-                var point = catmullRomPoint(p0: p0, p1: p1, p2: p2, p3: p3, t: t)
-                point.x = min(max(point.x, p1.x), p2.x)
-                point.y = min(max(point.y, yMin), yMax)
-                smoothed.append(point)
-            }
-        }
-
-        return smoothed
-    }
-
-    private func catmullRomPoint(
-        p0: SIMD2<Float>,
-        p1: SIMD2<Float>,
-        p2: SIMD2<Float>,
-        p3: SIMD2<Float>,
-        t: Float
-    ) -> SIMD2<Float> {
-        let t2 = t * t
-        let t3 = t2 * t
-        let a = 2 * p1
-        let b = -p0 + p2
-        let c = (2 * p0) - (5 * p1) + (4 * p2) - p3
-        let d = -p0 + (3 * p1) - (3 * p2) + p3
-        return 0.5 * (a + (b * t) + (c * t2) + (d * t3))
     }
 
     private func buildCrossfade(

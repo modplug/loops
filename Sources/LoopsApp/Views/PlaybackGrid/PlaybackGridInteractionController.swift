@@ -3,6 +3,18 @@ import QuartzCore
 import LoopsCore
 
 public final class PlaybackGridInteractionController {
+    private struct ContainerAutomationPendingKey: Hashable {
+        let containerID: ID<Container>
+        let laneID: ID<AutomationLane>
+        let breakpointID: ID<AutomationBreakpoint>
+    }
+
+    private struct TrackAutomationPendingKey: Hashable {
+        let trackID: ID<Track>
+        let laneID: ID<AutomationLane>
+        let breakpointID: ID<AutomationBreakpoint>
+    }
+
     public private(set) var state: PlaybackGridInteractionState = .idle
     private static let debugLogsEnabled: Bool = {
         ProcessInfo.processInfo.environment["LOOPS_GRID_DEBUG"] == "1"
@@ -13,14 +25,69 @@ public final class PlaybackGridInteractionController {
     private var lastLogTimeByCategory: [String: CFTimeInterval] = [:]
     private var previewedMIDIPitch: UInt8?
     private var pendingMIDINoteUpdates: [ID<MIDINoteEvent>: (containerID: ID<Container>, note: MIDINoteEvent)] = [:]
+    private var pendingAutomationBreakpointUpdates: [ContainerAutomationPendingKey: AutomationBreakpoint] = [:]
+    private var pendingTrackAutomationBreakpointUpdates: [TrackAutomationPendingKey: AutomationBreakpoint] = [:]
+    private var automationDidEmitDuringDrag: Set<ContainerAutomationPendingKey> = []
+    private var trackAutomationDidEmitDuringDrag: Set<TrackAutomationPendingKey> = []
     private var midiGhostOverlay: PlaybackGridMIDINoteOverlay?
     private var midiLiveOverlay: PlaybackGridMIDINoteOverlay?
+    private var automationGhostOverlay: PlaybackGridAutomationBreakpointOverlay?
+    private var automationLiveOverlay: PlaybackGridAutomationBreakpointOverlay?
+    private var automationShapeGhostOverlay: PlaybackGridAutomationShapeOverlay?
+    private var automationShapeLiveOverlay: PlaybackGridAutomationShapeOverlay?
 
     public var activeMIDINoteOverlays: [PlaybackGridMIDINoteOverlay] {
         var overlays: [PlaybackGridMIDINoteOverlay] = []
         if let ghost = midiGhostOverlay { overlays.append(ghost) }
         if let live = midiLiveOverlay { overlays.append(live) }
         return overlays
+    }
+
+    public var activeAutomationBreakpointOverlays: [PlaybackGridAutomationBreakpointOverlay] {
+        var overlays: [PlaybackGridAutomationBreakpointOverlay] = []
+        if let ghost = automationGhostOverlay { overlays.append(ghost) }
+        if let live = automationLiveOverlay { overlays.append(live) }
+        return overlays
+    }
+
+    public var activeAutomationShapeOverlays: [PlaybackGridAutomationShapeOverlay] {
+        var overlays: [PlaybackGridAutomationShapeOverlay] = []
+        if let ghost = automationShapeGhostOverlay { overlays.append(ghost) }
+        if let live = automationShapeLiveOverlay { overlays.append(live) }
+        return overlays
+    }
+
+    public var activeAutomationSuppressedLanes: Set<PlaybackGridAutomationSuppression> {
+        var suppressed: Set<PlaybackGridAutomationSuppression> = []
+        switch state {
+        case let .draggingAutomationBreakpoint(context):
+            suppressed.insert(.init(
+                trackID: context.trackID,
+                containerID: context.containerID,
+                laneID: context.laneID
+            ))
+        case let .draggingTrackAutomationBreakpoint(context):
+            suppressed.insert(.init(
+                trackID: context.trackID,
+                containerID: nil,
+                laneID: context.laneID
+            ))
+        case let .drawingAutomationShape(context):
+            suppressed.insert(.init(
+                trackID: context.trackID,
+                containerID: context.containerID,
+                laneID: context.laneID
+            ))
+        case let .drawingTrackAutomationShape(context):
+            suppressed.insert(.init(
+                trackID: context.trackID,
+                containerID: nil,
+                laneID: context.laneID
+            ))
+        default:
+            break
+        }
+        return suppressed
     }
 
     public init(sink: PlaybackGridCommandSink?) {
@@ -290,6 +357,18 @@ public final class PlaybackGridInteractionController {
                 }
 
                 sink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
+                let laneRect: CGRect
+                if let rect = containerRect(containerID: containerID, trackID: trackID, snapshot: snapshot) {
+                    laneRect = automationLaneRect(
+                        container: container,
+                        trackID: trackID,
+                        laneID: laneID,
+                        containerRect: rect,
+                        snapshot: snapshot
+                    )
+                } else {
+                    laneRect = .zero
+                }
                 state = .draggingAutomationBreakpoint(context: PlaybackGridAutomationBreakpointDragContext(
                     containerID: containerID,
                     trackID: trackID,
@@ -299,6 +378,29 @@ public final class PlaybackGridInteractionController {
                     originPosition: breakpoint.position,
                     originValue: breakpoint.value
                 ))
+                let pendingKey = ContainerAutomationPendingKey(
+                    containerID: containerID,
+                    laneID: laneID,
+                    breakpointID: breakpointID
+                )
+                automationDidEmitDuringDrag.remove(pendingKey)
+                pendingAutomationBreakpointUpdates[pendingKey] = breakpoint
+                automationGhostOverlay = PlaybackGridAutomationBreakpointOverlay(
+                    trackID: trackID,
+                    containerID: containerID,
+                    laneID: laneID,
+                    breakpoint: breakpoint,
+                    laneRect: laneRect,
+                    isGhost: true
+                )
+                automationLiveOverlay = PlaybackGridAutomationBreakpointOverlay(
+                    trackID: trackID,
+                    containerID: containerID,
+                    laneID: laneID,
+                    breakpoint: breakpoint,
+                    laneRect: laneRect,
+                    isGhost: false
+                )
                 log("automation drag begin container=\(containerID.rawValue) lane=\(laneID.rawValue) breakpoint=\(breakpointID.rawValue)")
             } else {
                 if event.modifierFlags.contains(.option) {
@@ -323,6 +425,34 @@ public final class PlaybackGridInteractionController {
                     originPosition: breakpoint.position,
                     originValue: breakpoint.value
                 ))
+                let laneRect = trackAutomationLaneRect(
+                    trackID: trackID,
+                    laneID: laneID,
+                    snapshot: snapshot
+                ) ?? .zero
+                let pendingKey = TrackAutomationPendingKey(
+                    trackID: trackID,
+                    laneID: laneID,
+                    breakpointID: breakpointID
+                )
+                trackAutomationDidEmitDuringDrag.remove(pendingKey)
+                pendingTrackAutomationBreakpointUpdates[pendingKey] = breakpoint
+                automationGhostOverlay = PlaybackGridAutomationBreakpointOverlay(
+                    trackID: trackID,
+                    containerID: nil,
+                    laneID: laneID,
+                    breakpoint: breakpoint,
+                    laneRect: laneRect,
+                    isGhost: true
+                )
+                automationLiveOverlay = PlaybackGridAutomationBreakpointOverlay(
+                    trackID: trackID,
+                    containerID: nil,
+                    laneID: laneID,
+                    breakpoint: breakpoint,
+                    laneRect: laneRect,
+                    isGhost: false
+                )
                 log("automation drag begin track=\(trackID.rawValue) lane=\(laneID.rawValue) breakpoint=\(breakpointID.rawValue)")
             }
 
@@ -348,6 +478,23 @@ public final class PlaybackGridInteractionController {
                     }
                     sink?.addAutomationBreakpoint(containerID, laneID: laneID, breakpoint: breakpoint)
                     log("automation add breakpoint container=\(containerID.rawValue) lane=\(laneID.rawValue) pos=\(format(breakpoint.position)) value=\(format(Double(breakpoint.value)))")
+                    let laneRect: CGRect
+                    if let (_, container) = containerAndTrack(
+                        containerID: containerID,
+                        trackID: trackID,
+                        in: snapshot.tracks
+                    ),
+                    let rect = containerRect(containerID: containerID, trackID: trackID, snapshot: snapshot) {
+                        laneRect = automationLaneRect(
+                            container: container,
+                            trackID: trackID,
+                            laneID: laneID,
+                            containerRect: rect,
+                            snapshot: snapshot
+                        )
+                    } else {
+                        laneRect = .zero
+                    }
                     state = .draggingAutomationBreakpoint(context: PlaybackGridAutomationBreakpointDragContext(
                         containerID: containerID,
                         trackID: trackID,
@@ -357,6 +504,29 @@ public final class PlaybackGridInteractionController {
                         originPosition: breakpoint.position,
                         originValue: breakpoint.value
                     ))
+                    let pendingKey = ContainerAutomationPendingKey(
+                        containerID: containerID,
+                        laneID: laneID,
+                        breakpointID: breakpoint.id
+                    )
+                    automationDidEmitDuringDrag.remove(pendingKey)
+                    pendingAutomationBreakpointUpdates[pendingKey] = breakpoint
+                    automationGhostOverlay = PlaybackGridAutomationBreakpointOverlay(
+                        trackID: trackID,
+                        containerID: containerID,
+                        laneID: laneID,
+                        breakpoint: breakpoint,
+                        laneRect: laneRect,
+                        isGhost: true
+                    )
+                    automationLiveOverlay = PlaybackGridAutomationBreakpointOverlay(
+                        trackID: trackID,
+                        containerID: containerID,
+                        laneID: laneID,
+                        breakpoint: breakpoint,
+                        laneRect: laneRect,
+                        isGhost: false
+                    )
                 } else {
                     state = .drawingAutomationShape(context: PlaybackGridAutomationShapeDrawContext(
                         containerID: containerID,
@@ -364,6 +534,38 @@ public final class PlaybackGridInteractionController {
                         laneID: laneID,
                         startPoint: point
                     ))
+                    if let (_, container) = containerAndTrack(
+                        containerID: containerID,
+                        trackID: trackID,
+                        in: snapshot.tracks
+                    ),
+                    let rect = containerRect(containerID: containerID, trackID: trackID, snapshot: snapshot),
+                    let lane = container.automationLanes.first(where: { $0.id == laneID }) {
+                        let laneRect = automationLaneRect(
+                            container: container,
+                            trackID: trackID,
+                            laneID: laneID,
+                            containerRect: rect,
+                            snapshot: snapshot
+                        )
+                        let sorted = lane.breakpoints.sorted { $0.position < $1.position }
+                        automationShapeGhostOverlay = PlaybackGridAutomationShapeOverlay(
+                            trackID: trackID,
+                            containerID: containerID,
+                            laneID: laneID,
+                            breakpoints: sorted,
+                            laneRect: laneRect,
+                            isGhost: true
+                        )
+                        automationShapeLiveOverlay = PlaybackGridAutomationShapeOverlay(
+                            trackID: trackID,
+                            containerID: containerID,
+                            laneID: laneID,
+                            breakpoints: sorted,
+                            laneRect: laneRect,
+                            isGhost: false
+                        )
+                    }
                     log("automation shape begin container=\(containerID.rawValue) lane=\(laneID.rawValue) tool=\(snapshot.selectedAutomationTool)")
                 }
             } else {
@@ -386,6 +588,34 @@ public final class PlaybackGridInteractionController {
                         originPosition: breakpoint.position,
                         originValue: breakpoint.value
                     ))
+                    let laneRect = trackAutomationLaneRect(
+                        trackID: trackID,
+                        laneID: laneID,
+                        snapshot: snapshot
+                    ) ?? .zero
+                    let pendingKey = TrackAutomationPendingKey(
+                        trackID: trackID,
+                        laneID: laneID,
+                        breakpointID: breakpoint.id
+                    )
+                    trackAutomationDidEmitDuringDrag.remove(pendingKey)
+                    pendingTrackAutomationBreakpointUpdates[pendingKey] = breakpoint
+                    automationGhostOverlay = PlaybackGridAutomationBreakpointOverlay(
+                        trackID: trackID,
+                        containerID: nil,
+                        laneID: laneID,
+                        breakpoint: breakpoint,
+                        laneRect: laneRect,
+                        isGhost: true
+                    )
+                    automationLiveOverlay = PlaybackGridAutomationBreakpointOverlay(
+                        trackID: trackID,
+                        containerID: nil,
+                        laneID: laneID,
+                        breakpoint: breakpoint,
+                        laneRect: laneRect,
+                        isGhost: false
+                    )
                     log("automation add breakpoint track=\(trackID.rawValue) lane=\(laneID.rawValue) pos=\(format(breakpoint.position)) value=\(format(Double(breakpoint.value)))")
                 } else {
                     state = .drawingTrackAutomationShape(context: PlaybackGridTrackAutomationShapeDrawContext(
@@ -393,6 +623,31 @@ public final class PlaybackGridInteractionController {
                         laneID: laneID,
                         startPoint: point
                     ))
+                    if let track = track(trackID: trackID, in: snapshot.tracks),
+                       let lane = track.trackAutomationLanes.first(where: { $0.id == laneID }),
+                       let laneRect = trackAutomationLaneRect(
+                           trackID: trackID,
+                           laneID: laneID,
+                           snapshot: snapshot
+                       ) {
+                        let sorted = lane.breakpoints.sorted { $0.position < $1.position }
+                        automationShapeGhostOverlay = PlaybackGridAutomationShapeOverlay(
+                            trackID: trackID,
+                            containerID: nil,
+                            laneID: laneID,
+                            breakpoints: sorted,
+                            laneRect: laneRect,
+                            isGhost: true
+                        )
+                        automationShapeLiveOverlay = PlaybackGridAutomationShapeOverlay(
+                            trackID: trackID,
+                            containerID: nil,
+                            laneID: laneID,
+                            breakpoints: sorted,
+                            laneRect: laneRect,
+                            isGhost: false
+                        )
+                    }
                     log("automation shape begin track=\(trackID.rawValue) lane=\(laneID.rawValue) tool=\(snapshot.selectedAutomationTool)")
                 }
             }
@@ -477,28 +732,34 @@ public final class PlaybackGridInteractionController {
             )
 
         case let .draggingAutomationBreakpoint(context):
-            handleAutomationBreakpointDrag(
+            return handleAutomationBreakpointDrag(
                 context: context,
                 point: point,
                 snapshot: snapshot,
                 modifiers: modifiers
             )
-            return false
 
         case let .draggingTrackAutomationBreakpoint(context):
-            handleTrackAutomationBreakpointDrag(
+            return handleTrackAutomationBreakpointDrag(
                 context: context,
                 point: point,
                 snapshot: snapshot,
                 modifiers: modifiers
             )
-            return false
 
-        case .drawingAutomationShape:
-            return false
+        case let .drawingAutomationShape(context):
+            return previewAutomationShape(
+                context: context,
+                endPoint: point,
+                snapshot: snapshot
+            )
 
-        case .drawingTrackAutomationShape:
-            return false
+        case let .drawingTrackAutomationShape(context):
+            return previewTrackAutomationShape(
+                context: context,
+                endPoint: point,
+                snapshot: snapshot
+            )
 
         case .selectingRange:
             return false
@@ -556,11 +817,25 @@ public final class PlaybackGridInteractionController {
             let clamped = min(max(proposed, 120), 640)
             sink?.setInlineMIDILaneHeight(trackID: context.trackID, height: clamped)
 
-        case .draggingAutomationBreakpoint:
+        case let .draggingAutomationBreakpoint(context):
+            _ = handleAutomationBreakpointDrag(
+                context: context,
+                point: point,
+                snapshot: snapshot,
+                modifiers: modifiers,
+                forceEmit: true
+            )
             log("automation drag end")
             break
 
-        case .draggingTrackAutomationBreakpoint:
+        case let .draggingTrackAutomationBreakpoint(context):
+            _ = handleTrackAutomationBreakpointDrag(
+                context: context,
+                point: point,
+                snapshot: snapshot,
+                modifiers: modifiers,
+                forceEmit: true
+            )
             log("automation track drag end")
             break
 
@@ -584,8 +859,16 @@ public final class PlaybackGridInteractionController {
         }
 
         pendingMIDINoteUpdates.removeAll(keepingCapacity: true)
+        pendingAutomationBreakpointUpdates.removeAll(keepingCapacity: true)
+        pendingTrackAutomationBreakpointUpdates.removeAll(keepingCapacity: true)
+        automationDidEmitDuringDrag.removeAll(keepingCapacity: true)
+        trackAutomationDidEmitDuringDrag.removeAll(keepingCapacity: true)
         midiGhostOverlay = nil
         midiLiveOverlay = nil
+        automationGhostOverlay = nil
+        automationLiveOverlay = nil
+        automationShapeGhostOverlay = nil
+        automationShapeLiveOverlay = nil
         state = .idle
     }
 
@@ -1398,12 +1681,54 @@ public final class PlaybackGridInteractionController {
         PlaybackGridPerfLogger.bump("interaction.midiEmit.sent")
     }
 
+    private func flushPendingAutomationBreakpointUpdate(
+        key: ContainerAutomationPendingKey,
+        originalBreakpoint: AutomationBreakpoint
+    ) {
+        PlaybackGridPerfLogger.bump("interaction.automationEmit.attempt")
+        guard let pending = pendingAutomationBreakpointUpdates[key] else {
+            PlaybackGridPerfLogger.bump("interaction.automationEmit.missingPending")
+            return
+        }
+        defer { pendingAutomationBreakpointUpdates.removeValue(forKey: key) }
+        if pending == originalBreakpoint {
+            PlaybackGridPerfLogger.bump("interaction.automationEmit.unchanged")
+            return
+        }
+        let sinkUpdateStart = PlaybackGridPerfLogger.begin()
+        sink?.updateAutomationBreakpoint(key.containerID, laneID: key.laneID, breakpoint: pending)
+        PlaybackGridPerfLogger.end("interaction.automationEmit.sinkUpdate.ms", sinkUpdateStart)
+        PlaybackGridPerfLogger.bump("interaction.automationEmit.sent")
+    }
+
+    private func flushPendingTrackAutomationBreakpointUpdate(
+        key: TrackAutomationPendingKey,
+        originalBreakpoint: AutomationBreakpoint
+    ) {
+        PlaybackGridPerfLogger.bump("interaction.automationEmit.attempt")
+        guard let pending = pendingTrackAutomationBreakpointUpdates[key] else {
+            PlaybackGridPerfLogger.bump("interaction.automationEmit.missingPending")
+            return
+        }
+        defer { pendingTrackAutomationBreakpointUpdates.removeValue(forKey: key) }
+        if pending == originalBreakpoint {
+            PlaybackGridPerfLogger.bump("interaction.automationEmit.unchanged")
+            return
+        }
+        let sinkUpdateStart = PlaybackGridPerfLogger.begin()
+        sink?.updateTrackAutomationBreakpoint(trackID: key.trackID, laneID: key.laneID, breakpoint: pending)
+        PlaybackGridPerfLogger.end("interaction.automationEmit.sinkUpdate.ms", sinkUpdateStart)
+        PlaybackGridPerfLogger.bump("interaction.automationEmit.sent")
+    }
+
     private func handleAutomationBreakpointDrag(
         context: PlaybackGridAutomationBreakpointDragContext,
         point: CGPoint,
         snapshot: PlaybackGridSnapshot,
-        modifiers: NSEvent.ModifierFlags
-    ) {
+        modifiers: NSEvent.ModifierFlags,
+        forceEmit: Bool = false
+    ) -> Bool {
+        let previousLive = automationLiveOverlay
         guard let (_, container) = containerAndTrack(
             containerID: context.containerID,
             trackID: context.trackID,
@@ -1415,7 +1740,7 @@ public final class PlaybackGridInteractionController {
             snapshot: snapshot
         ),
         let lane = container.automationLanes.first(where: { $0.id == context.laneID }) else {
-            return
+            return false
         }
         let existing = lane.breakpoints.first(where: { $0.id == context.breakpointID })
         let laneRect = automationLaneRect(
@@ -1451,15 +1776,65 @@ public final class PlaybackGridInteractionController {
             )
         updated.position = snappedOffset
         updated.value = value
-        sink?.updateAutomationBreakpoint(context.containerID, laneID: context.laneID, breakpoint: updated)
+
+        let pendingKey = ContainerAutomationPendingKey(
+            containerID: context.containerID,
+            laneID: context.laneID,
+            breakpointID: context.breakpointID
+        )
+        pendingAutomationBreakpointUpdates[pendingKey] = updated
+        if forceEmit {
+            flushPendingAutomationBreakpointUpdate(
+                key: pendingKey,
+                originalBreakpoint: AutomationBreakpoint(
+                    id: context.breakpointID,
+                    position: context.originPosition,
+                    value: context.originValue
+                )
+            )
+            automationDidEmitDuringDrag.remove(pendingKey)
+        } else {
+            let shouldEmitImmediately = modifiers.contains(.shift) || !automationDidEmitDuringDrag.contains(pendingKey)
+            if shouldEmitImmediately {
+                automationDidEmitDuringDrag.insert(pendingKey)
+                flushPendingAutomationBreakpointUpdate(
+                    key: pendingKey,
+                    originalBreakpoint: AutomationBreakpoint(
+                        id: context.breakpointID,
+                        position: context.originPosition,
+                        value: context.originValue
+                    )
+                )
+            } else {
+                PlaybackGridPerfLogger.bump("interaction.automationEmit.bufferedUntilMouseUp")
+            }
+        }
+        automationLiveOverlay = PlaybackGridAutomationBreakpointOverlay(
+            trackID: context.trackID,
+            containerID: context.containerID,
+            laneID: context.laneID,
+            breakpoint: updated,
+            laneRect: laneRect,
+            isGhost: false
+        )
+        let didChangeVisual = previousLive?.breakpoint != updated
+            || previousLive?.trackID != context.trackID
+            || previousLive?.containerID != context.containerID
+            || previousLive?.laneID != context.laneID
+        if !didChangeVisual {
+            PlaybackGridPerfLogger.bump("interaction.automationVisual.unchanged")
+        }
+        return didChangeVisual || forceEmit
     }
 
     private func handleTrackAutomationBreakpointDrag(
         context: PlaybackGridTrackAutomationBreakpointDragContext,
         point: CGPoint,
         snapshot: PlaybackGridSnapshot,
-        modifiers: NSEvent.ModifierFlags
-    ) {
+        modifiers: NSEvent.ModifierFlags,
+        forceEmit: Bool = false
+    ) -> Bool {
+        let previousLive = automationLiveOverlay
         guard let track = track(trackID: context.trackID, in: snapshot.tracks),
               let lane = track.trackAutomationLanes.first(where: { $0.id == context.laneID }),
               let laneRect = trackAutomationLaneRect(
@@ -1467,7 +1842,7 @@ public final class PlaybackGridInteractionController {
                 laneID: context.laneID,
                 snapshot: snapshot
               ) else {
-            return
+            return false
         }
         let existing = lane.breakpoints.first(where: { $0.id == context.breakpointID })
 
@@ -1496,7 +1871,54 @@ public final class PlaybackGridInteractionController {
             )
         updated.position = snappedPosition
         updated.value = value
-        sink?.updateTrackAutomationBreakpoint(trackID: context.trackID, laneID: context.laneID, breakpoint: updated)
+        let pendingKey = TrackAutomationPendingKey(
+            trackID: context.trackID,
+            laneID: context.laneID,
+            breakpointID: context.breakpointID
+        )
+        pendingTrackAutomationBreakpointUpdates[pendingKey] = updated
+        if forceEmit {
+            flushPendingTrackAutomationBreakpointUpdate(
+                key: pendingKey,
+                originalBreakpoint: AutomationBreakpoint(
+                    id: context.breakpointID,
+                    position: context.originPosition,
+                    value: context.originValue
+                )
+            )
+            trackAutomationDidEmitDuringDrag.remove(pendingKey)
+        } else {
+            let shouldEmitImmediately = modifiers.contains(.shift) || !trackAutomationDidEmitDuringDrag.contains(pendingKey)
+            if shouldEmitImmediately {
+                trackAutomationDidEmitDuringDrag.insert(pendingKey)
+                flushPendingTrackAutomationBreakpointUpdate(
+                    key: pendingKey,
+                    originalBreakpoint: AutomationBreakpoint(
+                        id: context.breakpointID,
+                        position: context.originPosition,
+                        value: context.originValue
+                    )
+                )
+            } else {
+                PlaybackGridPerfLogger.bump("interaction.automationEmit.bufferedUntilMouseUp")
+            }
+        }
+        automationLiveOverlay = PlaybackGridAutomationBreakpointOverlay(
+            trackID: context.trackID,
+            containerID: nil,
+            laneID: context.laneID,
+            breakpoint: updated,
+            laneRect: laneRect,
+            isGhost: false
+        )
+        let didChangeVisual = previousLive?.breakpoint != updated
+            || previousLive?.trackID != context.trackID
+            || previousLive?.containerID != nil
+            || previousLive?.laneID != context.laneID
+        if !didChangeVisual {
+            PlaybackGridPerfLogger.bump("interaction.automationVisual.unchanged")
+        }
+        return didChangeVisual || forceEmit
     }
 
     private func makeAutomationBreakpoint(
@@ -1553,16 +1975,27 @@ public final class PlaybackGridInteractionController {
         return AutomationBreakpoint(position: snappedPosition, value: value)
     }
 
-    private func applyAutomationShape(
+    private struct AutomationShapePreviewData {
+        var existing: [AutomationBreakpoint]
+        var minPosition: Double
+        var maxPosition: Double
+        var replacements: [AutomationBreakpoint]
+        var fallbackBreakpoint: AutomationBreakpoint?
+        var laneRect: CGRect
+    }
+
+    private func buildContainerAutomationShapeData(
         context: PlaybackGridAutomationShapeDrawContext,
         endPoint: CGPoint,
         snapshot: PlaybackGridSnapshot
-    ) {
+    ) -> AutomationShapePreviewData? {
         guard snapshot.selectedAutomationTool != .pointer,
               let (_, container) = containerAndTrack(containerID: context.containerID, trackID: context.trackID, in: snapshot.tracks),
+              let lane = container.automationLanes.first(where: { $0.id == context.laneID }),
               let rect = containerRect(containerID: context.containerID, trackID: context.trackID, snapshot: snapshot) else {
-            return
+            return nil
         }
+
         let laneRect = automationLaneRect(
             container: container,
             trackID: context.trackID,
@@ -1570,97 +2003,93 @@ public final class PlaybackGridInteractionController {
             containerRect: rect,
             snapshot: snapshot
         )
-
         let startOffset = max(0, min(container.lengthBars, Double((context.startPoint.x - rect.minX) / snapshot.pixelsPerBar)))
         let endOffset = max(0, min(container.lengthBars, Double((endPoint.x - rect.minX) / snapshot.pixelsPerBar)))
-        let startValue = Float(max(0, min(1, 1.0 - ((context.startPoint.y - laneRect.minY) / max(laneRect.height, 1)))))
-        let endValue = Float(max(0, min(1, 1.0 - ((endPoint.y - laneRect.minY) / max(laneRect.height, 1)))))
+        let minPosition = min(startOffset, endOffset)
+        let maxPosition = max(startOffset, endOffset)
+        let span = maxPosition - minPosition
+        let existing = lane.breakpoints.sorted { $0.position < $1.position }
 
-        let startPos = min(startOffset, endOffset)
-        let endPos = max(startOffset, endOffset)
-        let span = endPos - startPos
-        guard span > 0.001 else {
-            if let breakpoint = makeAutomationBreakpoint(
-                containerID: context.containerID,
-                trackID: context.trackID,
-                laneID: context.laneID,
-                point: endPoint,
-                snapshot: snapshot
-            ) {
-                sink?.addAutomationBreakpoint(context.containerID, laneID: context.laneID, breakpoint: breakpoint)
-            }
-            return
+        if span <= 0.001 {
+            return AutomationShapePreviewData(
+                existing: existing,
+                minPosition: minPosition,
+                maxPosition: maxPosition,
+                replacements: [],
+                fallbackBreakpoint: makeAutomationBreakpoint(
+                    containerID: context.containerID,
+                    trackID: context.trackID,
+                    laneID: context.laneID,
+                    point: endPoint,
+                    snapshot: snapshot
+                ),
+                laneRect: laneRect
+            )
         }
 
+        let startValue = Float(max(0, min(1, 1.0 - ((context.startPoint.y - laneRect.minY) / max(laneRect.height, 1)))))
+        let endValue = Float(max(0, min(1, 1.0 - ((endPoint.y - laneRect.minY) / max(laneRect.height, 1)))))
         let gridSpacingBars = effectiveSnapResolution(snapshot: snapshot).beatsPerUnit / Double(snapshot.timeSignature.beatsPerBar)
         let replacements = AutomationShapeGenerator.generate(
             tool: snapshot.selectedAutomationTool,
-            startPosition: startPos,
-            endPosition: endPos,
+            startPosition: minPosition,
+            endPosition: maxPosition,
             startValue: startOffset <= endOffset ? startValue : endValue,
             endValue: startOffset <= endOffset ? endValue : startValue,
             gridSpacing: max(gridSpacingBars, 1.0 / Double(snapshot.timeSignature.beatsPerBar * 32))
         )
-
-        if replacements.isEmpty {
-            if let breakpoint = makeAutomationBreakpoint(
-                containerID: context.containerID,
-                trackID: context.trackID,
-                laneID: context.laneID,
-                point: endPoint,
-                snapshot: snapshot
-            ) {
-                sink?.addAutomationBreakpoint(context.containerID, laneID: context.laneID, breakpoint: breakpoint)
-            }
-            return
-        }
-
-        sink?.replaceAutomationBreakpoints(
-            context.containerID,
-            laneID: context.laneID,
-            startPosition: startPos,
-            endPosition: endPos,
-            breakpoints: replacements
+        return AutomationShapePreviewData(
+            existing: existing,
+            minPosition: minPosition,
+            maxPosition: maxPosition,
+            replacements: replacements,
+            fallbackBreakpoint: nil,
+            laneRect: laneRect
         )
-        log("automation shape apply container=\(context.containerID.rawValue) lane=\(context.laneID.rawValue) tool=\(snapshot.selectedAutomationTool) points=\(replacements.count) range=\(format(startPos))-\(format(endPos))")
     }
 
-    private func applyTrackAutomationShape(
+    private func buildTrackAutomationShapeData(
         context: PlaybackGridTrackAutomationShapeDrawContext,
         endPoint: CGPoint,
         snapshot: PlaybackGridSnapshot
-    ) {
+    ) -> AutomationShapePreviewData? {
         guard snapshot.selectedAutomationTool != .pointer,
-              track(trackID: context.trackID, in: snapshot.tracks) != nil,
+              let track = track(trackID: context.trackID, in: snapshot.tracks),
+              let lane = track.trackAutomationLanes.first(where: { $0.id == context.laneID }),
               let laneRect = trackAutomationLaneRect(
                 trackID: context.trackID,
                 laneID: context.laneID,
                 snapshot: snapshot
               ) else {
-            return
+            return nil
         }
 
         let timelineBars = Double(snapshot.totalBars)
         let startPosition = max(0, min(timelineBars, Double((context.startPoint.x - laneRect.minX) / snapshot.pixelsPerBar)))
         let endPosition = max(0, min(timelineBars, Double((endPoint.x - laneRect.minX) / snapshot.pixelsPerBar)))
-        let startValue = Float(max(0, min(1, 1.0 - ((context.startPoint.y - laneRect.minY) / max(laneRect.height, 1)))))
-        let endValue = Float(max(0, min(1, 1.0 - ((endPoint.y - laneRect.minY) / max(laneRect.height, 1)))))
-
         let minPosition = min(startPosition, endPosition)
         let maxPosition = max(startPosition, endPosition)
         let span = maxPosition - minPosition
-        guard span > 0.001 else {
-            if let breakpoint = makeTrackAutomationBreakpoint(
-                trackID: context.trackID,
-                laneID: context.laneID,
-                point: endPoint,
-                snapshot: snapshot
-            ) {
-                sink?.addTrackAutomationBreakpoint(trackID: context.trackID, laneID: context.laneID, breakpoint: breakpoint)
-            }
-            return
+        let existing = lane.breakpoints.sorted { $0.position < $1.position }
+
+        if span <= 0.001 {
+            return AutomationShapePreviewData(
+                existing: existing,
+                minPosition: minPosition,
+                maxPosition: maxPosition,
+                replacements: [],
+                fallbackBreakpoint: makeTrackAutomationBreakpoint(
+                    trackID: context.trackID,
+                    laneID: context.laneID,
+                    point: endPoint,
+                    snapshot: snapshot
+                ),
+                laneRect: laneRect
+            )
         }
 
+        let startValue = Float(max(0, min(1, 1.0 - ((context.startPoint.y - laneRect.minY) / max(laneRect.height, 1)))))
+        let endValue = Float(max(0, min(1, 1.0 - ((endPoint.y - laneRect.minY) / max(laneRect.height, 1)))))
         let gridSpacingBars = effectiveSnapResolution(snapshot: snapshot).beatsPerUnit / Double(snapshot.timeSignature.beatsPerBar)
         let replacements = AutomationShapeGenerator.generate(
             tool: snapshot.selectedAutomationTool,
@@ -1670,27 +2099,179 @@ public final class PlaybackGridInteractionController {
             endValue: startPosition <= endPosition ? endValue : startValue,
             gridSpacing: max(gridSpacingBars, 1.0 / Double(snapshot.timeSignature.beatsPerBar * 32))
         )
+        return AutomationShapePreviewData(
+            existing: existing,
+            minPosition: minPosition,
+            maxPosition: maxPosition,
+            replacements: replacements,
+            fallbackBreakpoint: nil,
+            laneRect: laneRect
+        )
+    }
 
-        if replacements.isEmpty {
-            if let breakpoint = makeTrackAutomationBreakpoint(
-                trackID: context.trackID,
-                laneID: context.laneID,
-                point: endPoint,
-                snapshot: snapshot
-            ) {
-                sink?.addTrackAutomationBreakpoint(trackID: context.trackID, laneID: context.laneID, breakpoint: breakpoint)
-            }
+    private func mergeAutomationBreakpoints(
+        existing: [AutomationBreakpoint],
+        range: ClosedRange<Double>,
+        replacements: [AutomationBreakpoint]
+    ) -> [AutomationBreakpoint] {
+        var merged = existing.filter { !$0.position.isFinite || $0.position < range.lowerBound || $0.position > range.upperBound }
+        merged.append(contentsOf: replacements)
+        merged.sort { $0.position < $1.position }
+        return merged
+    }
+
+    private func previewAutomationShape(
+        context: PlaybackGridAutomationShapeDrawContext,
+        endPoint: CGPoint,
+        snapshot: PlaybackGridSnapshot
+    ) -> Bool {
+        guard let data = buildContainerAutomationShapeData(
+            context: context,
+            endPoint: endPoint,
+            snapshot: snapshot
+        ) else {
+            return false
+        }
+
+        var liveBreakpoints = data.existing
+        if !data.replacements.isEmpty {
+            liveBreakpoints = mergeAutomationBreakpoints(
+                existing: data.existing,
+                range: data.minPosition...data.maxPosition,
+                replacements: data.replacements
+            )
+        } else if let fallback = data.fallbackBreakpoint {
+            liveBreakpoints.append(fallback)
+            liveBreakpoints.sort { $0.position < $1.position }
+        }
+
+        let previousLive = automationShapeLiveOverlay
+        let ghost = PlaybackGridAutomationShapeOverlay(
+            trackID: context.trackID,
+            containerID: context.containerID,
+            laneID: context.laneID,
+            breakpoints: data.existing,
+            laneRect: data.laneRect,
+            isGhost: true
+        )
+        let live = PlaybackGridAutomationShapeOverlay(
+            trackID: context.trackID,
+            containerID: context.containerID,
+            laneID: context.laneID,
+            breakpoints: liveBreakpoints,
+            laneRect: data.laneRect,
+            isGhost: false
+        )
+        automationShapeGhostOverlay = ghost
+        automationShapeLiveOverlay = live
+        return previousLive != live
+    }
+
+    private func previewTrackAutomationShape(
+        context: PlaybackGridTrackAutomationShapeDrawContext,
+        endPoint: CGPoint,
+        snapshot: PlaybackGridSnapshot
+    ) -> Bool {
+        guard let data = buildTrackAutomationShapeData(
+            context: context,
+            endPoint: endPoint,
+            snapshot: snapshot
+        ) else {
+            return false
+        }
+
+        var liveBreakpoints = data.existing
+        if !data.replacements.isEmpty {
+            liveBreakpoints = mergeAutomationBreakpoints(
+                existing: data.existing,
+                range: data.minPosition...data.maxPosition,
+                replacements: data.replacements
+            )
+        } else if let fallback = data.fallbackBreakpoint {
+            liveBreakpoints.append(fallback)
+            liveBreakpoints.sort { $0.position < $1.position }
+        }
+
+        let previousLive = automationShapeLiveOverlay
+        let ghost = PlaybackGridAutomationShapeOverlay(
+            trackID: context.trackID,
+            containerID: nil,
+            laneID: context.laneID,
+            breakpoints: data.existing,
+            laneRect: data.laneRect,
+            isGhost: true
+        )
+        let live = PlaybackGridAutomationShapeOverlay(
+            trackID: context.trackID,
+            containerID: nil,
+            laneID: context.laneID,
+            breakpoints: liveBreakpoints,
+            laneRect: data.laneRect,
+            isGhost: false
+        )
+        automationShapeGhostOverlay = ghost
+        automationShapeLiveOverlay = live
+        return previousLive != live
+    }
+
+    private func applyAutomationShape(
+        context: PlaybackGridAutomationShapeDrawContext,
+        endPoint: CGPoint,
+        snapshot: PlaybackGridSnapshot
+    ) {
+        guard let data = buildContainerAutomationShapeData(
+            context: context,
+            endPoint: endPoint,
+            snapshot: snapshot
+        ) else {
             return
         }
 
+        if let fallback = data.fallbackBreakpoint {
+            sink?.addAutomationBreakpoint(context.containerID, laneID: context.laneID, breakpoint: fallback)
+            return
+        }
+        guard !data.replacements.isEmpty else {
+            return
+        }
+        sink?.replaceAutomationBreakpoints(
+            context.containerID,
+            laneID: context.laneID,
+            startPosition: data.minPosition,
+            endPosition: data.maxPosition,
+            breakpoints: data.replacements
+        )
+        log("automation shape apply container=\(context.containerID.rawValue) lane=\(context.laneID.rawValue) tool=\(snapshot.selectedAutomationTool) points=\(data.replacements.count) range=\(format(data.minPosition))-\(format(data.maxPosition))")
+    }
+
+    private func applyTrackAutomationShape(
+        context: PlaybackGridTrackAutomationShapeDrawContext,
+        endPoint: CGPoint,
+        snapshot: PlaybackGridSnapshot
+    ) {
+        guard let data = buildTrackAutomationShapeData(
+            context: context,
+            endPoint: endPoint,
+            snapshot: snapshot
+        ) else {
+            return
+        }
+
+        if let fallback = data.fallbackBreakpoint {
+            sink?.addTrackAutomationBreakpoint(trackID: context.trackID, laneID: context.laneID, breakpoint: fallback)
+            return
+        }
+        guard !data.replacements.isEmpty else {
+            return
+        }
         sink?.replaceTrackAutomationBreakpoints(
             trackID: context.trackID,
             laneID: context.laneID,
-            startPosition: minPosition,
-            endPosition: maxPosition,
-            breakpoints: replacements
+            startPosition: data.minPosition,
+            endPosition: data.maxPosition,
+            breakpoints: data.replacements
         )
-        log("automation shape apply track=\(context.trackID.rawValue) lane=\(context.laneID.rawValue) tool=\(snapshot.selectedAutomationTool) points=\(replacements.count) range=\(format(minPosition))-\(format(maxPosition))")
+        log("automation shape apply track=\(context.trackID.rawValue) lane=\(context.laneID.rawValue) tool=\(snapshot.selectedAutomationTool) points=\(data.replacements.count) range=\(format(data.minPosition))-\(format(data.maxPosition))")
     }
 
     private func createDoubleClickContainer(

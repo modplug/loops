@@ -164,6 +164,68 @@ public struct PlaybackGridMIDINoteOverlay: Equatable {
     }
 }
 
+public struct PlaybackGridAutomationBreakpointOverlay: Equatable {
+    public var trackID: ID<Track>
+    public var containerID: ID<Container>?
+    public var laneID: ID<AutomationLane>
+    public var breakpoint: AutomationBreakpoint
+    public var laneRect: CGRect
+    public var isGhost: Bool
+
+    public init(
+        trackID: ID<Track>,
+        containerID: ID<Container>?,
+        laneID: ID<AutomationLane>,
+        breakpoint: AutomationBreakpoint,
+        laneRect: CGRect,
+        isGhost: Bool
+    ) {
+        self.trackID = trackID
+        self.containerID = containerID
+        self.laneID = laneID
+        self.breakpoint = breakpoint
+        self.laneRect = laneRect
+        self.isGhost = isGhost
+    }
+}
+
+public struct PlaybackGridAutomationShapeOverlay: Equatable {
+    public var trackID: ID<Track>
+    public var containerID: ID<Container>?
+    public var laneID: ID<AutomationLane>
+    public var breakpoints: [AutomationBreakpoint]
+    public var laneRect: CGRect
+    public var isGhost: Bool
+
+    public init(
+        trackID: ID<Track>,
+        containerID: ID<Container>?,
+        laneID: ID<AutomationLane>,
+        breakpoints: [AutomationBreakpoint],
+        laneRect: CGRect,
+        isGhost: Bool
+    ) {
+        self.trackID = trackID
+        self.containerID = containerID
+        self.laneID = laneID
+        self.breakpoints = breakpoints
+        self.laneRect = laneRect
+        self.isGhost = isGhost
+    }
+}
+
+public struct PlaybackGridAutomationSuppression: Hashable {
+    public var trackID: ID<Track>
+    public var containerID: ID<Container>?
+    public var laneID: ID<AutomationLane>
+
+    public init(trackID: ID<Track>, containerID: ID<Container>?, laneID: ID<AutomationLane>) {
+        self.trackID = trackID
+        self.containerID = containerID
+        self.laneID = laneID
+    }
+}
+
 public struct PlaybackGridAutomationBreakpointDragContext: Equatable {
     public var containerID: ID<Container>
     public var trackID: ID<Track>
