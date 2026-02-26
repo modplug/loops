@@ -10,6 +10,11 @@ import LoopsCore
 /// subtracting viewportOrigin.x. The ruler is always pinned to the
 /// top of the viewport.
 final class TimelineTextOverlayLayer: CALayer {
+    struct MIDINoteLabelLayout: Equatable {
+        var text: String
+        var worldRect: CGRect
+        var isFocused: Bool
+    }
 
     // MARK: - Data
 
@@ -19,6 +24,7 @@ final class TimelineTextOverlayLayer: CALayer {
     var sections: [TimelineCanvasView.SectionLayout] = []
     var selectedRange: ClosedRange<Int>?
     var showRulerAndSections: Bool = true
+    var midiNoteLabels: [MIDINoteLabelLayout] = []
 
     /// The origin of the visible viewport in world coordinates.
     var viewportOrigin: CGPoint = .zero
@@ -32,6 +38,7 @@ final class TimelineTextOverlayLayer: CALayer {
     private var lastSelectedRange: ClosedRange<Int>?
     private var lastViewportOrigin: CGPoint = CGPoint(x: -1, y: -1)
     private var lastShowRulerAndSections: Bool = true
+    private var lastMIDILabelsFingerprint: Int = 0
 
     // MARK: - Init
 
@@ -53,6 +60,7 @@ final class TimelineTextOverlayLayer: CALayer {
             selectedRange = other.selectedRange
             showRulerAndSections = other.showRulerAndSections
             viewportOrigin = other.viewportOrigin
+            midiNoteLabels = other.midiNoteLabels
         }
     }
 
@@ -65,6 +73,7 @@ final class TimelineTextOverlayLayer: CALayer {
     /// Returns true if the layer needs redraw based on changed data.
     func updateIfNeeded() -> Bool {
         let sectionsFingerprint = Self.fingerprint(sections: sections)
+        let midiLabelsFingerprint = Self.fingerprint(midiLabels: midiNoteLabels)
         let changed = pixelsPerBar != lastPixelsPerBar
             || totalBars != lastTotalBars
             || timeSignature != lastTimeSignature
@@ -72,6 +81,7 @@ final class TimelineTextOverlayLayer: CALayer {
             || selectedRange != lastSelectedRange
             || viewportOrigin != lastViewportOrigin
             || showRulerAndSections != lastShowRulerAndSections
+            || midiLabelsFingerprint != lastMIDILabelsFingerprint
 
         if changed {
             lastPixelsPerBar = pixelsPerBar
@@ -81,6 +91,7 @@ final class TimelineTextOverlayLayer: CALayer {
             lastSelectedRange = selectedRange
             lastViewportOrigin = viewportOrigin
             lastShowRulerAndSections = showRulerAndSections
+            lastMIDILabelsFingerprint = midiLabelsFingerprint
             setNeedsDisplay()
         }
         return changed
@@ -89,8 +100,6 @@ final class TimelineTextOverlayLayer: CALayer {
     // MARK: - Drawing
 
     override func draw(in ctx: CGContext) {
-        guard showRulerAndSections else { return }
-
         ctx.saveGState()
         // Normalize to a top-left, +Y-down drawing space regardless of incoming layer context.
         if ctx.ctm.d > 0 {
@@ -102,116 +111,149 @@ final class TimelineTextOverlayLayer: CALayer {
         let sectionLaneHeight = TimelineCanvasView.sectionLaneHeight
         let vpMinX = viewportOrigin.x
         let vpMaxX = viewportOrigin.x + bounds.width
+        let vpMinY = viewportOrigin.y
+        let vpMaxY = viewportOrigin.y + bounds.height
+        if showRulerAndSections {
+            // ── Bar number labels ──
+            let step = rulerLabelStep
 
-        // ── Bar number labels ──
-        let step = rulerLabelStep
+            let firstVisibleBar = max(1, Int(floor(vpMinX / pixelsPerBar)) + 1)
+            let lastVisibleBar = min(totalBars + 1, Int(ceil(vpMaxX / pixelsPerBar)) + 2)
 
-        let firstVisibleBar = max(1, Int(floor(vpMinX / pixelsPerBar)) + 1)
-        let lastVisibleBar = min(totalBars + 1, Int(ceil(vpMaxX / pixelsPerBar)) + 2)
-
-        guard firstVisibleBar <= lastVisibleBar else {
-            ctx.restoreGState()
-            return
-        }
-
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 9),
-            .foregroundColor: NSColor.secondaryLabelColor
-        ]
-
-        let tickPath = CGMutablePath()
-
-        // Ruler bottom edge (boundary between ruler and section lane)
-        let rulerBottomY = rulerHeight
-
-        for bar in firstVisibleBar...lastVisibleBar {
-            let worldX = CGFloat(bar - 1) * pixelsPerBar
-            let localX = worldX - vpMinX
-
-            // Tick marks at the bottom of the ruler, extending upward
-            if pixelsPerBar >= 4 {
-                tickPath.move(to: CGPoint(x: localX, y: rulerBottomY))
-                tickPath.addLine(to: CGPoint(x: localX, y: rulerBottomY - 6))
+            guard firstVisibleBar <= lastVisibleBar else {
+                ctx.restoreGState()
+                return
             }
 
-            // Bar number label (positioned near top of ruler)
-            if bar % step == 0 {
-                let label = "\(bar)" as NSString
-                NSGraphicsContext.saveGraphicsState()
-                NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-                label.draw(at: NSPoint(x: localX + 3, y: 2), withAttributes: attrs)
-                NSGraphicsContext.restoreGraphicsState()
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 9),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+
+            let tickPath = CGMutablePath()
+
+            // Ruler bottom edge (boundary between ruler and section lane)
+            let rulerBottomY = rulerHeight
+
+            for bar in firstVisibleBar...lastVisibleBar {
+                let worldX = CGFloat(bar - 1) * pixelsPerBar
+                let localX = worldX - vpMinX
+
+                // Tick marks at the bottom of the ruler, extending upward
+                if pixelsPerBar >= 4 {
+                    tickPath.move(to: CGPoint(x: localX, y: rulerBottomY))
+                    tickPath.addLine(to: CGPoint(x: localX, y: rulerBottomY - 6))
+                }
+
+                // Bar number label (positioned near top of ruler)
+                if bar % step == 0 {
+                    let label = "\(bar)" as NSString
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+                    label.draw(at: NSPoint(x: localX + 3, y: 2), withAttributes: attrs)
+                    NSGraphicsContext.restoreGraphicsState()
+                }
+
+                // Beat ticks within bar
+                if pixelsPerBar > 50 {
+                    let ppBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
+                    for beat in 1..<timeSignature.beatsPerBar {
+                        let beatLocalX = localX + CGFloat(beat) * ppBeat
+                        tickPath.move(to: CGPoint(x: beatLocalX, y: rulerBottomY))
+                        tickPath.addLine(to: CGPoint(x: beatLocalX, y: rulerBottomY - 3))
+                    }
+                }
             }
 
-            // Beat ticks within bar
-            if pixelsPerBar > 50 {
-                let ppBeat = pixelsPerBar / CGFloat(timeSignature.beatsPerBar)
-                for beat in 1..<timeSignature.beatsPerBar {
-                    let beatLocalX = localX + CGFloat(beat) * ppBeat
-                    tickPath.move(to: CGPoint(x: beatLocalX, y: rulerBottomY))
-                    tickPath.addLine(to: CGPoint(x: beatLocalX, y: rulerBottomY - 3))
+            ctx.setStrokeColor(NSColor.secondaryLabelColor.withAlphaComponent(0.5).cgColor)
+            ctx.setLineWidth(0.5)
+            ctx.addPath(tickPath)
+            ctx.strokePath()
+
+            // ── Section bands (below ruler, pinned to viewport top) ──
+            let sectionTopY = rulerHeight
+            for sl in sections {
+                guard sl.rect.maxX >= vpMinX && sl.rect.minX <= vpMaxX else { continue }
+
+                let localBandX = sl.rect.minX - vpMinX
+                let bandRect = CGRect(
+                    x: localBandX, y: sectionTopY + 1,
+                    width: sl.rect.width, height: sectionLaneHeight - 2
+                )
+                let bandPath = CGPath(roundedRect: bandRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+
+                let sectionColor = nsColorFromHex(sl.section.color)
+
+                // Band fill
+                ctx.addPath(bandPath)
+                ctx.setFillColor(sectionColor.withAlphaComponent(0.4).cgColor)
+                ctx.fillPath()
+
+                // Band border
+                ctx.addPath(bandPath)
+                if sl.isSelected {
+                    ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
+                    ctx.setLineWidth(1.5)
+                } else {
+                    ctx.setStrokeColor(sectionColor.withAlphaComponent(0.7).cgColor)
+                    ctx.setLineWidth(0.5)
+                }
+                ctx.strokePath()
+
+                // Section name
+                let sAttrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+                    .foregroundColor: sectionColor
+                ]
+                let label = sl.section.name as NSString
+                let labelSize = label.size(withAttributes: sAttrs)
+                let labelX = bandRect.minX + 6
+                let labelY = bandRect.midY - labelSize.height / 2
+
+                if labelX + labelSize.width <= bandRect.maxX - 4 {
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+                    label.draw(at: NSPoint(x: labelX, y: labelY), withAttributes: sAttrs)
+                    NSGraphicsContext.restoreGraphicsState()
+                } else if bandRect.width > 20 {
+                    ctx.saveGState()
+                    ctx.clip(to: CGRect(x: bandRect.minX + 4, y: bandRect.minY, width: bandRect.width - 8, height: bandRect.height))
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+                    label.draw(at: NSPoint(x: labelX, y: labelY), withAttributes: sAttrs)
+                    NSGraphicsContext.restoreGraphicsState()
+                    ctx.restoreGState()
                 }
             }
         }
 
-        ctx.setStrokeColor(NSColor.secondaryLabelColor.withAlphaComponent(0.5).cgColor)
-        ctx.setLineWidth(0.5)
-        ctx.addPath(tickPath)
-        ctx.strokePath()
-
-        // ── Section bands (below ruler, pinned to viewport top) ──
-        let sectionTopY = rulerHeight
-        for sl in sections {
-            guard sl.rect.maxX >= vpMinX && sl.rect.minX <= vpMaxX else { continue }
-
-            let localBandX = sl.rect.minX - vpMinX
-            let bandRect = CGRect(
-                x: localBandX, y: sectionTopY + 1,
-                width: sl.rect.width, height: sectionLaneHeight - 2
-            )
-            let bandPath = CGPath(roundedRect: bandRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
-
-            let sectionColor = nsColorFromHex(sl.section.color)
-
-            // Band fill
-            ctx.addPath(bandPath)
-            ctx.setFillColor(sectionColor.withAlphaComponent(0.4).cgColor)
-            ctx.fillPath()
-
-            // Band border
-            ctx.addPath(bandPath)
-            if sl.isSelected {
-                ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
-                ctx.setLineWidth(1.5)
-            } else {
-                ctx.setStrokeColor(sectionColor.withAlphaComponent(0.7).cgColor)
-                ctx.setLineWidth(0.5)
-            }
-            ctx.strokePath()
-
-            // Section name
-            let sAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 10, weight: .medium),
-                .foregroundColor: sectionColor
+        if !midiNoteLabels.isEmpty {
+            let labelAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: NSColor(calibratedWhite: 0.12, alpha: 0.86)
             ]
-            let label = sl.section.name as NSString
-            let labelSize = label.size(withAttributes: sAttrs)
-            let labelX = bandRect.minX + 6
-            let labelY = bandRect.midY - labelSize.height / 2
-
-            if labelX + labelSize.width <= bandRect.maxX - 4 {
+            let focusedAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: NSColor(calibratedWhite: 0.04, alpha: 0.95)
+            ]
+            for label in midiNoteLabels {
+                guard label.worldRect.maxX >= vpMinX, label.worldRect.minX <= vpMaxX else { continue }
+                guard label.worldRect.maxY >= vpMinY, label.worldRect.minY <= vpMaxY else { continue }
+                let localRect = CGRect(
+                    x: label.worldRect.minX - vpMinX,
+                    y: label.worldRect.minY - vpMinY,
+                    width: label.worldRect.width,
+                    height: label.worldRect.height
+                )
+                guard localRect.width >= 18, localRect.height >= 10 else { continue }
+                let text = label.text as NSString
                 NSGraphicsContext.saveGraphicsState()
                 NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-                label.draw(at: NSPoint(x: labelX, y: labelY), withAttributes: sAttrs)
+                text.draw(
+                    at: NSPoint(x: localRect.minX + 4, y: localRect.minY + 1),
+                    withAttributes: label.isFocused ? focusedAttrs : labelAttrs
+                )
                 NSGraphicsContext.restoreGraphicsState()
-            } else if bandRect.width > 20 {
-                ctx.saveGState()
-                ctx.clip(to: CGRect(x: bandRect.minX + 4, y: bandRect.minY, width: bandRect.width - 8, height: bandRect.height))
-                NSGraphicsContext.saveGraphicsState()
-                NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-                label.draw(at: NSPoint(x: labelX, y: labelY), withAttributes: sAttrs)
-                NSGraphicsContext.restoreGraphicsState()
-                ctx.restoreGState()
             }
         }
 
@@ -252,6 +294,20 @@ final class TimelineTextOverlayLayer: CALayer {
             hasher.combine(Int(section.rect.minX.rounded()))
             hasher.combine(Int(section.rect.width.rounded()))
             hasher.combine(section.isSelected)
+        }
+        return hasher.finalize()
+    }
+
+    private static func fingerprint(midiLabels: [MIDINoteLabelLayout]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(midiLabels.count)
+        for label in midiLabels {
+            hasher.combine(label.text)
+            hasher.combine(Int(label.worldRect.minX.rounded()))
+            hasher.combine(Int(label.worldRect.minY.rounded()))
+            hasher.combine(Int(label.worldRect.width.rounded()))
+            hasher.combine(Int(label.worldRect.height.rounded()))
+            hasher.combine(label.isFocused)
         }
         return hasher.finalize()
     }

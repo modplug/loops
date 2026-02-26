@@ -18,6 +18,19 @@ public final class PlaybackGridPickingRenderer {
         visibleRect: CGRect,
         canvasWidth: CGFloat
     ) -> GridPickObject {
+        var midiLayoutsByTrack: [ID<Track>: PlaybackGridMIDIResolvedLayout] = [:]
+        for trackLayout in scene.trackLayouts where trackLayout.track.kind == .midi {
+            let inlineMIDILaneHeight = snapshot.inlineMIDILaneHeights[trackLayout.track.id] ?? 0
+            let laneHeight = inlineMIDILaneHeight > 0
+                ? inlineMIDILaneHeight
+                : (snapshot.trackHeights[trackLayout.track.id] ?? snapshot.defaultTrackHeight)
+            midiLayoutsByTrack[trackLayout.track.id] = PlaybackGridMIDIViewResolver.resolveTrackLayout(
+                trackLayout: trackLayout,
+                laneHeight: laneHeight,
+                snapshot: snapshot
+            )
+        }
+
         if snapshot.showRulerAndSections {
             let vpTop = visibleRect.minY
             if point.y < vpTop + PlaybackGridLayout.rulerHeight {
@@ -50,59 +63,134 @@ public final class PlaybackGridPickingRenderer {
         }
 
         for trackLayout in scene.trackLayouts.reversed() {
+            if !trackLayout.automationLaneLayouts.isEmpty {
+                if let automationHit = detectExpandedAutomationBreakpointHit(
+                    point: point,
+                    trackLayout: trackLayout,
+                    snapshot: snapshot
+                ) {
+                    return GridPickObject(
+                        id: makeID(
+                            kind: .automationBreakpoint,
+                            containerID: automationHit.containerID,
+                            trackID: trackLayout.track.id,
+                            automationLaneID: automationHit.laneID,
+                            automationBreakpointID: automationHit.breakpoint.id
+                        ),
+                        kind: .automationBreakpoint,
+                        containerID: automationHit.containerID,
+                        trackID: trackLayout.track.id,
+                        automationLaneID: automationHit.laneID,
+                        automationBreakpointID: automationHit.breakpoint.id
+                    )
+                }
+
+                if let automationSegment = detectExpandedAutomationSegmentHit(
+                    point: point,
+                    trackLayout: trackLayout,
+                    snapshot: snapshot
+                ) {
+                    return GridPickObject(
+                        id: makeID(
+                            kind: .automationSegment,
+                            containerID: automationSegment.containerID,
+                            trackID: trackLayout.track.id,
+                            automationLaneID: automationSegment.laneID
+                        ),
+                        kind: .automationSegment,
+                        containerID: automationSegment.containerID,
+                        trackID: trackLayout.track.id,
+                        automationLaneID: automationSegment.laneID
+                    )
+                }
+            }
+
             for containerLayout in trackLayout.containers.reversed() {
-                if containerLayout.rect.contains(point) {
+                let midiRect = midiEditorRect(
+                    trackLayout: trackLayout,
+                    for: containerLayout,
+                    snapshot: snapshot
+                )
+                let isInContainer = containerLayout.rect.contains(point)
+                let isInMidiRect = midiRect.contains(point)
+                if isInContainer || isInMidiRect {
                     if let midiHit = detectMIDINoteHit(
                         point: point,
                         containerLayout: containerLayout,
-                        timeSignature: snapshot.timeSignature
+                        midiRect: midiRect,
+                        timeSignature: snapshot.timeSignature,
+                        resolved: midiLayoutsByTrack[trackLayout.track.id]
                     ) {
                         return GridPickObject(
                             id: makeID(
                                 kind: .midiNote,
                                 containerID: containerLayout.container.id,
                                 trackID: trackLayout.track.id,
-                                midiNoteID: midiHit.id
+                                midiNoteID: midiHit.note.id,
+                                zone: midiHit.zone
                             ),
                             kind: .midiNote,
                             containerID: containerLayout.container.id,
                             trackID: trackLayout.track.id,
-                            midiNoteID: midiHit.id
+                            midiNoteID: midiHit.note.id,
+                            zone: midiHit.zone
                         )
                     }
 
-                    if let automationHit = detectAutomationBreakpointHit(
-                        point: point,
-                        containerLayout: containerLayout
-                    ) {
-                        return GridPickObject(
-                            id: makeID(
+                    if isInContainer {
+                        if let automationHit = detectAutomationBreakpointHit(
+                            point: point,
+                            containerLayout: containerLayout
+                        ) {
+                            return GridPickObject(
+                                id: makeID(
+                                    kind: .automationBreakpoint,
+                                    containerID: containerLayout.container.id,
+                                    trackID: trackLayout.track.id,
+                                    automationLaneID: automationHit.laneID,
+                                    automationBreakpointID: automationHit.breakpoint.id
+                                ),
                                 kind: .automationBreakpoint,
                                 containerID: containerLayout.container.id,
                                 trackID: trackLayout.track.id,
                                 automationLaneID: automationHit.laneID,
                                 automationBreakpointID: automationHit.breakpoint.id
-                            ),
-                            kind: .automationBreakpoint,
-                            containerID: containerLayout.container.id,
-                            trackID: trackLayout.track.id,
-                            automationLaneID: automationHit.laneID,
-                            automationBreakpointID: automationHit.breakpoint.id
-                        )
+                            )
+                        }
+
+                        if let automationLaneID = detectAutomationSegmentHit(
+                            point: point,
+                            containerLayout: containerLayout,
+                            snapshot: snapshot
+                        ) {
+                            return GridPickObject(
+                                id: makeID(
+                                    kind: .automationSegment,
+                                    containerID: containerLayout.container.id,
+                                    trackID: trackLayout.track.id,
+                                    automationLaneID: automationLaneID
+                                ),
+                                kind: .automationSegment,
+                                containerID: containerLayout.container.id,
+                                trackID: trackLayout.track.id,
+                                automationLaneID: automationLaneID
+                            )
+                        }
                     }
 
                     let zone = detectZone(point: point, rect: containerLayout.rect)
+                    let effectiveZone: GridContainerZone = isInContainer ? zone : .move
                     return GridPickObject(
                         id: makeID(
                             kind: .containerZone,
                             containerID: containerLayout.container.id,
                             trackID: trackLayout.track.id,
-                            zone: zone
+                            zone: effectiveZone
                         ),
                         kind: .containerZone,
                         containerID: containerLayout.container.id,
                         trackID: trackLayout.track.id,
-                        zone: zone
+                        zone: effectiveZone
                     )
                 }
             }
@@ -157,48 +245,139 @@ public final class PlaybackGridPickingRenderer {
         }
     }
 
+    private struct MIDINoteHit {
+        let note: MIDINoteEvent
+        let zone: GridContainerZone
+    }
+
     private func detectMIDINoteHit(
         point: CGPoint,
         containerLayout: PlaybackGridContainerLayout,
-        timeSignature: TimeSignature
-    ) -> MIDINoteEvent? {
+        midiRect: CGRect,
+        timeSignature: TimeSignature,
+        resolved: PlaybackGridMIDIResolvedLayout?
+    ) -> MIDINoteHit? {
         guard let notes = containerLayout.resolvedMIDINotes, !notes.isEmpty else {
             return nil
         }
-
-        var minPitch: UInt8 = 127
-        var maxPitch: UInt8 = 0
-        for note in notes {
-            if note.pitch < minPitch { minPitch = note.pitch }
-            if note.pitch > maxPitch { maxPitch = note.pitch }
-        }
-        let pitchRange = max(CGFloat(maxPitch - minPitch), 12)
-        let beatsPerBar = CGFloat(timeSignature.beatsPerBar)
-        let totalBeats = max(CGFloat(containerLayout.container.lengthBars) * beatsPerBar, 0.0001)
-        let heightMinusPad = containerLayout.rect.height - 4
-        let noteH = max(2, heightMinusPad / pitchRange)
+        guard let resolved else { return nil }
 
         for note in notes.reversed() {
-            let xFraction = CGFloat(note.startBeat) / totalBeats
-            let widthFraction = CGFloat(note.duration) / totalBeats
-            let noteX = containerLayout.rect.minX + xFraction * containerLayout.rect.width
-            let noteW = max(2, widthFraction * containerLayout.rect.width)
-            let yFraction = 1.0 - (CGFloat(note.pitch - minPitch) / pitchRange)
-            let noteY = containerLayout.rect.minY + yFraction * heightMinusPad + 2
-            let centerX = noteX + noteW / 2
-            let centerY = noteY + noteH / 2
-            let halfSize = min(noteW, noteH, 8) / 2
-            let hitRect = CGRect(
-                x: centerX - halfSize - 3,
-                y: centerY - halfSize - 3,
-                width: (halfSize + 3) * 2,
-                height: (halfSize + 3) * 2
-            )
+            guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+                note: note,
+                containerLengthBars: containerLayout.container.lengthBars,
+                laneRect: midiRect,
+                timeSignature: timeSignature,
+                resolved: resolved
+            ) else { continue }
+            let hitRect = noteRect.insetBy(dx: -2, dy: -2)
             if hitRect.contains(point) {
-                return note
+                let zone = midiNoteZone(point: point, noteRect: noteRect)
+                return MIDINoteHit(note: note, zone: zone)
             }
         }
         return nil
+    }
+
+    private func detectExpandedAutomationBreakpointHit(
+        point: CGPoint,
+        trackLayout: PlaybackGridTrackLayout,
+        snapshot: PlaybackGridSnapshot
+    ) -> (containerID: ID<Container>?, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint)? {
+        let hitRadius: CGFloat = 7
+        let ppb = snapshot.pixelsPerBar
+
+        for laneLayout in trackLayout.automationLaneLayouts.reversed() {
+            guard laneLayout.rect.contains(point) else { continue }
+
+            if let trackLane = trackLayout.track.trackAutomationLanes.first(where: { $0.targetPath == laneLayout.targetPath }) {
+                for breakpoint in trackLane.breakpoints.reversed() {
+                    let x = CGFloat(breakpoint.position) * ppb
+                    let y = laneLayout.rect.maxY - (CGFloat(breakpoint.value) * laneLayout.rect.height)
+                    let dx = point.x - x
+                    let dy = point.y - y
+                    if dx * dx + dy * dy <= hitRadius * hitRadius {
+                        return (containerID: nil, laneID: trackLane.id, breakpoint: breakpoint)
+                    }
+                }
+            }
+
+            for containerLayout in trackLayout.containers.reversed() {
+                guard containerLayout.rect.minX <= point.x, containerLayout.rect.maxX >= point.x else { continue }
+                guard let lane = containerLayout.container.automationLanes.first(where: { $0.targetPath == laneLayout.targetPath }) else { continue }
+                let barsToPixels = containerLayout.rect.width / max(CGFloat(containerLayout.container.lengthBars), 0.0001)
+                for breakpoint in lane.breakpoints.reversed() {
+                    let x = containerLayout.rect.minX + (CGFloat(breakpoint.position) * barsToPixels)
+                    let y = laneLayout.rect.maxY - (CGFloat(breakpoint.value) * laneLayout.rect.height)
+                    let dx = point.x - x
+                    let dy = point.y - y
+                    if dx * dx + dy * dy <= hitRadius * hitRadius {
+                        return (containerID: containerLayout.container.id, laneID: lane.id, breakpoint: breakpoint)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    private func detectExpandedAutomationSegmentHit(
+        point: CGPoint,
+        trackLayout: PlaybackGridTrackLayout,
+        snapshot: PlaybackGridSnapshot
+    ) -> (containerID: ID<Container>?, laneID: ID<AutomationLane>)? {
+        guard snapshot.selectedAutomationTool != .pointer else { return nil }
+
+        for laneLayout in trackLayout.automationLaneLayouts {
+            guard laneLayout.rect.contains(point) else { continue }
+
+            for containerLayout in trackLayout.containers.reversed() {
+                guard containerLayout.rect.minX <= point.x, containerLayout.rect.maxX >= point.x else { continue }
+                if let lane = containerLayout.container.automationLanes.first(where: { $0.targetPath == laneLayout.targetPath }) {
+                    return (containerID: containerLayout.container.id, laneID: lane.id)
+                }
+            }
+
+            if let trackLane = trackLayout.track.trackAutomationLanes.first(where: { $0.targetPath == laneLayout.targetPath }) {
+                return (containerID: nil, laneID: trackLane.id)
+            }
+        }
+        return nil
+    }
+
+    private func midiNoteZone(point: CGPoint, noteRect: CGRect) -> GridContainerZone {
+        let threshold = midiEdgeThreshold(noteWidth: noteRect.width)
+        guard threshold > 0 else { return .move }
+        let localX = point.x - noteRect.minX
+        if (threshold * 2) >= (noteRect.width - 0.5) {
+            return localX < (noteRect.width * 0.5) ? .resizeLeft : .resizeRight
+        }
+        if localX < threshold { return .resizeLeft }
+        if localX > noteRect.width - threshold { return .resizeRight }
+        return .move
+    }
+
+    private func midiEdgeThreshold(noteWidth: CGFloat) -> CGFloat {
+        guard noteWidth >= 5 else { return 0 }
+        if noteWidth <= 18 { return max(3.2, noteWidth * 0.5) }
+        if noteWidth <= 40 { return max(5.0, min(16.0, noteWidth * 0.35)) }
+        return max(7.0, min(20.0, noteWidth * 0.22))
+    }
+
+    private func midiEditorRect(
+        trackLayout: PlaybackGridTrackLayout,
+        for containerLayout: PlaybackGridContainerLayout,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect {
+        let inlineHeight = snapshot.inlineMIDILaneHeights[trackLayout.track.id] ?? 0
+        guard inlineHeight > 0 else { return containerLayout.rect }
+        let automationHeight = trackLayout.automationToolbarHeight
+            + (CGFloat(trackLayout.automationLaneLayouts.count) * snapshot.automationSubLaneHeight)
+        return CGRect(
+            x: containerLayout.rect.minX,
+            y: trackLayout.yOrigin + trackLayout.clipHeight + automationHeight,
+            width: containerLayout.rect.width,
+            height: inlineHeight
+        )
     }
 
     private func detectAutomationBreakpointHit(
@@ -218,6 +397,33 @@ public final class PlaybackGridPickingRenderer {
             }
         }
         return nil
+    }
+
+    private func detectAutomationSegmentHit(
+        point: CGPoint,
+        containerLayout: PlaybackGridContainerLayout,
+        snapshot: PlaybackGridSnapshot
+    ) -> ID<AutomationLane>? {
+        let lanes = containerLayout.container.automationLanes
+        guard !lanes.isEmpty else { return nil }
+        let automationBandHeight: CGFloat
+        if snapshot.selectedAutomationTool == .pointer {
+            automationBandHeight = min(containerLayout.rect.height, max(24, containerLayout.rect.height * 0.42))
+        } else {
+            automationBandHeight = containerLayout.rect.height
+        }
+        let bandRect = CGRect(
+            x: containerLayout.rect.minX,
+            y: containerLayout.rect.minY,
+            width: containerLayout.rect.width,
+            height: automationBandHeight
+        )
+        guard bandRect.contains(point) else { return nil }
+        guard lanes.count > 1 else { return lanes[0].id }
+        let y = point.y - bandRect.minY
+        let laneHeight = max(automationBandHeight / CGFloat(lanes.count), 1)
+        let index = min(max(Int(y / laneHeight), 0), lanes.count - 1)
+        return lanes[index].id
     }
 
     private func makeID(

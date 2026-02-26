@@ -645,10 +645,10 @@ public struct MainContentView: View {
                                         ForEach(regularTracks) { track in
                                             VStack(spacing: 0) {
                                                 trackHeaderWithActions(track: track)
-                                                let prExtra = pianoRollEditorState.extraHeight(forTrackID: track.id)
-                                                if prExtra > 0 {
+                                                let midiLaneHeight = inlinePianoRollLaneHeight(for: track.id)
+                                                if midiLaneHeight > 0 {
                                                     inlinePianoRollKeyboardLabels
-                                                        .frame(height: prExtra)
+                                                        .frame(height: midiLaneHeight)
                                                 }
                                             }
                                             .opacity(draggingTrackID == track.id ? 0.4 : 1.0)
@@ -1575,51 +1575,34 @@ public struct MainContentView: View {
         let rh = state.rowHeight
 
         return VStack(spacing: 0) {
-            // Match toolbar + divider space (measured dynamically)
-            Color(nsColor: .controlBackgroundColor).opacity(0.5)
-                .frame(height: state.toolbarHeight)
-                .overlay(alignment: .bottom) {
-                    Divider()
+            ForEach((Int(low)...Int(high)).reversed(), id: \.self) { pitch in
+                let note = UInt8(pitch)
+                let isBlack = PianoLayout.isBlackKey(note: note)
+                let isC = note % 12 == 0
+                HStack(spacing: 0) {
+                    Spacer(minLength: 2)
+                    Text(PianoLayout.noteName(note))
+                        .font(.system(size: max(7, min(rh - 2, 10)), design: .monospaced))
+                        .foregroundStyle(isC ? Color.primary : isBlack ? Color.secondary : Color.secondary.opacity(0.7))
                 }
-
-            // Pitch label rows — offset synced with piano roll vertical scroll
-            VStack(spacing: 0) {
-                // Match PianoRollContentView ruler (20pt) + divider (1pt)
-                Color.clear.frame(height: 21)
-                ForEach((Int(low)...Int(high)).reversed(), id: \.self) { pitch in
-                    let note = UInt8(pitch)
-                    let isBlack = PianoLayout.isBlackKey(note: note)
-                    let isC = note % 12 == 0
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 2)
-                        Text(PianoLayout.noteName(note))
-                            .font(.system(size: max(7, min(rh - 2, 10)), design: .monospaced))
-                            .foregroundStyle(isC ? Color.primary : isBlack ? Color.secondary : Color.secondary.opacity(0.7))
-                    }
-                    .padding(.trailing, 4)
-                    .frame(height: rh)
-                    .background(isBlack
-                        ? Color(white: 0.15)
-                        : Color(white: 0.92).opacity(0.15))
-                    .overlay(alignment: .bottom) {
-                        if isC {
-                            Rectangle().fill(Color.secondary.opacity(0.2)).frame(height: 0.5)
-                        }
+                .padding(.trailing, 4)
+                .frame(height: rh)
+                .background(isBlack
+                    ? Color(white: 0.15)
+                    : Color(white: 0.92).opacity(0.14))
+                .overlay(alignment: .bottom) {
+                    if isC {
+                        Rectangle().fill(Color.secondary.opacity(0.18)).frame(height: 0.5)
                     }
                 }
             }
-            .offset(y: state.verticalScrollOffset)
-            .frame(height: state.inlineHeight, alignment: .topLeading)
-            .clipped()
-
-            // Match resize handle space
-            Color.secondary.opacity(0.3)
-                .frame(height: PianoRollEditorState.resizeHandleHeight)
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .frame(height: state.inlineHeight, alignment: .top)
+        .clipped()
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.45))
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color.secondary.opacity(0.3))
+                .fill(Color.secondary.opacity(0.22))
                 .frame(height: 1)
         }
     }
@@ -1732,8 +1715,14 @@ public struct MainContentView: View {
     private func trackListContentHeight(_ tracks: [Track]) -> CGFloat {
         tracks.reduce(CGFloat(0)) { total, track in
             let trackH = timelineViewModel.trackHeight(for: track, baseHeight: timelineViewModel.baseTrackHeight(for: track.id))
-            return total + trackH + pianoRollEditorState.extraHeight(forTrackID: track.id)
+            return total + trackH + inlinePianoRollLaneHeight(for: track.id)
         }
+    }
+
+    private func inlinePianoRollLaneHeight(for trackID: ID<Track>) -> CGFloat {
+        guard pianoRollEditorState.isExpanded,
+              pianoRollEditorState.trackID == trackID else { return 0 }
+        return max(0, pianoRollEditorState.inlineHeight)
     }
 
     // MARK: - Ghost Track Header

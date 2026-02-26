@@ -122,11 +122,24 @@ public final class PlaybackGridRenderer {
         var fadeVerts: [PlaybackGridFadeVertex] = []
         var fadeCalls: [(offset: Int, count: Int)] = []
         var borders: [PlaybackGridRectInstance] = []
+        var midiLayoutsByTrack: [ID<Track>: PlaybackGridMIDIResolvedLayout] = [:]
+
+        for layout in scene.trackLayouts where layout.track.kind == .midi {
+            let inlineMIDILaneHeight = snapshot.inlineMIDILaneHeights[layout.track.id] ?? 0
+            let laneHeight = inlineMIDILaneHeight > 0
+                ? inlineMIDILaneHeight
+                : (snapshot.trackHeights[layout.track.id] ?? snapshot.defaultTrackHeight)
+            midiLayoutsByTrack[layout.track.id] = PlaybackGridMIDIViewResolver.resolveTrackLayout(
+                trackLayout: layout,
+                laneHeight: laneHeight,
+                snapshot: snapshot
+            )
+        }
 
         let gridBottom = max(canvasHeight, visibleMaxY)
         let startBar = max(0, Int(floor(visibleMinX / ppb)) - 2)
         let endBar = Int(ceil(visibleMaxX / ppb)) + 2
-        let shadingColor = SIMD4<Float>(1, 1, 1, 0.05)
+        let shadingColor = SIMD4<Float>(0.56, 0.64, 0.76, 0.014)
 
         for bar in startBar..<endBar where bar % 2 == 0 {
             let x = Float(bar) * ppb
@@ -137,7 +150,7 @@ public final class PlaybackGridRenderer {
             ))
         }
 
-        let barLineColor = SIMD4<Float>(1, 1, 1, 0.24)
+        let barLineColor = SIMD4<Float>(0.78, 0.84, 0.95, 0.075)
         for bar in startBar...endBar {
             let x = Float(bar) * ppb
             lines.append(PlaybackGridLineInstance(
@@ -150,7 +163,7 @@ public final class PlaybackGridRenderer {
 
         let pixelsPerBeat = ppb / Float(snapshot.timeSignature.beatsPerBar)
         if pixelsPerBeat >= 20 {
-            let beatLineColor = SIMD4<Float>(1, 1, 1, 0.11)
+            let beatLineColor = SIMD4<Float>(0.72, 0.79, 0.90, 0.028)
             for bar in startBar...endBar {
                 let barX = Float(bar) * ppb
                 for beat in 1..<snapshot.timeSignature.beatsPerBar {
@@ -165,8 +178,8 @@ public final class PlaybackGridRenderer {
             }
         }
 
-        let bgColor = SIMD4<Float>(0.56, 0.56, 0.58, 0.18)
-        let sepColor = SIMD4<Float>(1, 1, 1, 0.22)
+        let bgColor = SIMD4<Float>(0.16, 0.18, 0.22, 0.13)
+        let sepColor = SIMD4<Float>(0.76, 0.82, 0.91, 0.10)
         for layout in scene.trackLayouts {
             let y = Float(layout.yOrigin)
             let h = Float(layout.height)
@@ -183,6 +196,69 @@ public final class PlaybackGridRenderer {
                 color: sepColor,
                 width: 1
             ))
+
+            if layout.automationToolbarHeight > 0 {
+                let toolbarY = Float(layout.yOrigin + layout.clipHeight)
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(visibleMinX, toolbarY),
+                    size: SIMD2(visibleMaxX - visibleMinX, Float(layout.automationToolbarHeight)),
+                    color: SIMD4(0.14, 0.16, 0.19, 0.42)
+                ))
+                lines.append(PlaybackGridLineInstance(
+                    start: SIMD2(visibleMinX, toolbarY + Float(layout.automationToolbarHeight)),
+                    end: SIMD2(visibleMaxX, toolbarY + Float(layout.automationToolbarHeight)),
+                    color: SIMD4(0.74, 0.80, 0.90, 0.10),
+                    width: 1
+                ))
+            }
+
+            if !layout.automationLaneLayouts.isEmpty {
+                for (laneIndex, laneLayout) in layout.automationLaneLayouts.enumerated() {
+                    let laneMinY = Float(laneLayout.rect.minY)
+                    let laneHeight = Float(laneLayout.rect.height)
+                    let laneTint = automationLaneColor(at: laneIndex)
+                    rects.append(PlaybackGridRectInstance(
+                        origin: SIMD2(visibleMinX, laneMinY),
+                        size: SIMD2(visibleMaxX - visibleMinX, laneHeight),
+                        color: SIMD4(laneTint.x, laneTint.y, laneTint.z, 0.055)
+                    ))
+                    for frac: Float in [0.25, 0.5, 0.75] {
+                        let yGuide = laneMinY + ((1.0 - frac) * laneHeight)
+                        lines.append(PlaybackGridLineInstance(
+                            start: SIMD2(visibleMinX, yGuide),
+                            end: SIMD2(visibleMaxX, yGuide),
+                            color: SIMD4(0.76, 0.82, 0.91, 0.08),
+                            width: 1
+                        ))
+                    }
+                }
+            }
+
+            let inlineMIDILaneHeight = snapshot.inlineMIDILaneHeights[layout.track.id] ?? 0
+            if layout.track.kind == .midi, inlineMIDILaneHeight > 0 {
+                let laneMinY = Float(inlineMIDILaneYOrigin(
+                    trackLayout: layout,
+                    snapshot: snapshot
+                ))
+                let laneHeight = Float(inlineMIDILaneHeight)
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(visibleMinX, laneMinY),
+                    size: SIMD2(visibleMaxX - visibleMinX, laneHeight),
+                    color: SIMD4(0.10, 0.11, 0.14, 0.08)
+                ))
+                buildMIDIPitchGrid(
+                    trackID: layout.track.id,
+                    resolved: midiLayoutsByTrack[layout.track.id],
+                    yMin: laneMinY,
+                    laneHeight: laneHeight,
+                    xMin: visibleMinX,
+                    xMax: visibleMaxX,
+                    pixelsPerBar: ppb,
+                    snapshot: snapshot,
+                    rects: &rects,
+                    lines: &lines
+                )
+            }
         }
 
         for section in scene.sectionLayouts {
@@ -208,8 +284,10 @@ public final class PlaybackGridRenderer {
                 guard Float(rect.maxX) >= visibleMinX && Float(rect.minX) <= visibleMaxX else { continue }
 
                 let isArmed = cl.container.isRecordArmed
+                let isFocusedContainer = focusedPick.kind == .containerZone && focusedPick.containerID == cl.container.id
                 let fillColor: SIMD4<Float> = isArmed ? trackColors.fillArmed
-                    : cl.isSelected ? trackColors.fillSelected : trackColors.fillNormal
+                    : cl.isSelected ? trackColors.fillSelected
+                    : isFocusedContainer ? trackColors.fillFocused : trackColors.fillNormal
 
                 let origin = SIMD2<Float>(Float(rect.minX), Float(rect.minY))
                 let size = SIMD2<Float>(Float(rect.width), Float(rect.height))
@@ -219,7 +297,8 @@ public final class PlaybackGridRenderer {
                 rects.append(PlaybackGridRectInstance(origin: fillOrigin, size: fillSize, color: fillColor))
 
                 let borderColor: SIMD4<Float> = isArmed ? trackColors.borderArmed
-                    : cl.isSelected ? trackColors.borderSelected : trackColors.borderNormal
+                    : cl.isSelected ? trackColors.borderSelected
+                    : isFocusedContainer ? trackColors.borderFocused : trackColors.borderNormal
                 borders.append(PlaybackGridRectInstance(
                     origin: fillOrigin,
                     size: fillSize,
@@ -228,11 +307,31 @@ public final class PlaybackGridRenderer {
                 ))
 
                 if cl.isSelected {
+                    let shadowExtent: Float = 26
+                    let shadowY = max(fillOrigin.y - 1, 0)
+                    let shadowH = fillSize.y + 2
+                    rects.append(PlaybackGridRectInstance(
+                        origin: SIMD2(max(fillOrigin.x - shadowExtent, visibleMinX), shadowY),
+                        size: SIMD2(max(0, min(shadowExtent, fillOrigin.x - visibleMinX)), shadowH),
+                        color: SIMD4(0.10, 0.16, 0.26, 0.16)
+                    ))
+                    rects.append(PlaybackGridRectInstance(
+                        origin: SIMD2(fillOrigin.x + fillSize.x, shadowY),
+                        size: SIMD2(max(0, min(shadowExtent, visibleMaxX - (fillOrigin.x + fillSize.x))), shadowH),
+                        color: SIMD4(0.10, 0.16, 0.26, 0.16)
+                    ))
                     borders.append(PlaybackGridRectInstance(
                         origin: SIMD2(fillOrigin.x - 1, fillOrigin.y - 1),
                         size: SIMD2(fillSize.x + 2, fillSize.y + 2),
                         color: trackColors.selectionHighlight,
                         cornerRadius: 5
+                    ))
+                } else if isFocusedContainer {
+                    borders.append(PlaybackGridRectInstance(
+                        origin: SIMD2(fillOrigin.x - 1.2, fillOrigin.y - 1.2),
+                        size: SIMD2(fillSize.x + 2.4, fillSize.y + 2.4),
+                        color: trackColors.focusGlow,
+                        cornerRadius: 6
                     ))
                 }
 
@@ -275,20 +374,34 @@ public final class PlaybackGridRenderer {
                         wfParams.append(PlaybackGridWaveformParams(
                             containerOrigin: fillOrigin,
                             containerSize: SIMD2(waveformWidth, fillSize.y),
-                            fillColor: trackColors.waveformFill,
+                            fillColor: isFocusedContainer ? trackColors.waveformFocused : trackColors.waveformFill,
                             peakOffset: offset,
                             peakCount: UInt32(uploadPeaks.count),
-                            amplitude: 0.9
+                            amplitude: isFocusedContainer ? 0.98 : 0.92
                         ))
                     }
                 }
 
                 if let notes = cl.resolvedMIDINotes, !notes.isEmpty {
-                    buildMIDIDiamonds(
+                    let midiRect = midiEditorRect(
+                        trackLayout: trackLayout,
+                        containerRect: rect,
+                        trackID: trackLayout.track.id,
+                        snapshot: snapshot
+                    )
+                    let resolved = midiLayoutsByTrack[trackLayout.track.id]
+                        ?? PlaybackGridMIDIViewResolver.resolveTrackLayout(
+                            track: trackLayout.track,
+                            laneHeight: midiRect.height,
+                            snapshot: snapshot
+                        )
+                    buildMIDINotes(
                         notes: notes,
                         container: cl.container,
-                        rect: rect,
+                        rect: midiRect,
+                        resolved: resolved,
                         color: trackColors.waveformFill,
+                        focusedPick: focusedPick,
                         timeSignature: snapshot.timeSignature,
                         into: &midiNotes
                     )
@@ -305,16 +418,29 @@ public final class PlaybackGridRenderer {
                     )
                 }
 
-                if !cl.container.automationLanes.isEmpty {
+                if trackLayout.automationLaneLayouts.isEmpty, !cl.container.automationLanes.isEmpty {
                     buildAutomationOverlay(
                         lanes: cl.container.automationLanes,
                         container: cl.container,
                         rect: rect,
                         focusedPick: focusedPick,
+                        selectedAutomationTool: snapshot.selectedAutomationTool,
                         lines: &lines,
                         rects: &rects
                     )
                 }
+            }
+
+            if !trackLayout.automationLaneLayouts.isEmpty {
+                buildExpandedAutomationOverlays(
+                    trackLayout: trackLayout,
+                    snapshot: snapshot,
+                    visibleMinX: visibleMinX,
+                    visibleMaxX: visibleMaxX,
+                    focusedPick: focusedPick,
+                    lines: &lines,
+                    rects: &rects
+                )
             }
 
             for xfade in trackLayout.track.crossfades {
@@ -547,47 +673,212 @@ public final class PlaybackGridRenderer {
         return try device.makeRenderPipelineState(descriptor: desc)
     }
 
-    private func buildMIDIDiamonds(
+    private func buildMIDINotes(
         notes: [MIDINoteEvent],
         container: Container,
         rect: CGRect,
+        resolved: PlaybackGridMIDIResolvedLayout,
         color: SIMD4<Float>,
+        focusedPick: GridPickObject,
         timeSignature: TimeSignature,
         into output: inout [PlaybackGridMIDINoteInstance]
     ) {
-        var minPitch: UInt8 = 127
-        var maxPitch: UInt8 = 0
-        for note in notes {
-            if note.pitch < minPitch { minPitch = note.pitch }
-            if note.pitch > maxPitch { maxPitch = note.pitch }
-        }
-        let pitchRange = max(Float(maxPitch - minPitch), 12)
-
-        let beatsPerBar = Double(timeSignature.beatsPerBar)
-        let totalBeats = container.lengthBars * beatsPerBar
-        let invTotalBeats = 1.0 / totalBeats
-        let heightMinusPad = Float(rect.height) - 4
-        let invPitchRange = 1.0 / pitchRange
-        let noteH = max(2, heightMinusPad * invPitchRange)
+        let focusedNoteID: ID<MIDINoteEvent>? =
+            focusedPick.kind == .midiNote && focusedPick.containerID == container.id
+            ? focusedPick.midiNoteID
+            : nil
+        let noteBaseColor = SIMD4<Float>(0.83, 0.36, 0.67, 0.98)
+        let noteFocusedColor = SIMD4<Float>(0.97, 0.54, 0.81, 1.0)
+        let noteBorderColor = SIMD4<Float>(0.30, 0.12, 0.28, 0.86)
 
         for note in notes {
-            let xFraction = Float(note.startBeat * invTotalBeats)
-            let widthFraction = Float(note.duration * invTotalBeats)
+            guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+                note: note,
+                containerLengthBars: container.lengthBars,
+                laneRect: rect,
+                timeSignature: timeSignature,
+                resolved: resolved,
+                minimumWidth: 12
+            ) else { continue }
+            let noteX = Float(noteRect.minX)
+            let noteY = Float(noteRect.minY)
+            let noteW = Float(noteRect.width)
+            let noteH = Float(noteRect.height)
+            let isFocused = focusedNoteID == note.id
 
-            let noteX = Float(rect.minX) + xFraction * Float(rect.width)
-            let noteW = max(2, widthFraction * Float(rect.width))
-            let yFraction = 1.0 - (Float(note.pitch - minPitch) * invPitchRange)
-            let noteY = Float(rect.minY) + yFraction * heightMinusPad + 2
+            let bodyColor = isFocused
+                ? noteFocusedColor
+                : SIMD4(
+                    (noteBaseColor.x * 0.8) + (color.x * 0.2),
+                    (noteBaseColor.y * 0.8) + (color.y * 0.2),
+                    (noteBaseColor.z * 0.8) + (color.z * 0.2),
+                    noteBaseColor.w
+                )
 
-            let centerX = noteX + noteW / 2
-            let centerY = noteY + noteH / 2
-            let halfSize = min(noteW, noteH, 8) / 2
-
+            let shadowOffset: Float = isFocused ? 1.6 : 1.0
+            let baseRadius = min(noteH * 0.38, noteW * 0.24)
+            let outerRadius = max(1.2, baseRadius)
+            let innerRadius = max(1.0, min(outerRadius - 0.35, noteH * 0.28))
+            let shineRadius = max(0.8, min(innerRadius - 0.25, noteH * 0.20))
             output.append(PlaybackGridMIDINoteInstance(
-                center: SIMD2(centerX, centerY),
-                halfSize: halfSize,
-                color: color
+                origin: SIMD2(noteX, noteY + shadowOffset),
+                size: SIMD2(noteW, noteH),
+                color: SIMD4(0, 0, 0, isFocused ? 0.22 : 0.13),
+                cornerRadius: outerRadius
             ))
+            output.append(PlaybackGridMIDINoteInstance(
+                origin: SIMD2(noteX, noteY),
+                size: SIMD2(noteW, noteH),
+                color: noteBorderColor,
+                cornerRadius: outerRadius
+            ))
+            output.append(PlaybackGridMIDINoteInstance(
+                origin: SIMD2(noteX + 1, noteY + 1),
+                size: SIMD2(max(noteW - 2, 3), max(noteH - 2, 2)),
+                color: bodyColor,
+                cornerRadius: innerRadius
+            ))
+            output.append(PlaybackGridMIDINoteInstance(
+                origin: SIMD2(noteX + 1.5, noteY + 1.5),
+                size: SIMD2(max(noteW - 3, 2), max(min(noteH * 0.24, noteH - 2), 1)),
+                color: SIMD4(1.0, 0.85, 0.95, isFocused ? 0.52 : 0.32),
+                cornerRadius: shineRadius
+            ))
+
+            if isFocused, noteW >= 14 {
+                let gripHeight = max(2, noteH - 5)
+                let gripY = noteY + ((noteH - gripHeight) * 0.5)
+                output.append(PlaybackGridMIDINoteInstance(
+                    origin: SIMD2(noteX + 2, gripY),
+                    size: SIMD2(1.6, gripHeight),
+                    color: SIMD4(1, 1, 1, 0.58),
+                    cornerRadius: 0.8
+                ))
+                output.append(PlaybackGridMIDINoteInstance(
+                    origin: SIMD2(noteX + noteW - 3.6, gripY),
+                    size: SIMD2(1.6, gripHeight),
+                    color: SIMD4(1, 1, 1, 0.58),
+                    cornerRadius: 0.8
+                ))
+            }
+        }
+    }
+
+    private func midiEditorRect(
+        trackLayout: PlaybackGridTrackLayout,
+        containerRect rect: CGRect,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect {
+        let inlineHeight = snapshot.inlineMIDILaneHeights[trackID] ?? 0
+        guard inlineHeight > 0 else { return rect }
+        return CGRect(
+            x: rect.minX,
+            y: inlineMIDILaneYOrigin(trackLayout: trackLayout, snapshot: snapshot),
+            width: rect.width,
+            height: inlineHeight
+        )
+    }
+
+    private func inlineMIDILaneYOrigin(
+        trackLayout: PlaybackGridTrackLayout,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGFloat {
+        trackLayout.yOrigin
+            + trackLayout.clipHeight
+            + trackLayout.automationToolbarHeight
+            + (CGFloat(trackLayout.automationLaneLayouts.count) * snapshot.automationSubLaneHeight)
+    }
+
+    private func automationLaneColor(at index: Int) -> SIMD4<Float> {
+        let palette: [SIMD4<Float>] = [
+            SIMD4(1.0, 0.30, 0.34, 0.92),
+            SIMD4(0.18, 0.68, 1.0, 0.90),
+            SIMD4(0.87, 0.36, 0.92, 0.90),
+            SIMD4(1.0, 0.56, 0.18, 0.90),
+            SIMD4(0.42, 0.92, 0.66, 0.90)
+        ]
+        return palette[index % palette.count]
+    }
+
+    private func buildMIDIPitchGrid(
+        trackID: ID<Track>,
+        resolved: PlaybackGridMIDIResolvedLayout?,
+        yMin: Float,
+        laneHeight: Float,
+        xMin: Float,
+        xMax: Float,
+        pixelsPerBar: Float,
+        snapshot: PlaybackGridSnapshot,
+        rects: inout [PlaybackGridRectInstance],
+        lines: inout [PlaybackGridLineInstance]
+    ) {
+        guard laneHeight >= 8 else { return }
+        let layout = resolved ?? PlaybackGridMIDIViewResolver.resolveLayout(
+            notes: [],
+            trackID: trackID,
+            laneHeight: CGFloat(laneHeight),
+            snapshot: snapshot
+        )
+        let highNote = Int(layout.highPitch)
+        let rows = layout.rows
+        let rowHeight = Float(layout.rowHeight)
+
+        for i in 0..<rows {
+            let midi = highNote - i
+            let y = yMin + (Float(i) * rowHeight)
+            let noteClass = midi % 12
+            let isBlackKey = [1, 3, 6, 8, 10].contains(noteClass)
+            if isBlackKey {
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(xMin, y),
+                    size: SIMD2(xMax - xMin, rowHeight),
+                    color: SIMD4(0, 0, 0, 0.011)
+                ))
+            }
+            let isC = noteClass == 0
+            lines.append(PlaybackGridLineInstance(
+                start: SIMD2(xMin, y),
+                end: SIMD2(xMax, y),
+                color: isC ? SIMD4(1, 1, 1, 0.040) : SIMD4(1, 1, 1, 0.010),
+                width: 1
+            ))
+        }
+        let yBottom = yMin + laneHeight
+        lines.append(PlaybackGridLineInstance(
+            start: SIMD2(xMin, yBottom),
+            end: SIMD2(xMax, yBottom),
+            color: SIMD4(1, 1, 1, 0.065),
+            width: 1
+        ))
+        lines.append(PlaybackGridLineInstance(
+            start: SIMD2(xMin, yBottom - 2),
+            end: SIMD2(xMax, yBottom - 2),
+            color: SIMD4(1, 1, 1, 0.024),
+            width: 1
+        ))
+
+        let safePPB = max(pixelsPerBar, 1)
+        let beatWidth = safePPB / 4
+        let barStart = floor(xMin / safePPB) - 1
+        let barEnd = ceil(xMax / safePPB) + 1
+        for bar in Int(barStart)...Int(barEnd) {
+            let barX = Float(bar) * safePPB
+            lines.append(PlaybackGridLineInstance(
+                start: SIMD2(barX, yMin),
+                end: SIMD2(barX, yBottom),
+                color: SIMD4(1, 1, 1, 0.060),
+                width: 1
+            ))
+            for beat in 1..<4 {
+                let beatX = barX + (Float(beat) * beatWidth)
+                lines.append(PlaybackGridLineInstance(
+                    start: SIMD2(beatX, yMin),
+                    end: SIMD2(beatX, yBottom),
+                    color: SIMD4(1, 1, 1, 0.014),
+                    width: 1
+                ))
+            }
         }
     }
 
@@ -644,27 +935,76 @@ public final class PlaybackGridRenderer {
         container: Container,
         rect: CGRect,
         focusedPick: GridPickObject,
+        selectedAutomationTool: AutomationTool,
         lines: inout [PlaybackGridLineInstance],
         rects: inout [PlaybackGridRectInstance]
     ) {
         guard container.lengthBars > 0 else { return }
 
         let laneColors: [SIMD4<Float>] = [
-            SIMD4(1.0, 0.55, 0.15, 0.9),
-            SIMD4(0.33, 0.75, 1.0, 0.9),
-            SIMD4(0.65, 0.95, 0.45, 0.9),
-            SIMD4(0.95, 0.45, 0.85, 0.9)
+            SIMD4(1.0, 0.30, 0.34, 0.92),
+            SIMD4(0.18, 0.68, 1.0, 0.90),
+            SIMD4(0.87, 0.36, 0.92, 0.90),
+            SIMD4(1.0, 0.56, 0.18, 0.90)
         ]
         let handleBaseSize: Float = 7
         let focusedHandleScale: Float = 1.45
         let barsToPixels = rect.width / CGFloat(container.lengthBars)
         let isFocusedContainer = focusedPick.containerID == container.id
-        let yMin = Float(rect.minY) + 2
-        let yMax = Float(rect.maxY) - 2
+
+        let automationBandHeight: CGFloat
+        if selectedAutomationTool == .pointer {
+            automationBandHeight = min(rect.height, max(24, rect.height * 0.42))
+        } else {
+            automationBandHeight = rect.height
+        }
+        let bandRect = CGRect(
+            x: rect.minX,
+            y: rect.minY,
+            width: rect.width,
+            height: automationBandHeight
+        )
+        let laneHeight = max(automationBandHeight / CGFloat(max(lanes.count, 1)), 1)
+
+        for laneIndex in 1..<lanes.count {
+            let y = Float(bandRect.minY + CGFloat(laneIndex) * laneHeight)
+            lines.append(PlaybackGridLineInstance(
+                start: SIMD2(Float(bandRect.minX), y),
+                end: SIMD2(Float(bandRect.maxX), y),
+                color: SIMD4(1, 1, 1, 0.055),
+                width: 1
+            ))
+        }
 
         for (laneIndex, lane) in lanes.enumerated() {
+            let laneRect = CGRect(
+                x: bandRect.minX,
+                y: bandRect.minY + CGFloat(laneIndex) * laneHeight,
+                width: bandRect.width,
+                height: laneHeight
+            )
+            let yMin = Float(laneRect.minY) + 2
+            let yMax = Float(laneRect.maxY) - 2
             let color = laneColors[laneIndex % laneColors.count]
             let sorted = lane.breakpoints.sorted { $0.position < $1.position }
+            let guideRatios: [Float] = [0, 0.25, 0.5, 0.75, 1.0]
+            for ratio in guideRatios {
+                let y = Float(laneRect.maxY) - (ratio * Float(laneRect.height))
+                let alpha: Float
+                if ratio == 0 || ratio == 1 {
+                    alpha = 0.14
+                } else if ratio == 0.5 {
+                    alpha = 0.11
+                } else {
+                    alpha = 0.07
+                }
+                lines.append(PlaybackGridLineInstance(
+                    start: SIMD2(Float(laneRect.minX), y),
+                    end: SIMD2(Float(laneRect.maxX), y),
+                    color: SIMD4(color.x, color.y, color.z, alpha),
+                    width: 1
+                ))
+            }
             guard !sorted.isEmpty else { continue }
 
             var points: [SIMD2<Float>] = []
@@ -672,7 +1012,7 @@ public final class PlaybackGridRenderer {
 
             for bp in sorted {
                 let x = Float(rect.minX + (CGFloat(bp.position) * barsToPixels))
-                let y = Float(rect.maxY - (CGFloat(bp.value) * rect.height))
+                let y = Float(laneRect.maxY - (CGFloat(bp.value) * laneRect.height))
                 let isFocused = isFocusedContainer
                     && focusedPick.kind == .automationBreakpoint
                     && focusedPick.automationLaneID == lane.id
@@ -744,6 +1084,93 @@ public final class PlaybackGridRenderer {
             if points.count >= 2 {
                 let smoothed = smoothedAutomationPoints(points: points, yMin: yMin, yMax: yMax)
                 appendAutomationCurve(points: smoothed, color: color, lines: &lines)
+            }
+        }
+    }
+
+    private func buildExpandedAutomationOverlays(
+        trackLayout: PlaybackGridTrackLayout,
+        snapshot: PlaybackGridSnapshot,
+        visibleMinX: Float,
+        visibleMaxX: Float,
+        focusedPick: GridPickObject,
+        lines: inout [PlaybackGridLineInstance],
+        rects: inout [PlaybackGridRectInstance]
+    ) {
+        guard !trackLayout.automationLaneLayouts.isEmpty else { return }
+
+        let handleBaseSize: Float = 7
+        let focusedHandleScale: Float = 1.45
+        let ppb = Float(snapshot.pixelsPerBar)
+
+        for (laneIndex, laneLayout) in trackLayout.automationLaneLayouts.enumerated() {
+            if Float(laneLayout.rect.maxX) < visibleMinX || Float(laneLayout.rect.minX) > visibleMaxX {
+                continue
+            }
+            let laneColor = automationLaneColor(at: laneIndex)
+
+            if let trackLane = trackLayout.track.trackAutomationLanes.first(where: { $0.targetPath == laneLayout.targetPath }) {
+                let sorted = trackLane.breakpoints.sorted { $0.position < $1.position }
+                var points: [SIMD2<Float>] = []
+                points.reserveCapacity(sorted.count)
+
+                for bp in sorted {
+                    let x = Float(bp.position) * ppb
+                    let y = Float(laneLayout.rect.maxY - (CGFloat(bp.value) * laneLayout.rect.height))
+                    points.append(SIMD2(x, y))
+
+                    let isFocused = focusedPick.kind == .automationBreakpoint
+                        && focusedPick.trackID == trackLayout.track.id
+                        && focusedPick.containerID == nil
+                        && focusedPick.automationLaneID == trackLane.id
+                        && focusedPick.automationBreakpointID == bp.id
+                    let handleSize = isFocused ? handleBaseSize * focusedHandleScale : handleBaseSize
+                    rects.append(PlaybackGridRectInstance(
+                        origin: SIMD2(x - (handleSize * 0.5), y - (handleSize * 0.5)),
+                        size: SIMD2(handleSize, handleSize),
+                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, isFocused ? 0.98 : 0.84),
+                        cornerRadius: handleSize * 0.25
+                    ))
+                }
+                appendAutomationCurve(points: points, color: laneColor, lines: &lines)
+            }
+
+            for containerLayout in trackLayout.containers {
+                guard let lane = containerLayout.container.automationLanes.first(where: { $0.targetPath == laneLayout.targetPath }) else {
+                    continue
+                }
+                if Float(containerLayout.rect.maxX) < visibleMinX || Float(containerLayout.rect.minX) > visibleMaxX {
+                    continue
+                }
+                rects.append(PlaybackGridRectInstance(
+                    origin: SIMD2(Float(containerLayout.rect.minX), Float(laneLayout.rect.minY)),
+                    size: SIMD2(Float(containerLayout.rect.width), Float(laneLayout.rect.height)),
+                    color: SIMD4(laneColor.x, laneColor.y, laneColor.z, 0.045)
+                ))
+
+                let barsToPixels = containerLayout.rect.width / max(CGFloat(containerLayout.container.lengthBars), 0.0001)
+                let sorted = lane.breakpoints.sorted { $0.position < $1.position }
+                var points: [SIMD2<Float>] = []
+                points.reserveCapacity(sorted.count)
+                for bp in sorted {
+                    let x = Float(containerLayout.rect.minX + (CGFloat(bp.position) * barsToPixels))
+                    let y = Float(laneLayout.rect.maxY - (CGFloat(bp.value) * laneLayout.rect.height))
+                    points.append(SIMD2(x, y))
+
+                    let isFocused = focusedPick.kind == .automationBreakpoint
+                        && focusedPick.trackID == trackLayout.track.id
+                        && focusedPick.containerID == containerLayout.container.id
+                        && focusedPick.automationLaneID == lane.id
+                        && focusedPick.automationBreakpointID == bp.id
+                    let handleSize = isFocused ? handleBaseSize * focusedHandleScale : handleBaseSize
+                    rects.append(PlaybackGridRectInstance(
+                        origin: SIMD2(x - (handleSize * 0.5), y - (handleSize * 0.5)),
+                        size: SIMD2(handleSize, handleSize),
+                        color: SIMD4(laneColor.x, laneColor.y, laneColor.z, isFocused ? 0.98 : 0.84),
+                        cornerRadius: handleSize * 0.25
+                    ))
+                }
+                appendAutomationCurve(points: points, color: laneColor, lines: &lines)
             }
         }
     }
@@ -890,33 +1317,52 @@ private enum PlaybackGridMetalError: Error {
 private struct PlaybackGridTrackMetalColors {
     let fillNormal: SIMD4<Float>
     let fillSelected: SIMD4<Float>
+    let fillFocused: SIMD4<Float>
     let fillArmed: SIMD4<Float>
     let borderNormal: SIMD4<Float>
     let borderSelected: SIMD4<Float>
+    let borderFocused: SIMD4<Float>
     let borderArmed: SIMD4<Float>
     let waveformFill: SIMD4<Float>
+    let waveformFocused: SIMD4<Float>
     let selectionHighlight: SIMD4<Float>
+    let focusGlow: SIMD4<Float>
 
     init(kind: TrackKind) {
         let base = Self.baseColor(for: kind)
-        fillNormal = SIMD4(base.x, base.y, base.z, 0.25)
-        fillSelected = SIMD4(base.x, base.y, base.z, 0.42)
+        fillNormal = SIMD4(base.x, base.y, base.z, 0.24)
+        fillSelected = SIMD4(base.x, base.y, base.z, 0.40)
+        fillFocused = SIMD4(base.x, base.y, base.z, 0.33)
         fillArmed = SIMD4(1, 0.23, 0.19, 0.15)
-        borderNormal = SIMD4(base.x, base.y, base.z, 0.45)
-        borderSelected = SIMD4(0.25, 0.55, 1.0, 1.0)
+        borderNormal = SIMD4(base.x, base.y, base.z, 0.42)
+        borderSelected = SIMD4(0.33, 0.72, 1.0, 1.0)
+        borderFocused = SIMD4(0.78, 0.90, 1.0, 0.90)
         borderArmed = SIMD4(1, 0.23, 0.19, 1.0)
-        let waveformRGB = (base * 0.38) + SIMD3<Float>(repeating: 1.0) * 0.62
-        waveformFill = SIMD4(waveformRGB.x, waveformRGB.y, waveformRGB.z, 0.85)
-        selectionHighlight = SIMD4(0.25, 0.55, 1.0, 0.3)
+        switch kind {
+        case .audio, .backing:
+            waveformFill = SIMD4(0.95, 0.98, 1.0, 0.995)
+            waveformFocused = SIMD4(1.0, 1.0, 1.0, 1.0)
+        case .midi:
+            waveformFill = SIMD4(0.90, 0.44, 0.72, 0.96)
+            waveformFocused = SIMD4(0.98, 0.58, 0.82, 0.995)
+        case .bus:
+            waveformFill = SIMD4(0.62, 0.92, 0.72, 0.92)
+            waveformFocused = SIMD4(0.76, 0.97, 0.84, 0.99)
+        case .master:
+            waveformFill = SIMD4(0.86, 0.90, 0.95, 0.90)
+            waveformFocused = SIMD4(0.95, 0.97, 1.0, 0.98)
+        }
+        selectionHighlight = SIMD4(0.25, 0.55, 1.0, 0.24)
+        focusGlow = SIMD4(0.76, 0.88, 1.0, 0.18)
     }
 
     private static func baseColor(for kind: TrackKind) -> SIMD3<Float> {
         switch kind {
-        case .audio: return SIMD3(0.0, 0.48, 1.0)
-        case .midi: return SIMD3(0.69, 0.32, 0.87)
-        case .bus: return SIMD3(0.20, 0.78, 0.35)
-        case .backing: return SIMD3(1.0, 0.58, 0.0)
-        case .master: return SIMD3(0.56, 0.56, 0.58)
+        case .audio: return SIMD3(0.09, 0.33, 0.58)
+        case .midi: return SIMD3(0.52, 0.23, 0.58)
+        case .bus: return SIMD3(0.18, 0.70, 0.38)
+        case .backing: return SIMD3(0.90, 0.47, 0.12)
+        case .master: return SIMD3(0.43, 0.46, 0.52)
         }
     }
 }

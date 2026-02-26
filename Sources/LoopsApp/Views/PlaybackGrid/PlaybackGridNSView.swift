@@ -27,7 +27,10 @@ public final class PlaybackGridNSView: NSView {
     private var lastObservedVisibleRect: CGRect = .null
     private var lastCursorXSent: CGFloat?
     private var lastCursorPoint: CGPoint?
+    private var liveCursorX: CGFloat?
+    private var midiRangeScrollAccumulator: CGFloat = 0
     private var hoveredPick: GridPickObject = .none
+    private var cachedMIDINoteLabels: [TimelineTextOverlayLayer.MIDINoteLabelLayout] = []
 
     public var waveformPeaksProvider: ((_ container: Container) -> [Float]?)? {
         didSet { sceneBuilder.waveformPeaksProvider = waveformPeaksProvider }
@@ -50,7 +53,16 @@ public final class PlaybackGridNSView: NSView {
     public private(set) var configureHitCount = 0
     public private(set) var lastDrawDuration: CFTimeInterval = 0
     private var lastDebugLogTime: CFTimeInterval = 0
-    private static let debugLogsEnabled = false
+    private static let debugLogsEnabled: Bool = {
+        ProcessInfo.processInfo.environment["LOOPS_GRID_DEBUG"] == "1"
+        || UserDefaults.standard.bool(forKey: "PlaybackGridDebugLogs")
+    }()
+    private static let publishCursorToViewModel: Bool = {
+        ProcessInfo.processInfo.environment["LOOPS_GRID_CURSOR_PUBLISH"] == "1"
+        || UserDefaults.standard.bool(forKey: "PlaybackGridPublishCursorModel")
+    }()
+    private static let cursorPublishInterval: CFTimeInterval = 1.0 / 12.0
+    private var lastCursorPublishTime: CFTimeInterval = 0
 
     private static func makeMetalLayer() -> CAMetalLayer {
         let layer = CAMetalLayer()
@@ -98,11 +110,23 @@ public final class PlaybackGridNSView: NSView {
         playheadLayer.backgroundColor = NSColor.systemRed.cgColor
         playheadLayer.zPosition = 100
         playheadLayer.isHidden = true
+        playheadLayer.actions = [
+            "position": NSNull(),
+            "bounds": NSNull(),
+            "frame": NSNull(),
+            "hidden": NSNull()
+        ]
         backingLayer.addSublayer(playheadLayer)
 
         cursorLayer.backgroundColor = NSColor.white.withAlphaComponent(0.3).cgColor
         cursorLayer.zPosition = 99
         cursorLayer.isHidden = true
+        cursorLayer.actions = [
+            "position": NSNull(),
+            "bounds": NSNull(),
+            "frame": NSNull(),
+            "hidden": NSNull()
+        ]
         backingLayer.addSublayer(cursorLayer)
 
         NotificationCenter.default.addObserver(
@@ -224,17 +248,26 @@ public final class PlaybackGridNSView: NSView {
     }
 
     public func configure(snapshot newSnapshot: PlaybackGridSnapshot) {
-        if let oldSnapshot = snapshot,
-           staticSnapshotEqual(oldSnapshot, newSnapshot) {
-            configureSkipCount += 1
-            snapshot = newSnapshot
-            updateOverlayLayers(using: newSnapshot)
-            return
+        PlaybackGridPerfLogger.bump("grid.configure.calls")
+        if let oldSnapshot = snapshot {
+            let compareStart = PlaybackGridPerfLogger.begin()
+            let isEqual = staticSnapshotEqual(oldSnapshot, newSnapshot)
+            PlaybackGridPerfLogger.end("grid.configure.staticEqual.ms", compareStart)
+            if isEqual {
+                PlaybackGridPerfLogger.bump("grid.configure.skip")
+                configureSkipCount += 1
+                snapshot = newSnapshot
+                updateOverlayLayers(using: newSnapshot)
+                return
+            }
         }
 
+        PlaybackGridPerfLogger.bump("grid.configure.hit")
         configureHitCount += 1
         snapshot = newSnapshot
+        let buildStart = PlaybackGridPerfLogger.begin()
         scene = sceneBuilder.build(snapshot: newSnapshot)
+        PlaybackGridPerfLogger.end("grid.configure.sceneBuild.ms", buildStart)
         needsBufferRebuild = true
         configureWillRedraw = true
         needsDisplay = true
@@ -248,6 +281,8 @@ public final class PlaybackGridNSView: NSView {
     }
 
     private func updateOverlayLayers(using snapshot: PlaybackGridSnapshot) {
+        let overlayStart = PlaybackGridPerfLogger.begin()
+        defer { PlaybackGridPerfLogger.end("grid.configure.overlayLayers.ms", overlayStart) }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
@@ -255,7 +290,7 @@ public final class PlaybackGridNSView: NSView {
         playheadLayer.frame = CGRect(x: playheadX - 0.5, y: 0, width: 1, height: scene.contentHeight)
         playheadLayer.isHidden = false
 
-        if let cursorX = snapshot.cursorX {
+        if let cursorX = liveCursorX ?? snapshot.cursorX {
             cursorLayer.frame = CGRect(x: cursorX - 0.5, y: 0, width: 1, height: scene.contentHeight)
             cursorLayer.isHidden = false
         } else {
@@ -303,6 +338,7 @@ public final class PlaybackGridNSView: NSView {
     }
 
     private func handleScrollChange() {
+        PlaybackGridPerfLogger.bump("grid.scroll.boundsDidChange")
         let currentVisible = visibleRect.intersection(bounds)
         guard !currentVisible.isNull else { return }
         if !lastObservedVisibleRect.isNull,
@@ -319,6 +355,7 @@ public final class PlaybackGridNSView: NSView {
         super.setFrameSize(newSize)
 
         if old != newSize && !configureWillRedraw {
+            PlaybackGridPerfLogger.bump("grid.frameSize.changed")
             needsBufferRebuild = true
             needsDisplay = true
         }
@@ -338,6 +375,7 @@ public final class PlaybackGridNSView: NSView {
     }
 
     public override func mouseMoved(with event: NSEvent) {
+        PlaybackGridPerfLogger.bump("input.mouseMoved")
         let local = convert(event.locationInWindow, from: nil)
         if let last = lastCursorPoint,
            abs(last.x - local.x) < 0.5,
@@ -345,16 +383,17 @@ public final class PlaybackGridNSView: NSView {
             return
         }
         lastCursorPoint = local
+        updateLiveCursor(at: local.x)
 
-        if let last = lastCursorXSent, abs(last - local.x) >= 0.5 {
-            lastCursorXSent = local.x
-            onCursorPosition?(local.x)
-        } else if lastCursorXSent == nil {
-            lastCursorXSent = local.x
-            onCursorPosition?(local.x)
+        // During active drags/edits we do not need hover picking. Skipping it
+        // avoids CPU-heavy hit-tests while pointer events are already saturated.
+        if interactionController.isInteractionActive {
+            PlaybackGridPerfLogger.bump("grid.pick.skippedWhileInteracting")
+            return
         }
 
         guard let snapshot else { return }
+        let pickStart = PlaybackGridPerfLogger.begin()
         let pick = pickingRenderer.pick(
             at: local,
             scene: scene,
@@ -362,7 +401,36 @@ public final class PlaybackGridNSView: NSView {
             visibleRect: visibleRect,
             canvasWidth: bounds.width
         )
-        let newHoveredPick: GridPickObject = pick.kind == .automationBreakpoint ? pick : .none
+        PlaybackGridPerfLogger.end("grid.pick.mouseMoved.ms", pickStart)
+
+        if isPointNearInlineMIDILaneResizeHandle(local, snapshot: snapshot) {
+            NSCursor.resizeUpDown.set()
+        } else {
+            switch pick.kind {
+            case .midiNote:
+                if pick.zone == .resizeLeft || pick.zone == .resizeRight {
+                    NSCursor.resizeLeftRight.set()
+                } else {
+                    NSCursor.openHand.set()
+                }
+            case .containerZone:
+                if pick.zone == .resizeLeft || pick.zone == .resizeRight {
+                    NSCursor.resizeLeftRight.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
+            default:
+                NSCursor.arrow.set()
+            }
+        }
+
+        let newHoveredPick: GridPickObject
+        switch pick.kind {
+        case .containerZone, .midiNote, .automationBreakpoint:
+            newHoveredPick = pick
+        default:
+            newHoveredPick = .none
+        }
         if newHoveredPick != hoveredPick {
             hoveredPick = newHoveredPick
             needsBufferRebuild = true
@@ -371,19 +439,27 @@ public final class PlaybackGridNSView: NSView {
     }
 
     public override func mouseExited(with event: NSEvent) {
+        PlaybackGridPerfLogger.bump("input.mouseExited")
         lastCursorXSent = nil
         lastCursorPoint = nil
-        onCursorPosition?(nil)
+        liveCursorX = nil
+        cursorLayer.isHidden = true
+        if Self.publishCursorToViewModel {
+            onCursorPosition?(nil)
+        }
         if hoveredPick != .none {
             hoveredPick = .none
             needsBufferRebuild = true
             needsDisplay = true
         }
+        NSCursor.arrow.set()
     }
 
     public override func mouseDown(with event: NSEvent) {
+        PlaybackGridPerfLogger.bump("input.mouseDown")
         guard let snapshot else { return }
         let local = convert(event.locationInWindow, from: nil)
+        let pickStart = PlaybackGridPerfLogger.begin()
         let pick = pickingRenderer.pick(
             at: local,
             scene: scene,
@@ -391,6 +467,13 @@ public final class PlaybackGridNSView: NSView {
             visibleRect: visibleRect,
             canvasWidth: bounds.width
         )
+        PlaybackGridPerfLogger.end("grid.pick.mouseDown.ms", pickStart)
+
+        if event.clickCount >= 2,
+           pick.kind == .automationBreakpoint,
+           presentAutomationValueEditor(pick: pick, event: event, snapshot: snapshot) {
+            return
+        }
 
         interactionController.handleMouseDown(
             event: event,
@@ -401,18 +484,90 @@ public final class PlaybackGridNSView: NSView {
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        PlaybackGridPerfLogger.bump("input.mouseDragged")
         guard let snapshot else { return }
         let local = convert(event.locationInWindow, from: nil)
-        interactionController.handleMouseDragged(point: local, snapshot: snapshot)
+        updateLiveCursor(at: local.x)
+        let visualChanged = interactionController.handleMouseDragged(
+            point: local,
+            snapshot: snapshot,
+            modifiers: event.modifierFlags
+        )
+        if visualChanged {
+            needsDisplay = true
+        }
     }
 
     public override func mouseUp(with event: NSEvent) {
+        PlaybackGridPerfLogger.bump("input.mouseUp")
         guard let snapshot else { return }
         let local = convert(event.locationInWindow, from: nil)
-        interactionController.handleMouseUp(point: local, snapshot: snapshot)
+        interactionController.handleMouseUp(
+            point: local,
+            snapshot: snapshot,
+            modifiers: event.modifierFlags
+        )
+    }
+
+    public override func scrollWheel(with event: NSEvent) {
+        PlaybackGridPerfLogger.bump("input.scrollWheel")
+        guard let snapshot else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let local = convert(event.locationInWindow, from: nil)
+        guard let trackID = inlineMIDITrackID(at: local, snapshot: snapshot) else {
+            super.scrollWheel(with: event)
+            return
+        }
+
+        let mods = event.modifierFlags
+        let signedStep: CGFloat = event.scrollingDeltaY > 0 ? 1 : -1
+        if mods.contains(.command) {
+            commandSink?.adjustInlineMIDIRowHeight(trackID: trackID, delta: signedStep)
+            return
+        }
+        if mods.contains(.option) {
+            commandSink?.shiftInlineMIDIPitchRange(trackID: trackID, semitoneDelta: Int(signedStep))
+            return
+        }
+        if abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) {
+            // Default inline MIDI wheel behavior: pan pitch range up/down.
+            midiRangeScrollAccumulator += event.scrollingDeltaY
+            let threshold: CGFloat = event.hasPreciseScrollingDeltas ? 14 : 1
+            while abs(midiRangeScrollAccumulator) >= threshold {
+                let semitoneStep = midiRangeScrollAccumulator > 0 ? 1 : -1
+                commandSink?.shiftInlineMIDIPitchRange(trackID: trackID, semitoneDelta: semitoneStep)
+                midiRangeScrollAccumulator -= CGFloat(semitoneStep) * threshold
+            }
+            return
+        }
+        midiRangeScrollAccumulator = 0
+        super.scrollWheel(with: event)
+    }
+
+    public override func magnify(with event: NSEvent) {
+        PlaybackGridPerfLogger.bump("input.magnify")
+        guard let snapshot else {
+            super.magnify(with: event)
+            return
+        }
+        let local = convert(event.locationInWindow, from: nil)
+        guard let trackID = inlineMIDITrackID(at: local, snapshot: snapshot) else {
+            super.magnify(with: event)
+            return
+        }
+        // Positive magnification zooms in (larger rows), negative zooms out.
+        let delta = max(-8.0, min(8.0, CGFloat(event.magnification * 24.0)))
+        guard abs(delta) > 0.01 else { return }
+        commandSink?.adjustInlineMIDIRowHeight(trackID: trackID, delta: delta)
     }
 
     public override func updateLayer() {
+        let updateStart = PlaybackGridPerfLogger.begin()
+        defer { PlaybackGridPerfLogger.end("grid.updateLayer.total.ms", updateStart) }
+        PlaybackGridPerfLogger.bump("grid.updateLayer.calls")
+
         configureWillRedraw = false
         let drawStart = CACurrentMediaTime()
 
@@ -435,10 +590,28 @@ public final class PlaybackGridNSView: NSView {
         textOverlayLayer.frame = visible
         CATransaction.commit()
 
-        guard let drawable = metalLayer.nextDrawable() else { return }
-        guard renderer.frameSemaphore.wait(timeout: .now()) == .success else { return }
+        let drawableStart = PlaybackGridPerfLogger.begin()
+        guard let drawable = metalLayer.nextDrawable() else {
+            PlaybackGridPerfLogger.bump("grid.updateLayer.noDrawable")
+            return
+        }
+        PlaybackGridPerfLogger.end("grid.updateLayer.nextDrawable.ms", drawableStart)
+        let drawableWaitMs = (CACurrentMediaTime() - drawableStart) * 1000.0
+        if drawableWaitMs > 4.0 {
+            PlaybackGridPerfLogger.bump("grid.updateLayer.nextDrawable.stall")
+        }
+
+        let waitStart = PlaybackGridPerfLogger.begin()
+        guard renderer.frameSemaphore.wait(timeout: .now()) == .success else {
+            PlaybackGridPerfLogger.bump("grid.updateLayer.semaphoreTimeout")
+            return
+        }
+        PlaybackGridPerfLogger.end("grid.updateLayer.semaphoreWait.ms", waitStart)
+        let midiOverlays = interactionController.activeMIDINoteOverlays
 
         if needsBufferRebuild {
+            PlaybackGridPerfLogger.bump("grid.updateLayer.bufferRebuild")
+            let rebuildStart = PlaybackGridPerfLogger.begin()
             renderer.buildBuffers(
                 scene: scene,
                 snapshot: snapshot,
@@ -446,8 +619,16 @@ public final class PlaybackGridNSView: NSView {
                 visibleRect: visible,
                 focusedPick: hoveredPick
             )
+            PlaybackGridPerfLogger.end("grid.updateLayer.buildBuffers.ms", rebuildStart)
             needsBufferRebuild = false
         }
+        let overlayBufferStart = PlaybackGridPerfLogger.begin()
+        renderer.buildMIDIOverlayBuffer(
+            scene: scene,
+            snapshot: snapshot,
+            midiOverlays: midiOverlays
+        )
+        PlaybackGridPerfLogger.end("grid.updateLayer.midiOverlayBuffer.ms", overlayBufferStart)
 
         if Self.debugLogsEnabled {
             let now = CACurrentMediaTime()
@@ -458,6 +639,7 @@ public final class PlaybackGridNSView: NSView {
             }
         }
 
+        let textStart = PlaybackGridPerfLogger.begin()
         textOverlayLayer.pixelsPerBar = snapshot.pixelsPerBar
         textOverlayLayer.totalBars = snapshot.totalBars
         textOverlayLayer.timeSignature = snapshot.timeSignature
@@ -465,9 +647,27 @@ public final class PlaybackGridNSView: NSView {
         textOverlayLayer.selectedRange = snapshot.selectedRange
         textOverlayLayer.showRulerAndSections = snapshot.showRulerAndSections
         textOverlayLayer.viewportOrigin = visible.origin
+        if interactionController.isInteractionActive {
+            // Preserve previously visible note labels while dragging and only add
+            // the actively dragged live-note labels. This avoids costly relayout
+            // of the whole MIDI text set and prevents labels from disappearing.
+            let liveLabels = buildLiveMIDINoteOverlayLabels(
+                snapshot: snapshot,
+                midiOverlays: midiOverlays
+            )
+            textOverlayLayer.midiNoteLabels = cachedMIDINoteLabels + liveLabels
+        } else {
+            let labels = buildMIDINoteLabels(
+                snapshot: snapshot,
+                midiOverlays: midiOverlays
+            )
+            cachedMIDINoteLabels = labels
+            textOverlayLayer.midiNoteLabels = labels
+        }
         if textOverlayLayer.updateIfNeeded() {
             textOverlayLayer.displayIfNeeded()
         }
+        PlaybackGridPerfLogger.end("grid.updateLayer.textOverlay.ms", textStart)
 
         let passDesc = MTLRenderPassDescriptor()
         passDesc.colorAttachments[0].texture = drawable.texture
@@ -478,6 +678,7 @@ public final class PlaybackGridNSView: NSView {
         guard let commandBuffer = renderer.commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDesc) else {
             renderer.frameSemaphore.signal()
+            PlaybackGridPerfLogger.bump("grid.updateLayer.encoderFailed")
             return
         }
 
@@ -493,6 +694,7 @@ public final class PlaybackGridNSView: NSView {
             zfar: 1
         ))
 
+        let encodeStart = PlaybackGridPerfLogger.begin()
         renderer.encode(
             into: encoder,
             visibleRect: visible,
@@ -500,6 +702,7 @@ public final class PlaybackGridNSView: NSView {
             viewportSize: MTLSize(width: texW, height: texH, depth: 1),
             pixelsPerBar: snapshot.pixelsPerBar
         )
+        PlaybackGridPerfLogger.end("grid.updateLayer.encode.ms", encodeStart)
 
         encoder.endEncoding()
 
@@ -511,6 +714,7 @@ public final class PlaybackGridNSView: NSView {
         commandBuffer.commit()
 
         lastDrawDuration = CACurrentMediaTime() - drawStart
+        PlaybackGridPerfLogger.recordDurationMs("grid.updateLayer.lastDraw.ms", lastDrawDuration * 1000.0)
     }
 
     public override var intrinsicContentSize: NSSize {
@@ -529,8 +733,14 @@ public final class PlaybackGridNSView: NSView {
             && lhs.pixelsPerBar == rhs.pixelsPerBar
             && lhs.totalBars == rhs.totalBars
             && lhs.trackHeights == rhs.trackHeights
+            && lhs.inlineMIDILaneHeights == rhs.inlineMIDILaneHeights
+            && lhs.inlineMIDIConfigs == rhs.inlineMIDIConfigs
+            && lhs.automationExpandedTrackIDs == rhs.automationExpandedTrackIDs
+            && lhs.automationSubLaneHeight == rhs.automationSubLaneHeight
+            && lhs.automationToolbarHeight == rhs.automationToolbarHeight
             && lhs.defaultTrackHeight == rhs.defaultTrackHeight
             && lhs.gridMode == rhs.gridMode
+            && lhs.selectedAutomationTool == rhs.selectedAutomationTool
             && lhs.selectedContainerIDs == rhs.selectedContainerIDs
             && lhs.selectedSectionID == rhs.selectedSectionID
             && lhs.selectedRange == rhs.selectedRange
@@ -539,5 +749,424 @@ public final class PlaybackGridNSView: NSView {
             && lhs.showRulerAndSections == rhs.showRulerAndSections
             && lhs.bottomPadding == rhs.bottomPadding
             && lhs.minimumContentHeight == rhs.minimumContentHeight
+    }
+
+    private func buildMIDINoteLabels(
+        snapshot: PlaybackGridSnapshot,
+        midiOverlays: [PlaybackGridMIDINoteOverlay]
+    ) -> [TimelineTextOverlayLayer.MIDINoteLabelLayout] {
+        var labels: [TimelineTextOverlayLayer.MIDINoteLabelLayout] = []
+        let focusedNoteID: ID<MIDINoteEvent>? = hoveredPick.kind == .midiNote ? hoveredPick.midiNoteID : nil
+        let liveOverlayNotes = midiOverlays.filter { !$0.isGhost }
+        if !liveOverlayNotes.isEmpty {
+            var trackLayoutsByID: [ID<Track>: PlaybackGridTrackLayout] = [:]
+            var containerLayoutsByID: [ID<Container>: PlaybackGridContainerLayout] = [:]
+            for trackLayout in scene.trackLayouts {
+                trackLayoutsByID[trackLayout.track.id] = trackLayout
+                for containerLayout in trackLayout.containers {
+                    containerLayoutsByID[containerLayout.container.id] = containerLayout
+                }
+            }
+            for overlay in liveOverlayNotes {
+                guard let trackLayout = trackLayoutsByID[overlay.trackID],
+                      let containerLayout = containerLayoutsByID[overlay.containerID] else {
+                    continue
+                }
+                let midiRect = midiEditorRect(
+                    trackLayout: trackLayout,
+                    for: containerLayout,
+                    snapshot: snapshot
+                )
+                let inlineMIDILaneHeight = snapshot.inlineMIDILaneHeights[trackLayout.track.id] ?? 0
+                let laneHeight = inlineMIDILaneHeight > 0
+                    ? inlineMIDILaneHeight
+                    : (snapshot.trackHeights[trackLayout.track.id] ?? snapshot.defaultTrackHeight)
+                let resolved = PlaybackGridMIDIViewResolver.resolveTrackLayout(
+                    trackLayout: trackLayout,
+                    laneHeight: laneHeight,
+                    snapshot: snapshot
+                )
+                guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+                    note: overlay.note,
+                    containerLengthBars: containerLayout.container.lengthBars,
+                    laneRect: midiRect,
+                    timeSignature: snapshot.timeSignature,
+                    resolved: resolved
+                ) else { continue }
+                guard noteRect.width >= 20, noteRect.height >= 10 else { continue }
+                labels.append(.init(
+                    text: PianoLayout.noteName(overlay.note.pitch),
+                    worldRect: noteRect,
+                    isFocused: true
+                ))
+            }
+            return labels
+        }
+
+        let liveOverlayNoteIDs = Set(liveOverlayNotes.map(\.note.id))
+        var midiLayoutsByTrack: [ID<Track>: PlaybackGridMIDIResolvedLayout] = [:]
+
+        for trackLayout in scene.trackLayouts where trackLayout.track.kind == .midi {
+            let inlineMIDILaneHeight = snapshot.inlineMIDILaneHeights[trackLayout.track.id] ?? 0
+            let laneHeight = inlineMIDILaneHeight > 0
+                ? inlineMIDILaneHeight
+                : (snapshot.trackHeights[trackLayout.track.id] ?? snapshot.defaultTrackHeight)
+            midiLayoutsByTrack[trackLayout.track.id] = PlaybackGridMIDIViewResolver.resolveTrackLayout(
+                trackLayout: trackLayout,
+                laneHeight: laneHeight,
+                snapshot: snapshot
+            )
+        }
+
+        for trackLayout in scene.trackLayouts where trackLayout.track.kind == .midi {
+            let inlineMIDILaneHeight = snapshot.inlineMIDILaneHeights[trackLayout.track.id] ?? 0
+            guard inlineMIDILaneHeight > 0 else { continue }
+            guard let resolved = midiLayoutsByTrack[trackLayout.track.id] else { continue }
+            for containerLayout in trackLayout.containers {
+                guard let notes = containerLayout.resolvedMIDINotes, !notes.isEmpty else { continue }
+                let midiRect = midiEditorRect(
+                    trackLayout: trackLayout,
+                    for: containerLayout,
+                    snapshot: snapshot
+                )
+                for note in notes {
+                    if liveOverlayNoteIDs.contains(note.id) {
+                        continue
+                    }
+                    guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+                        note: note,
+                        containerLengthBars: containerLayout.container.lengthBars,
+                        laneRect: midiRect,
+                        timeSignature: snapshot.timeSignature,
+                        resolved: resolved
+                    ) else { continue }
+                    guard noteRect.width >= 30, noteRect.height >= 11 else { continue }
+                    labels.append(.init(
+                        text: PianoLayout.noteName(note.pitch),
+                        worldRect: noteRect,
+                        isFocused: focusedNoteID == note.id
+                    ))
+                }
+            }
+        }
+
+        for overlay in liveOverlayNotes {
+            guard let trackLayout = scene.trackLayouts.first(where: { $0.track.id == overlay.trackID }),
+                  let containerLayout = trackLayout.containers.first(where: { $0.container.id == overlay.containerID }) else {
+                continue
+            }
+            let midiRect = midiEditorRect(
+                trackLayout: trackLayout,
+                for: containerLayout,
+                snapshot: snapshot
+            )
+            let resolved = midiLayoutsByTrack[overlay.trackID]
+                ?? PlaybackGridMIDIViewResolver.resolveTrackLayout(
+                    trackLayout: trackLayout,
+                    laneHeight: midiRect.height,
+                    snapshot: snapshot
+                )
+            guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+                note: overlay.note,
+                containerLengthBars: containerLayout.container.lengthBars,
+                laneRect: midiRect,
+                timeSignature: snapshot.timeSignature,
+                resolved: resolved
+            ) else { continue }
+            guard noteRect.width >= 30, noteRect.height >= 11 else { continue }
+            labels.append(.init(
+                text: PianoLayout.noteName(overlay.note.pitch),
+                worldRect: noteRect,
+                isFocused: true
+            ))
+        }
+        return labels
+    }
+
+    private func buildLiveMIDINoteOverlayLabels(
+        snapshot: PlaybackGridSnapshot,
+        midiOverlays: [PlaybackGridMIDINoteOverlay]
+    ) -> [TimelineTextOverlayLayer.MIDINoteLabelLayout] {
+        let liveOverlayNotes = midiOverlays.filter { !$0.isGhost }
+        guard !liveOverlayNotes.isEmpty else { return [] }
+
+        var labels: [TimelineTextOverlayLayer.MIDINoteLabelLayout] = []
+        var trackLayoutsByID: [ID<Track>: PlaybackGridTrackLayout] = [:]
+        var containerLayoutsByID: [ID<Container>: PlaybackGridContainerLayout] = [:]
+        for trackLayout in scene.trackLayouts {
+            trackLayoutsByID[trackLayout.track.id] = trackLayout
+            for containerLayout in trackLayout.containers {
+                containerLayoutsByID[containerLayout.container.id] = containerLayout
+            }
+        }
+
+        for overlay in liveOverlayNotes {
+            guard let trackLayout = trackLayoutsByID[overlay.trackID],
+                  let containerLayout = containerLayoutsByID[overlay.containerID] else {
+                continue
+            }
+            let midiRect = midiEditorRect(
+                trackLayout: trackLayout,
+                for: containerLayout,
+                snapshot: snapshot
+            )
+            let inlineMIDILaneHeight = snapshot.inlineMIDILaneHeights[trackLayout.track.id] ?? 0
+            let laneHeight = inlineMIDILaneHeight > 0
+                ? inlineMIDILaneHeight
+                : (snapshot.trackHeights[trackLayout.track.id] ?? snapshot.defaultTrackHeight)
+            let resolved = PlaybackGridMIDIViewResolver.resolveTrackLayout(
+                trackLayout: trackLayout,
+                laneHeight: laneHeight,
+                snapshot: snapshot
+            )
+            guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+                note: overlay.note,
+                containerLengthBars: containerLayout.container.lengthBars,
+                laneRect: midiRect,
+                timeSignature: snapshot.timeSignature,
+                resolved: resolved
+            ) else { continue }
+            guard noteRect.width >= 20, noteRect.height >= 10 else { continue }
+            labels.append(.init(
+                text: PianoLayout.noteName(overlay.note.pitch),
+                worldRect: noteRect,
+                isFocused: true
+            ))
+        }
+        return labels
+    }
+
+    private func updateLiveCursor(at x: CGFloat) {
+        if let last = lastCursorXSent, abs(last - x) >= 0.5 {
+            lastCursorXSent = x
+        } else if lastCursorXSent == nil {
+            lastCursorXSent = x
+        }
+        liveCursorX = x
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cursorLayer.frame = CGRect(x: x - 0.5, y: 0, width: 1, height: scene.contentHeight)
+        cursorLayer.isHidden = false
+        CATransaction.commit()
+
+        if Self.publishCursorToViewModel {
+            let now = CACurrentMediaTime()
+            if (now - lastCursorPublishTime) >= Self.cursorPublishInterval {
+                lastCursorPublishTime = now
+                onCursorPosition?(x)
+            }
+        }
+    }
+
+    private func midiEditorRect(
+        trackLayout: PlaybackGridTrackLayout,
+        for containerLayout: PlaybackGridContainerLayout,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect {
+        let inlineHeight = snapshot.inlineMIDILaneHeights[trackLayout.track.id] ?? 0
+        guard inlineHeight > 0 else { return containerLayout.rect }
+        let automationHeight = trackLayout.automationToolbarHeight
+            + (CGFloat(trackLayout.automationLaneLayouts.count) * snapshot.automationSubLaneHeight)
+        return CGRect(
+            x: containerLayout.rect.minX,
+            y: trackLayout.yOrigin + trackLayout.clipHeight + automationHeight,
+            width: containerLayout.rect.width,
+            height: inlineHeight
+        )
+    }
+
+    private func isPointNearInlineMIDILaneResizeHandle(
+        _ point: CGPoint,
+        snapshot: PlaybackGridSnapshot
+    ) -> Bool {
+        var yOffset: CGFloat = snapshot.showRulerAndSections ? PlaybackGridLayout.trackAreaTop : 0
+        let threshold: CGFloat = 10
+        for track in snapshot.tracks {
+            let baseHeight = snapshot.trackHeights[track.id] ?? snapshot.defaultTrackHeight
+            let automationExtra = automationTrackExtraHeight(track: track, snapshot: snapshot)
+            let inlineHeight = snapshot.inlineMIDILaneHeights[track.id] ?? 0
+            defer { yOffset += baseHeight + automationExtra + inlineHeight }
+            guard track.kind == .midi, inlineHeight > 0 else { continue }
+            let laneBottom = yOffset + baseHeight + automationExtra + inlineHeight
+            if point.y >= laneBottom - threshold && point.y <= laneBottom + threshold {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func inlineMIDITrackID(
+        at point: CGPoint,
+        snapshot: PlaybackGridSnapshot
+    ) -> ID<Track>? {
+        var yOffset: CGFloat = snapshot.showRulerAndSections ? PlaybackGridLayout.trackAreaTop : 0
+        for track in snapshot.tracks {
+            let baseHeight = snapshot.trackHeights[track.id] ?? snapshot.defaultTrackHeight
+            let automationExtra = automationTrackExtraHeight(track: track, snapshot: snapshot)
+            let inlineHeight = snapshot.inlineMIDILaneHeights[track.id] ?? 0
+            defer { yOffset += baseHeight + automationExtra + inlineHeight }
+            guard track.kind == .midi, inlineHeight > 0 else { continue }
+            let laneRect = CGRect(
+                x: 0,
+                y: yOffset + baseHeight + automationExtra,
+                width: bounds.width,
+                height: inlineHeight
+            )
+            if laneRect.contains(point) {
+                return track.id
+            }
+        }
+        return nil
+    }
+
+    private func presentAutomationValueEditor(
+        pick: GridPickObject,
+        event: NSEvent,
+        snapshot: PlaybackGridSnapshot
+    ) -> Bool {
+        guard let trackID = pick.trackID,
+              let laneID = pick.automationLaneID,
+              let breakpointID = pick.automationBreakpointID,
+              let track = snapshot.tracks.first(where: { $0.id == trackID }) else {
+            return false
+        }
+
+        let laneAndBreakpoint: (lane: AutomationLane, breakpoint: AutomationBreakpoint, containerID: ID<Container>?)
+        if let containerID = pick.containerID {
+            guard let container = track.containers.first(where: { $0.id == containerID }),
+                  let lane = container.automationLanes.first(where: { $0.id == laneID }),
+                  let breakpoint = lane.breakpoints.first(where: { $0.id == breakpointID }) else {
+                return false
+            }
+            laneAndBreakpoint = (lane, breakpoint, containerID)
+        } else {
+            guard let lane = track.trackAutomationLanes.first(where: { $0.id == laneID }),
+                  let breakpoint = lane.breakpoints.first(where: { $0.id == breakpointID }) else {
+                return false
+            }
+            laneAndBreakpoint = (lane, breakpoint, nil)
+        }
+
+        let currentDisplay = automationDisplayValue(
+            normalized: laneAndBreakpoint.breakpoint.value,
+            lane: laneAndBreakpoint.lane
+        )
+        let title = laneAndBreakpoint.lane.parameterName?.isEmpty == false
+            ? laneAndBreakpoint.lane.parameterName!
+            : "Automation Value"
+        let unit = (laneAndBreakpoint.lane.parameterUnit ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let alert = NSAlert()
+        alert.messageText = "Set \(title)"
+        alert.informativeText = unit.isEmpty
+            ? "Enter value. Use +/- for relative adjustment."
+            : "Enter value (\(unit)). Use +/- for relative adjustment."
+
+        let input = NSTextField(frame: CGRect(x: 0, y: 0, width: 220, height: 22))
+        input.stringValue = String(format: "%.3f", currentDisplay)
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() != .alertFirstButtonReturn {
+            return true
+        }
+
+        guard let normalized = normalizedAutomationValue(
+            input: input.stringValue,
+            lane: laneAndBreakpoint.lane,
+            currentNormalized: laneAndBreakpoint.breakpoint.value,
+            fineMode: event.modifierFlags.contains(.shift)
+        ) else {
+            NSSound.beep()
+            return true
+        }
+
+        var updated = laneAndBreakpoint.breakpoint
+        updated.value = normalized
+        if let containerID = laneAndBreakpoint.containerID {
+            commandSink?.updateAutomationBreakpoint(containerID, laneID: laneID, breakpoint: updated)
+        } else {
+            commandSink?.updateTrackAutomationBreakpoint(trackID: trackID, laneID: laneID, breakpoint: updated)
+        }
+        return true
+    }
+
+    private func automationDisplayValue(
+        normalized: Float,
+        lane: AutomationLane
+    ) -> Double {
+        let minValue = Double(lane.parameterMin ?? 0)
+        let maxValue = Double(lane.parameterMax ?? 1)
+        guard maxValue > minValue else { return Double(normalized) }
+        let unit = (lane.parameterUnit ?? "").lowercased()
+        let clamped = Double(max(0, min(1, normalized)))
+        if unit.contains("hz"), minValue > 0 {
+            let ratio = maxValue / minValue
+            return minValue * pow(ratio, clamped)
+        }
+        return minValue + (clamped * (maxValue - minValue))
+    }
+
+    private func normalizedAutomationValue(
+        input: String,
+        lane: AutomationLane,
+        currentNormalized: Float,
+        fineMode: Bool
+    ) -> Float? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let minValue = Double(lane.parameterMin ?? 0)
+        let maxValue = Double(lane.parameterMax ?? 1)
+        guard maxValue > minValue else {
+            return Float(max(0, min(1, (Double(trimmed) ?? Double(currentNormalized)))))
+        }
+
+        let currentDisplay = automationDisplayValue(normalized: currentNormalized, lane: lane)
+        let displayValue: Double
+        if let first = trimmed.first, (first == "+" || first == "-"), let delta = Double(trimmed) {
+            let scaledDelta = fineMode ? (delta * 0.1) : delta
+            displayValue = currentDisplay + scaledDelta
+        } else if let absolute = Double(trimmed) {
+            displayValue = absolute
+        } else {
+            return nil
+        }
+
+        let clampedDisplay = max(minValue, min(maxValue, displayValue))
+        let unit = (lane.parameterUnit ?? "").lowercased()
+        let normalized: Double
+        if unit.contains("hz"), minValue > 0 {
+            let ratio = maxValue / minValue
+            guard ratio > 0 else { return nil }
+            normalized = log(clampedDisplay / minValue) / log(ratio)
+        } else {
+            normalized = (clampedDisplay - minValue) / (maxValue - minValue)
+        }
+        return Float(max(0, min(1, normalized)))
+    }
+
+    private func automationTrackExtraHeight(track: Track, snapshot: PlaybackGridSnapshot) -> CGFloat {
+        guard snapshot.automationExpandedTrackIDs.contains(track.id) else { return 0 }
+        let laneCount = automationLanePaths(for: track).count
+        guard laneCount > 0 else { return 0 }
+        return snapshot.automationToolbarHeight + (CGFloat(laneCount) * snapshot.automationSubLaneHeight)
+    }
+
+    private func automationLanePaths(for track: Track) -> [EffectPath] {
+        var seen = Set<EffectPath>()
+        var ordered: [EffectPath] = []
+        for lane in track.trackAutomationLanes {
+            if seen.insert(lane.targetPath).inserted {
+                ordered.append(lane.targetPath)
+            }
+        }
+        for container in track.containers {
+            for lane in container.automationLanes {
+                if seen.insert(lane.targetPath).inserted {
+                    ordered.append(lane.targetPath)
+                }
+            }
+        }
+        return ordered
     }
 }

@@ -72,7 +72,7 @@ public struct PlaybackGridView: View {
         tracks.reduce(CGFloat(0)) { total, track in
             let base = viewModel.baseTrackHeight(for: track.id)
             let trackHeight = viewModel.trackHeight(for: track, baseHeight: base)
-            let pianoRollExtra = pianoRollState?.extraHeight(forTrackID: track.id) ?? 0
+            let pianoRollExtra = inlineMIDILaneHeight(for: track.id)
             return total + trackHeight + pianoRollExtra
         }
     }
@@ -87,6 +87,40 @@ public struct PlaybackGridView: View {
         max(viewModel.totalWidth, 1)
     }
 
+    private var inlineMIDILaneHeights: [ID<Track>: CGFloat] {
+        guard pianoRollState != nil else { return [:] }
+        var heights: [ID<Track>: CGFloat] = [:]
+        for track in tracks {
+            let laneHeight = inlineMIDILaneHeight(for: track.id)
+            if laneHeight > 0 {
+                heights[track.id] = laneHeight
+            }
+        }
+        return heights
+    }
+
+    private func inlineMIDILaneHeight(for trackID: ID<Track>) -> CGFloat {
+        guard let pianoRollState,
+              pianoRollState.isExpanded,
+              pianoRollState.trackID == trackID else { return 0 }
+        return max(0, pianoRollState.inlineHeight)
+    }
+
+    private var inlineMIDIConfigs: [ID<Track>: PlaybackGridMIDIConfig] {
+        guard let pianoRollState,
+              pianoRollState.isExpanded,
+              let trackID = pianoRollState.trackID else {
+            return [:]
+        }
+        return [
+            trackID: PlaybackGridMIDIConfig(
+                lowPitch: pianoRollState.lowPitch,
+                highPitch: pianoRollState.highPitch,
+                rowHeight: pianoRollState.rowHeight
+            )
+        ]
+    }
+
     public var body: some View {
         PlaybackGridRepresentable(
             tracks: tracks,
@@ -95,6 +129,8 @@ public struct PlaybackGridView: View {
             selectionState: selectionState,
             timeSignature: song.timeSignature,
             sections: song.sections,
+            inlineMIDILaneHeights: inlineMIDILaneHeights,
+            inlineMIDIConfigs: inlineMIDIConfigs,
             showRulerAndSections: showRulerAndSections,
             bottomPadding: bottomPadding,
             minimumContentHeight: displayHeight,
@@ -170,6 +206,52 @@ public struct PlaybackGridView: View {
             onSetContainerExitFade: { containerID, fade in
                 projectViewModel.setContainerExitFade(containerID: containerID, fade: fade)
             },
+            onCreateContainer: { trackID, startBar, lengthBars in
+                projectViewModel.addContainer(
+                    trackID: trackID,
+                    startBar: startBar,
+                    lengthBars: lengthBars
+                )
+            },
+            onSetInlineMIDILaneHeight: { trackID, height in
+                guard let pianoRollState,
+                      pianoRollState.trackID == trackID else { return }
+                let clamped = min(max(height, 120), 640)
+                if abs(pianoRollState.inlineHeight - clamped) > 0.5 {
+                    pianoRollState.inlineHeight = clamped
+                }
+            },
+            onAdjustInlineMIDIRowHeight: { trackID, delta in
+                guard let pianoRollState,
+                      pianoRollState.trackID == trackID else { return }
+                let next = min(36, max(10, pianoRollState.rowHeight + (delta * 1.25)))
+                if abs(next - pianoRollState.rowHeight) > 0.01 {
+                    pianoRollState.rowHeight = next
+                }
+            },
+            onShiftInlineMIDIPitchRange: { trackID, semitoneDelta in
+                guard let pianoRollState,
+                      pianoRollState.trackID == trackID else { return }
+                let currentLow = Int(pianoRollState.lowPitch)
+                let currentHigh = Int(pianoRollState.highPitch)
+                let span = max(1, currentHigh - currentLow)
+                var newLow = currentLow + semitoneDelta
+                var newHigh = currentHigh + semitoneDelta
+                if newLow < 0 {
+                    newLow = 0
+                    newHigh = min(127, span)
+                } else if newHigh > 127 {
+                    newHigh = 127
+                    newLow = max(0, 127 - span)
+                }
+                if newLow <= newHigh {
+                    pianoRollState.lowPitch = UInt8(clamping: newLow)
+                    pianoRollState.highPitch = UInt8(clamping: newHigh)
+                }
+            },
+            onPreviewMIDINote: { pitch, isNoteOn in
+                onNotePreview?(pitch, isNoteOn)
+            },
             onAddMIDINote: { containerID, note in
                 projectViewModel.addMIDINote(containerID: containerID, note: note)
             },
@@ -187,6 +269,33 @@ public struct PlaybackGridView: View {
             },
             onRemoveAutomationBreakpoint: { containerID, laneID, breakpointID in
                 projectViewModel.removeAutomationBreakpoint(containerID: containerID, laneID: laneID, breakpointID: breakpointID)
+            },
+            onReplaceAutomationBreakpoints: { containerID, laneID, startPosition, endPosition, breakpoints in
+                projectViewModel.replaceAutomationBreakpoints(
+                    containerID: containerID,
+                    laneID: laneID,
+                    startPosition: startPosition,
+                    endPosition: endPosition,
+                    replacements: breakpoints
+                )
+            },
+            onAddTrackAutomationBreakpoint: { trackID, laneID, breakpoint in
+                projectViewModel.addTrackAutomationBreakpoint(trackID: trackID, laneID: laneID, breakpoint: breakpoint)
+            },
+            onUpdateTrackAutomationBreakpoint: { trackID, laneID, breakpoint in
+                projectViewModel.updateTrackAutomationBreakpoint(trackID: trackID, laneID: laneID, breakpoint: breakpoint)
+            },
+            onRemoveTrackAutomationBreakpoint: { trackID, laneID, breakpointID in
+                projectViewModel.removeTrackAutomationBreakpoint(trackID: trackID, laneID: laneID, breakpointID: breakpointID)
+            },
+            onReplaceTrackAutomationBreakpoints: { trackID, laneID, startPosition, endPosition, breakpoints in
+                projectViewModel.replaceTrackAutomationBreakpoints(
+                    trackID: trackID,
+                    laneID: laneID,
+                    startPosition: startPosition,
+                    endPosition: endPosition,
+                    replacements: breakpoints
+                )
             }
         )
         .frame(width: displayWidth, height: displayHeight)
@@ -202,6 +311,16 @@ public struct PlaybackGridView: View {
         }
         .onKeyPress("-") {
             viewModel.zoomOut()
+            return .handled
+        }
+        .onKeyPress("]") {
+            guard let pianoRollState, pianoRollState.isExpanded else { return .ignored }
+            pianoRollState.rowHeight = min(36, pianoRollState.rowHeight + 1.5)
+            return .handled
+        }
+        .onKeyPress("[") {
+            guard let pianoRollState, pianoRollState.isExpanded else { return .ignored }
+            pianoRollState.rowHeight = max(10, pianoRollState.rowHeight - 1.5)
             return .handled
         }
         .onKeyPress(.delete) {
