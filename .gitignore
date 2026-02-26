@@ -29,3 +29,6 @@ profile
 
 # Project bundles
 *.loops/
+
+# Local agent worktrees
+.claude/worktrees/
