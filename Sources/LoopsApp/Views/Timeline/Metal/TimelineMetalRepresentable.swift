@@ -2,8 +2,7 @@ import SwiftUI
 import LoopsCore
 
 /// SwiftUI bridge for TimelineMetalView.
-/// Identical API to TimelineCanvasRepresentable — drop-in replacement
-/// controlled by the `useMetalTimeline` feature flag.
+/// Identical API to TimelineCanvasRepresentable for the legacy metal timeline path.
 public struct TimelineMetalRepresentable: NSViewRepresentable {
     let tracks: [Track]
     @Bindable var viewModel: TimelineViewModel

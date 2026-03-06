@@ -94,13 +94,6 @@ public final class TimelineViewModel {
     /// Grid mode: adaptive (zoom-dependent) or fixed resolution.
     public var gridMode: GridMode = .adaptive
 
-    /// Feature flag: use high-performance NSView canvas instead of SwiftUI timeline.
-    public var useNSViewTimeline: Bool = true
-
-    /// Feature flag: use Metal GPU rendering instead of CoreGraphics.
-    /// Only takes effect when `useNSViewTimeline` is also true.
-    public var useMetalTimeline: Bool = true
-
     /// Cursor position in bars (1-based), derived from cursorX.
     public var cursorBar: Double? {
         guard let x = cursorX else { return nil }

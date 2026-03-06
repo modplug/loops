@@ -9,6 +9,16 @@ public final class PlaybackGridInteractionController {
         let breakpointID: ID<AutomationBreakpoint>
     }
 
+    private enum ContainerPreviewCommit: Equatable {
+        case move(startBar: Double)
+        case resizeLeft(startBar: Double, lengthBars: Double)
+        case resizeRight(lengthBars: Double)
+        case trimLeft(audioStartOffset: Double, startBar: Double, lengthBars: Double)
+        case trimRight(lengthBars: Double)
+        case enterFade(FadeSettings?)
+        case exitFade(FadeSettings?)
+    }
+
     private struct TrackAutomationPendingKey: Hashable {
         let trackID: ID<Track>
         let laneID: ID<AutomationLane>
@@ -29,12 +39,23 @@ public final class PlaybackGridInteractionController {
     private var pendingTrackAutomationBreakpointUpdates: [TrackAutomationPendingKey: AutomationBreakpoint] = [:]
     private var automationDidEmitDuringDrag: Set<ContainerAutomationPendingKey> = []
     private var trackAutomationDidEmitDuringDrag: Set<TrackAutomationPendingKey> = []
+    private var containerLiveOverlay: PlaybackGridContainerOverlay?
     private var midiGhostOverlay: PlaybackGridMIDINoteOverlay?
     private var midiLiveOverlay: PlaybackGridMIDINoteOverlay?
     private var automationGhostOverlay: PlaybackGridAutomationBreakpointOverlay?
     private var automationLiveOverlay: PlaybackGridAutomationBreakpointOverlay?
     private var automationShapeGhostOverlay: PlaybackGridAutomationShapeOverlay?
     private var automationShapeLiveOverlay: PlaybackGridAutomationShapeOverlay?
+    private var waveformPeaksProvider: ((_ container: Container) -> [Float]?)?
+    private var waveformExtremaProvider: ((_ container: Container) -> [WaveformExtrema]?)?
+    private var waveformRMSProvider: ((_ container: Container) -> [Float]?)?
+    private var audioDurationBarsProvider: ((_ container: Container) -> Double?)?
+
+    public var activeContainerOverlays: [PlaybackGridContainerOverlay] {
+        var overlays: [PlaybackGridContainerOverlay] = []
+        if let live = containerLiveOverlay { overlays.append(live) }
+        return overlays
+    }
 
     public var activeMIDINoteOverlays: [PlaybackGridMIDINoteOverlay] {
         var overlays: [PlaybackGridMIDINoteOverlay] = []
@@ -103,6 +124,18 @@ public final class PlaybackGridInteractionController {
         self.sink = sink
     }
 
+    public func setWaveformProviders(
+        peaks: ((_ container: Container) -> [Float]?)?,
+        extrema: ((_ container: Container) -> [WaveformExtrema]?)?,
+        rms: ((_ container: Container) -> [Float]?)?,
+        audioDurationBars: ((_ container: Container) -> Double?)?
+    ) {
+        waveformPeaksProvider = peaks
+        waveformExtremaProvider = extrema
+        waveformRMSProvider = rms
+        audioDurationBarsProvider = audioDurationBars
+    }
+
     public func handleMouseDown(
         event: NSEvent,
         point: CGPoint,
@@ -115,7 +148,7 @@ public final class PlaybackGridInteractionController {
         case .ruler:
             if event.modifierFlags.contains(.shift) {
                 let startBar = barForX(point.x, pixelsPerBar: snapshot.pixelsPerBar, totalBars: snapshot.totalBars)
-                state = .selectingRange(startBar: startBar, startPoint: point)
+                state = .selectingRange(startBar: startBar, startPoint: point, containerID: nil)
             } else {
                 state = .scrubbingRuler
                 sink?.clearRangeSelection()
@@ -134,6 +167,7 @@ public final class PlaybackGridInteractionController {
                 return
             }
             sink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
+            sink?.clearRangeSelection()
             if event.clickCount >= 2 {
                 sink?.openContainerEditor(containerID, trackID: trackID)
                 state = .idle
@@ -146,6 +180,12 @@ public final class PlaybackGridInteractionController {
             }
             guard let track = track(trackID: trackID, in: snapshot.tracks) else {
                 state = .idle
+                return
+            }
+
+            if pick.zone == .selector {
+                let startBar = barForX(point.x, pixelsPerBar: snapshot.pixelsPerBar, totalBars: snapshot.totalBars)
+                state = .selectingRange(startBar: startBar, startPoint: point, containerID: containerID)
                 return
             }
 
@@ -199,6 +239,7 @@ public final class PlaybackGridInteractionController {
                     kind: dragKind,
                     containerID: containerID,
                     trackID: trackID,
+                    container: container,
                     startPoint: point,
                     originStartBar: container.startBar,
                     originLengthBars: container.lengthBars,
@@ -695,8 +736,7 @@ public final class PlaybackGridInteractionController {
             return false
 
         case let .draggingContainer(context):
-            handleContainerDrag(context: context, point: point, snapshot: snapshot)
-            return false
+            return handleContainerDrag(context: context, point: point, snapshot: snapshot, modifiers: modifiers)
 
         case let .creatingContainer(context):
             var updated = context
@@ -761,7 +801,19 @@ public final class PlaybackGridInteractionController {
                 snapshot: snapshot
             )
 
-        case .selectingRange:
+        case let .selectingRange(startBar, _, containerID):
+            let endBar = barForX(point.x, pixelsPerBar: snapshot.pixelsPerBar, totalBars: snapshot.totalBars)
+            if startBar != endBar {
+                if let containerID {
+                    sink?.selectContainerRange(
+                        containerID: containerID,
+                        startBar: Double(min(startBar, endBar)),
+                        endBar: Double(max(startBar, endBar))
+                    )
+                } else {
+                    sink?.selectRange(min(startBar, endBar)...max(startBar, endBar))
+                }
+            }
             return false
 
         case .idle:
@@ -776,14 +828,22 @@ public final class PlaybackGridInteractionController {
     ) {
         PlaybackGridPerfLogger.bump("interaction.mouseUp")
         switch state {
-        case let .selectingRange(startBar, startPoint):
+        case let .selectingRange(startBar, startPoint, containerID):
             let endBar = barForX(point.x, pixelsPerBar: snapshot.pixelsPerBar, totalBars: snapshot.totalBars)
             let dragDistance = abs(point.x - startPoint.x)
             if dragDistance < 3 {
                 sink?.clearRangeSelection()
                 sink?.setPlayhead(bar: snappedBarForX(point.x, snapshot: snapshot))
             } else if startBar != endBar {
-                sink?.selectRange(min(startBar, endBar)...max(startBar, endBar))
+                if let containerID {
+                    sink?.selectContainerRange(
+                        containerID: containerID,
+                        startBar: Double(min(startBar, endBar)),
+                        endBar: Double(max(startBar, endBar))
+                    )
+                } else {
+                    sink?.selectRange(min(startBar, endBar)...max(startBar, endBar))
+                }
             }
 
         case .scrubbingRuler:
@@ -791,12 +851,13 @@ public final class PlaybackGridInteractionController {
 
         case .draggingContainer:
             if case let .draggingContainer(context) = state,
-               context.kind == .clone {
-                let deltaX = point.x - context.startPoint.x
-                let deltaBars = Double(deltaX / snapshot.pixelsPerBar)
-                let target = max(1.0, context.originStartBar + deltaBars)
-                let snapped = snapToGrid(target, snapshot: snapshot)
-                sink?.cloneContainer(context.containerID, trackID: context.trackID, newStartBar: snapped)
+               let preview = containerPreview(
+                    context: context,
+                    point: point,
+                    snapshot: snapshot,
+                    modifiers: modifiers
+               ) {
+                commitContainerPreview(preview, for: context)
             }
 
         case let .draggingMIDINote(context):
@@ -863,6 +924,7 @@ public final class PlaybackGridInteractionController {
         pendingTrackAutomationBreakpointUpdates.removeAll(keepingCapacity: true)
         automationDidEmitDuringDrag.removeAll(keepingCapacity: true)
         trackAutomationDidEmitDuringDrag.removeAll(keepingCapacity: true)
+        containerLiveOverlay = nil
         midiGhostOverlay = nil
         midiLiveOverlay = nil
         automationGhostOverlay = nil
@@ -1246,8 +1308,10 @@ public final class PlaybackGridInteractionController {
 
     private func dragKindForZone(_ zone: GridContainerZone?) -> PlaybackGridContainerDragKind? {
         switch zone {
-        case .move, .selector:
+        case .move:
             return .move
+        case .selector:
+            return nil
         case .resizeLeft:
             return .resizeLeft
         case .resizeRight:
@@ -1265,22 +1329,48 @@ public final class PlaybackGridInteractionController {
         }
     }
 
+    @discardableResult
     private func handleContainerDrag(
         context: PlaybackGridContainerDragContext,
         point: CGPoint,
-        snapshot: PlaybackGridSnapshot
-    ) {
+        snapshot: PlaybackGridSnapshot,
+        modifiers: NSEvent.ModifierFlags = []
+    ) -> Bool {
+        let previousOverlay = containerLiveOverlay
+        guard let preview = containerPreview(
+            context: context,
+            point: point,
+            snapshot: snapshot,
+            modifiers: modifiers
+        ) else {
+            containerLiveOverlay = nil
+            return previousOverlay != nil
+        }
+
+        containerLiveOverlay = preview.overlay
+        return previousOverlay != preview.overlay
+    }
+
+    private func containerPreview(
+        context: PlaybackGridContainerDragContext,
+        point: CGPoint,
+        snapshot: PlaybackGridSnapshot,
+        modifiers: NSEvent.ModifierFlags = []
+    ) -> (overlay: PlaybackGridContainerOverlay, commit: ContainerPreviewCommit)? {
         let deltaX = point.x - context.startPoint.x
         let deltaBars = Double(deltaX / snapshot.pixelsPerBar)
+        var previewContainer = context.container
 
         switch context.kind {
-        case .move:
+        case .move, .clone:
             let target = max(1.0, context.originStartBar + deltaBars)
             let snapped = snapToGrid(target, snapshot: snapshot)
-            sink?.moveContainer(context.containerID, trackID: context.trackID, newStartBar: snapped)
-
-        case .clone:
-            break
+            guard abs(snapped - context.originStartBar) > 0.0001 else { return nil }
+            previewContainer.startBar = snapped
+            return (
+                overlay: makeContainerOverlay(from: previewContainer, trackID: context.trackID, snapshot: snapshot),
+                commit: .move(startBar: snapped)
+            )
 
         case .resizeLeft:
             var newStart = context.originStartBar + deltaBars
@@ -1292,14 +1382,27 @@ public final class PlaybackGridInteractionController {
             newStart = max(1.0, newStart)
             newStart = snapToGrid(newStart, snapshot: snapshot)
             newLength = max(1.0, (context.originStartBar + context.originLengthBars) - newStart)
-            sink?.resizeContainerLeft(context.containerID, trackID: context.trackID, newStartBar: newStart, newLengthBars: newLength)
+            guard abs(newStart - context.originStartBar) > 0.0001 || abs(newLength - context.originLengthBars) > 0.0001 else {
+                return nil
+            }
+            previewContainer.startBar = newStart
+            previewContainer.lengthBars = newLength
+            return (
+                overlay: makeContainerOverlay(from: previewContainer, trackID: context.trackID, snapshot: snapshot),
+                commit: .resizeLeft(startBar: newStart, lengthBars: newLength)
+            )
 
         case .resizeRight:
             var newLength = context.originLengthBars + deltaBars
             newLength = max(1.0, newLength)
             let snappedEnd = snapToGrid(context.originStartBar + newLength, snapshot: snapshot)
             newLength = max(1.0, snappedEnd - context.originStartBar)
-            sink?.resizeContainerRight(context.containerID, trackID: context.trackID, newLengthBars: newLength)
+            guard abs(newLength - context.originLengthBars) > 0.0001 else { return nil }
+            previewContainer.lengthBars = newLength
+            return (
+                overlay: makeContainerOverlay(from: previewContainer, trackID: context.trackID, snapshot: snapshot),
+                commit: .resizeRight(lengthBars: newLength)
+            )
 
         case .trimLeft:
             var newStart = context.originStartBar + deltaBars
@@ -1323,13 +1426,17 @@ public final class PlaybackGridInteractionController {
             newOffset = max(0.0, newOffset)
             newStart = snapToGrid(newStart, snapshot: snapshot)
             newLength = max(1.0, (context.originStartBar + context.originLengthBars) - newStart)
-
-            sink?.trimContainerLeft(
-                context.containerID,
-                trackID: context.trackID,
-                newAudioStartOffset: newOffset,
-                newStartBar: newStart,
-                newLengthBars: newLength
+            guard abs(newStart - context.originStartBar) > 0.0001
+                || abs(newLength - context.originLengthBars) > 0.0001
+                || abs(newOffset - context.originAudioStartOffset) > 0.0001 else {
+                return nil
+            }
+            previewContainer.startBar = newStart
+            previewContainer.lengthBars = newLength
+            previewContainer.audioStartOffset = newOffset
+            return (
+                overlay: makeContainerOverlay(from: previewContainer, trackID: context.trackID, snapshot: snapshot),
+                commit: .trimLeft(audioStartOffset: newOffset, startBar: newStart, lengthBars: newLength)
             )
 
         case .trimRight:
@@ -1337,21 +1444,108 @@ public final class PlaybackGridInteractionController {
             newLength = max(1.0, newLength)
             let snappedEnd = snapToGrid(context.originStartBar + newLength, snapshot: snapshot)
             newLength = max(1.0, snappedEnd - context.originStartBar)
-            sink?.trimContainerRight(context.containerID, trackID: context.trackID, newLengthBars: newLength)
+            guard abs(newLength - context.originLengthBars) > 0.0001 else { return nil }
+            previewContainer.lengthBars = newLength
+            return (
+                overlay: makeContainerOverlay(from: previewContainer, trackID: context.trackID, snapshot: snapshot),
+                commit: .trimRight(lengthBars: newLength)
+            )
 
         case .fadeLeft:
             let rawDuration = context.originEnterFadeDuration + deltaBars
             let clamped = max(0.0, min(context.originLengthBars, rawDuration))
-            let snapped = snapFadeDuration(clamped, snapshot: snapshot)
-            let fade = snapped < 0.125 ? nil : FadeSettings(duration: snapped, curve: context.originEnterFadeCurve)
-            sink?.setContainerEnterFade(context.containerID, fade: fade)
+            let shouldSnap = modifiers.contains(.command)
+            let duration = shouldSnap ? snapFadeDuration(clamped, snapshot: snapshot) : clamped
+            let fade = duration < 0.125 ? nil : FadeSettings(duration: duration, curve: context.originEnterFadeCurve)
+            guard fade != context.container.enterFade else { return nil }
+            previewContainer.enterFade = fade
+            return (
+                overlay: makeContainerOverlay(from: previewContainer, trackID: context.trackID, snapshot: snapshot),
+                commit: .enterFade(fade)
+            )
 
         case .fadeRight:
             let rawDuration = context.originExitFadeDuration - deltaBars
             let clamped = max(0.0, min(context.originLengthBars, rawDuration))
-            let snapped = snapFadeDuration(clamped, snapshot: snapshot)
-            let fade = snapped < 0.125 ? nil : FadeSettings(duration: snapped, curve: context.originExitFadeCurve)
-            sink?.setContainerExitFade(context.containerID, fade: fade)
+            let shouldSnap = modifiers.contains(.command)
+            let duration = shouldSnap ? snapFadeDuration(clamped, snapshot: snapshot) : clamped
+            let fade = duration < 0.125 ? nil : FadeSettings(duration: duration, curve: context.originExitFadeCurve)
+            guard fade != context.container.exitFade else { return nil }
+            previewContainer.exitFade = fade
+            return (
+                overlay: makeContainerOverlay(from: previewContainer, trackID: context.trackID, snapshot: snapshot),
+                commit: .exitFade(fade)
+            )
+        }
+    }
+
+    private func makeContainerOverlay(
+        from container: Container,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> PlaybackGridContainerOverlay {
+        let original = containerAndTrack(
+            containerID: container.id,
+            trackID: trackID,
+            in: snapshot.tracks
+        )?.1
+        let resolvedMIDINotes = original?.midiSequence?.notes ?? container.midiSequence?.notes
+        return PlaybackGridContainerOverlay(
+            containerID: container.id,
+            trackID: trackID,
+            container: container,
+            waveformPeaks: waveformPeaksProvider?(container),
+            waveformExtrema: waveformExtremaProvider?(container),
+            waveformRMS: waveformRMSProvider?(container),
+            resolvedMIDINotes: resolvedMIDINotes,
+            audioDurationBars: audioDurationBarsProvider?(container),
+            isGhost: false
+        )
+    }
+
+    private func commitContainerPreview(
+        _ preview: (overlay: PlaybackGridContainerOverlay, commit: ContainerPreviewCommit),
+        for context: PlaybackGridContainerDragContext
+    ) {
+        switch context.kind {
+        case .move:
+            if case let .move(startBar) = preview.commit {
+                sink?.moveContainer(context.containerID, trackID: context.trackID, newStartBar: startBar)
+            }
+        case .clone:
+            if case let .move(startBar) = preview.commit {
+                sink?.cloneContainer(context.containerID, trackID: context.trackID, newStartBar: startBar)
+            }
+        case .resizeLeft:
+            if case let .resizeLeft(startBar, lengthBars) = preview.commit {
+                sink?.resizeContainerLeft(context.containerID, trackID: context.trackID, newStartBar: startBar, newLengthBars: lengthBars)
+            }
+        case .resizeRight:
+            if case let .resizeRight(lengthBars) = preview.commit {
+                sink?.resizeContainerRight(context.containerID, trackID: context.trackID, newLengthBars: lengthBars)
+            }
+        case .trimLeft:
+            if case let .trimLeft(audioStartOffset, startBar, lengthBars) = preview.commit {
+                sink?.trimContainerLeft(
+                    context.containerID,
+                    trackID: context.trackID,
+                    newAudioStartOffset: audioStartOffset,
+                    newStartBar: startBar,
+                    newLengthBars: lengthBars
+                )
+            }
+        case .trimRight:
+            if case let .trimRight(lengthBars) = preview.commit {
+                sink?.trimContainerRight(context.containerID, trackID: context.trackID, newLengthBars: lengthBars)
+            }
+        case .fadeLeft:
+            if case let .enterFade(fade) = preview.commit {
+                sink?.setContainerEnterFade(context.containerID, fade: fade)
+            }
+        case .fadeRight:
+            if case let .exitFade(fade) = preview.commit {
+                sink?.setContainerExitFade(context.containerID, fade: fade)
+            }
         }
     }
 

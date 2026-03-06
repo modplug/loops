@@ -8,7 +8,11 @@ public final class PlaybackGridNSView: NSView {
 
     private var renderer: PlaybackGridRenderer?
     private let metalLayer: CAMetalLayer
+    private let waveformOverlayLayer = CALayer()
     private let textOverlayLayer = TimelineTextOverlayLayer()
+    private let waveformTileCache = WaveformTileCache()
+    private var waveformTileLayers: [ID<Container>: CALayer] = [:]
+    private var waveformTileHashes: [ID<Container>: Int] = [:]
 
     private let sceneBuilder = PlaybackGridSceneBuilder()
     private let pickingRenderer = PlaybackGridPickingRenderer()
@@ -34,11 +38,31 @@ public final class PlaybackGridNSView: NSView {
     private var lastSuppressedAutomationLanes: Set<PlaybackGridAutomationSuppression> = []
 
     public var waveformPeaksProvider: ((_ container: Container) -> [Float]?)? {
-        didSet { sceneBuilder.waveformPeaksProvider = waveformPeaksProvider }
+        didSet {
+            sceneBuilder.waveformPeaksProvider = waveformPeaksProvider
+            updateInteractionWaveformProviders()
+        }
+    }
+
+    public var waveformExtremaProvider: ((_ container: Container) -> [WaveformExtrema]?)? {
+        didSet {
+            sceneBuilder.waveformExtremaProvider = waveformExtremaProvider
+            updateInteractionWaveformProviders()
+        }
+    }
+
+    public var waveformRMSProvider: ((_ container: Container) -> [Float]?)? {
+        didSet {
+            sceneBuilder.waveformRMSProvider = waveformRMSProvider
+            updateInteractionWaveformProviders()
+        }
     }
 
     public var audioDurationBarsProvider: ((_ container: Container) -> Double?)? {
-        didSet { sceneBuilder.audioDurationBarsProvider = audioDurationBarsProvider }
+        didSet {
+            sceneBuilder.audioDurationBarsProvider = audioDurationBarsProvider
+            updateInteractionWaveformProviders()
+        }
     }
 
     public var resolvedMIDISequenceProvider: ((_ container: Container) -> MIDISequence?)? {
@@ -59,11 +83,20 @@ public final class PlaybackGridNSView: NSView {
         || UserDefaults.standard.bool(forKey: "PlaybackGridDebugLogs")
     }()
     private static let publishCursorToViewModel: Bool = {
-        ProcessInfo.processInfo.environment["LOOPS_GRID_CURSOR_PUBLISH"] == "1"
-        || UserDefaults.standard.bool(forKey: "PlaybackGridPublishCursorModel")
+        ProcessInfo.processInfo.environment["LOOPS_GRID_CURSOR_PUBLISH"] != "0"
+        && !UserDefaults.standard.bool(forKey: "PlaybackGridDisableCursorPublish")
     }()
-    private static let cursorPublishInterval: CFTimeInterval = 1.0 / 12.0
+    private static let cursorPublishInterval: CFTimeInterval = 1.0 / 60.0
+    private static let waveformTilesEnabled: Bool = {
+        ProcessInfo.processInfo.environment["LOOPS_GRID_WAVEFORM_TILES"] == "1"
+        || UserDefaults.standard.bool(forKey: "PlaybackGridWaveformTiles")
+    }()
     private var lastCursorPublishTime: CFTimeInterval = 0
+
+    private struct WaveformTileData {
+        let extrema: [WaveformExtrema]
+        let rms: [Float]
+    }
 
     private static func makeMetalLayer() -> CAMetalLayer {
         let layer = CAMetalLayer()
@@ -99,10 +132,16 @@ public final class PlaybackGridNSView: NSView {
 
         if let device = metalLayer.device {
             renderer = try? PlaybackGridRenderer(device: device)
+            renderer?.useWaveformTileOverlay = Self.waveformTilesEnabled
         }
 
         metalLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
         backingLayer.addSublayer(metalLayer)
+
+        waveformOverlayLayer.zPosition = 0.5
+        waveformOverlayLayer.contentsScale = metalLayer.contentsScale
+        waveformOverlayLayer.masksToBounds = true
+        backingLayer.addSublayer(waveformOverlayLayer)
 
         textOverlayLayer.zPosition = 1
         textOverlayLayer.contentsScale = metalLayer.contentsScale
@@ -138,8 +177,11 @@ public final class PlaybackGridNSView: NSView {
         )
 
         sceneBuilder.waveformPeaksProvider = waveformPeaksProvider
+        sceneBuilder.waveformExtremaProvider = waveformExtremaProvider
+        sceneBuilder.waveformRMSProvider = waveformRMSProvider
         sceneBuilder.audioDurationBarsProvider = audioDurationBarsProvider
         sceneBuilder.resolvedMIDISequenceProvider = resolvedMIDISequenceProvider
+        updateInteractionWaveformProviders()
     }
 
     public override var isFlipped: Bool { true }
@@ -157,6 +199,7 @@ public final class PlaybackGridNSView: NSView {
         if let window {
             let scale = window.backingScaleFactor
             metalLayer.contentsScale = scale
+            waveformOverlayLayer.contentsScale = scale
             textOverlayLayer.contentsScale = scale
         }
     }
@@ -165,6 +208,7 @@ public final class PlaybackGridNSView: NSView {
         super.viewDidChangeBackingProperties()
         let scale = window?.backingScaleFactor ?? 2.0
         metalLayer.contentsScale = scale
+        waveformOverlayLayer.contentsScale = scale
         textOverlayLayer.contentsScale = scale
         needsDisplay = true
     }
@@ -175,6 +219,7 @@ public final class PlaybackGridNSView: NSView {
     }
 
     @objc private func invalidateAndRedraw() {
+        waveformTileCache.invalidateAll()
         needsBufferRebuild = true
         needsDisplay = true
     }
@@ -182,6 +227,15 @@ public final class PlaybackGridNSView: NSView {
     public func setCommandSink(_ sink: PlaybackGridCommandSink?) {
         commandSink = sink
         interactionController.setCommandSink(sink)
+    }
+
+    private func updateInteractionWaveformProviders() {
+        interactionController.setWaveformProviders(
+            peaks: waveformPeaksProvider,
+            extrema: waveformExtremaProvider,
+            rms: waveformRMSProvider,
+            audioDurationBars: audioDurationBarsProvider
+        )
     }
 
     public override func menu(for event: NSEvent) -> NSMenu? {
@@ -205,15 +259,78 @@ public final class PlaybackGridNSView: NSView {
         contextMenuTargetTrackID = trackID
         commandSink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
 
+        let container = snapshot.tracks
+            .first { $0.id == trackID }?
+            .containers
+            .first { $0.id == containerID }
+        let track = snapshot.tracks.first { $0.id == trackID }
+        let selectedCount = snapshot.selectedContainerIDs.count
+        let isClone = container?.parentContainerID != nil
+        let crossfades = track?.crossfades
+            .filter { $0.containerAID == containerID || $0.containerBID == containerID } ?? []
+
         let menu = NSMenu(title: "Container")
-        menu.addItem(NSMenuItem(title: "Copy", action: #selector(contextCopyContainer(_:)), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Duplicate", action: #selector(contextDuplicateContainer(_:)), keyEquivalent: ""))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Split at Playhead", action: #selector(contextSplitContainer(_:)), keyEquivalent: ""))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Delete", action: #selector(contextDeleteContainer(_:)), keyEquivalent: ""))
+
+        if selectedCount > 1 {
+            menu.addItem(NSMenuItem(title: "Copy \(selectedCount) Containers", action: #selector(contextCopyContainer(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Duplicate \(selectedCount) Containers", action: #selector(contextDuplicateContainer(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Split \(selectedCount) at Playhead", action: #selector(contextSplitContainer(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Glue", action: #selector(contextGlueContainers(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Delete \(selectedCount) Containers", action: #selector(contextDeleteContainer(_:)), keyEquivalent: ""))
+        } else {
+            menu.addItem(NSMenuItem(title: "Copy", action: #selector(contextCopyContainer(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Duplicate", action: #selector(contextDuplicateContainer(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Link (Create Clone)", action: #selector(contextLinkContainer(_:)), keyEquivalent: ""))
+            if isClone {
+                menu.addItem(NSMenuItem(title: "Unlink (Consolidate)", action: #selector(contextUnlinkContainer(_:)), keyEquivalent: ""))
+            }
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Split at Playhead", action: #selector(contextSplitContainer(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Edit…", action: #selector(contextEditContainer(_:)), keyEquivalent: ""))
+
+            let armTitle = container?.isRecordArmed == true ? "Disarm" : "Arm"
+            menu.addItem(NSMenuItem(title: armTitle, action: #selector(contextToggleArm(_:)), keyEquivalent: ""))
+
+            if !crossfades.isEmpty {
+                let crossfadeMenu = NSMenu(title: "Crossfade Curve")
+                for crossfade in crossfades {
+                    let submenu = NSMenu(title: "Crossfade")
+                    for curveType in CrossfadeCurveType.allCases {
+                        let item = NSMenuItem(title: curveType.displayName, action: #selector(contextSetCrossfadeCurve(_:)), keyEquivalent: "")
+                        item.representedObject = CrossfadeCurveMenuInfo(crossfadeID: crossfade.id, trackID: trackID, curveType: curveType)
+                        item.target = self
+                        if crossfade.curveType == curveType {
+                            item.state = .on
+                        }
+                        submenu.addItem(item)
+                    }
+                    if crossfades.count == 1 {
+                        let curveItem = NSMenuItem(title: "Crossfade Curve", action: nil, keyEquivalent: "")
+                        curveItem.submenu = submenu
+                        menu.addItem(curveItem)
+                    } else {
+                        let label = crossfade.containerAID == containerID ? "Crossfade (exit)" : "Crossfade (enter)"
+                        let curveItem = NSMenuItem(title: label, action: nil, keyEquivalent: "")
+                        curveItem.submenu = submenu
+                        crossfadeMenu.addItem(curveItem)
+                    }
+                }
+                if crossfades.count > 1 {
+                    let parentItem = NSMenuItem(title: "Crossfade Curves", action: nil, keyEquivalent: "")
+                    parentItem.submenu = crossfadeMenu
+                    menu.addItem(parentItem)
+                }
+            }
+
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Delete", action: #selector(contextDeleteContainer(_:)), keyEquivalent: ""))
+        }
+
         for item in menu.items {
-            item.target = self
+            if item.target == nil && !item.isSeparatorItem && item.action != nil {
+                item.target = self
+            }
         }
         return menu
     }
@@ -242,6 +359,40 @@ public final class PlaybackGridNSView: NSView {
         }
     }
 
+    @objc private func contextLinkContainer(_ sender: NSMenuItem) {
+        withContextTarget { containerID, trackID in
+            commandSink?.linkContainer(containerID, trackID: trackID)
+        }
+    }
+
+    @objc private func contextUnlinkContainer(_ sender: NSMenuItem) {
+        withContextTarget { containerID, trackID in
+            commandSink?.unlinkContainer(containerID, trackID: trackID)
+        }
+    }
+
+    @objc private func contextGlueContainers(_ sender: NSMenuItem) {
+        guard let snapshot else { return }
+        commandSink?.glueContainers(containerIDs: snapshot.selectedContainerIDs)
+    }
+
+    @objc private func contextToggleArm(_ sender: NSMenuItem) {
+        withContextTarget { containerID, trackID in
+            commandSink?.toggleContainerArm(containerID, trackID: trackID)
+        }
+    }
+
+    @objc private func contextEditContainer(_ sender: NSMenuItem) {
+        withContextTarget { containerID, trackID in
+            commandSink?.openContainerEditor(containerID, trackID: trackID)
+        }
+    }
+
+    @objc private func contextSetCrossfadeCurve(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? CrossfadeCurveMenuInfo else { return }
+        commandSink?.setCrossfadeCurveType(trackID: info.trackID, crossfadeID: info.crossfadeID, curveType: info.curveType)
+    }
+
     private func withContextTarget(_ action: (_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void) {
         guard let containerID = contextMenuTargetContainerID,
               let trackID = contextMenuTargetTrackID else { return }
@@ -265,13 +416,29 @@ public final class PlaybackGridNSView: NSView {
 
         PlaybackGridPerfLogger.bump("grid.configure.hit")
         configureHitCount += 1
+        let oldSnapshot = snapshot
+        let oldScene = scene
         snapshot = newSnapshot
         let buildStart = PlaybackGridPerfLogger.begin()
         scene = sceneBuilder.build(snapshot: newSnapshot)
         PlaybackGridPerfLogger.end("grid.configure.sceneBuild.ms", buildStart)
         needsBufferRebuild = true
         configureWillRedraw = true
-        needsDisplay = true
+        if let oldSnapshot {
+            let dirtyRect = dirtyRectForSnapshotChange(
+                oldSnapshot: oldSnapshot,
+                oldScene: oldScene,
+                newSnapshot: newSnapshot,
+                newScene: scene
+            )
+            if !dirtyRect.isNull {
+                setNeedsDisplay(dirtyRect)
+            } else {
+                needsDisplay = true
+            }
+        } else {
+            needsDisplay = true
+        }
 
         if Self.debugLogsEnabled {
             print("[GRIDDBG][\(debugLabel)] configure tracks=\(newSnapshot.tracks.count) showRuler=\(newSnapshot.showRulerAndSections) ppb=\(String(format: "%.2f", newSnapshot.pixelsPerBar)) bars=\(newSnapshot.totalBars) minH=\(String(format: "%.1f", newSnapshot.minimumContentHeight)) sceneH=\(String(format: "%.1f", scene.contentHeight)) sceneTracks=\(scene.trackLayouts.count) bounds=\(NSStringFromRect(bounds))")
@@ -346,9 +513,14 @@ public final class PlaybackGridNSView: NSView {
            currentVisible.equalTo(lastObservedVisibleRect) {
             return
         }
+        let exposedRect = exposedRect(from: lastObservedVisibleRect, to: currentVisible)
         lastObservedVisibleRect = currentVisible
         needsBufferRebuild = true
-        needsDisplay = true
+        if !exposedRect.isNull {
+            setNeedsDisplay(exposedRect)
+        } else {
+            needsDisplay = true
+        }
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
@@ -415,9 +587,16 @@ public final class PlaybackGridNSView: NSView {
                     NSCursor.openHand.set()
                 }
             case .containerZone:
-                if pick.zone == .resizeLeft || pick.zone == .resizeRight {
+                switch pick.zone {
+                case .fadeLeft, .fadeRight:
+                    NSCursor.crosshair.set()
+                case .resizeLeft, .resizeRight, .trimLeft, .trimRight:
                     NSCursor.resizeLeftRight.set()
-                } else {
+                case .selector:
+                    NSCursor.iBeam.set()
+                case .move:
+                    NSCursor.openHand.set()
+                case nil:
                     NSCursor.arrow.set()
                 }
             default:
@@ -434,7 +613,6 @@ public final class PlaybackGridNSView: NSView {
         }
         if newHoveredPick != hoveredPick {
             hoveredPick = newHoveredPick
-            needsBufferRebuild = true
             needsDisplay = true
         }
     }
@@ -450,7 +628,6 @@ public final class PlaybackGridNSView: NSView {
         }
         if hoveredPick != .none {
             hoveredPick = .none
-            needsBufferRebuild = true
             needsDisplay = true
         }
         NSCursor.arrow.set()
@@ -582,6 +759,7 @@ public final class PlaybackGridNSView: NSView {
         let rawVisible = visibleRect
         let visible = rawVisible.intersection(bounds)
         guard visible.width > 0, visible.height > 0 else { return }
+        let useWaveformTiles = Self.waveformTilesEnabled && snapshot.pixelsPerBar < 48
 
         let scale = metalLayer.contentsScale
 
@@ -589,8 +767,17 @@ public final class PlaybackGridNSView: NSView {
         CATransaction.setDisableActions(true)
         metalLayer.frame = visible
         metalLayer.drawableSize = CGSize(width: visible.width * scale, height: visible.height * scale)
+        waveformOverlayLayer.frame = visible
+        waveformOverlayLayer.isHidden = !useWaveformTiles
         textOverlayLayer.frame = visible
         CATransaction.commit()
+
+        renderer.useWaveformTileOverlay = useWaveformTiles
+        if useWaveformTiles {
+            updateWaveformTileOverlay(visibleRect: visible, snapshot: snapshot)
+        } else {
+            hideWaveformTileOverlay()
+        }
 
         let drawableStart = PlaybackGridPerfLogger.begin()
         guard let drawable = metalLayer.nextDrawable() else {
@@ -610,12 +797,13 @@ public final class PlaybackGridNSView: NSView {
         }
         PlaybackGridPerfLogger.end("grid.updateLayer.semaphoreWait.ms", waitStart)
         let midiOverlays = interactionController.activeMIDINoteOverlays
+        let containerOverlays = interactionController.activeContainerOverlays
         let automationOverlays = interactionController.activeAutomationBreakpointOverlays
         let automationShapeOverlays = interactionController.activeAutomationShapeOverlays
         let suppressedAutomationLanes = interactionController.activeAutomationSuppressedLanes
         if suppressedAutomationLanes != lastSuppressedAutomationLanes {
             lastSuppressedAutomationLanes = suppressedAutomationLanes
-            needsBufferRebuild = true
+            needsDisplay = true
         }
 
         if needsBufferRebuild {
@@ -626,12 +814,19 @@ public final class PlaybackGridNSView: NSView {
                 snapshot: snapshot,
                 canvasSize: bounds.size,
                 visibleRect: visible,
-                focusedPick: hoveredPick,
+                focusedPick: .none,
                 suppressedAutomationLanes: suppressedAutomationLanes
             )
             PlaybackGridPerfLogger.end("grid.updateLayer.buildBuffers.ms", rebuildStart)
             needsBufferRebuild = false
         }
+        let focusOverlayStart = PlaybackGridPerfLogger.begin()
+        renderer.buildFocusOverlayBuffer(
+            scene: scene,
+            snapshot: snapshot,
+            focusedPick: hoveredPick
+        )
+        PlaybackGridPerfLogger.end("grid.updateLayer.focusOverlayBuffer.ms", focusOverlayStart)
         let overlayBufferStart = PlaybackGridPerfLogger.begin()
         renderer.buildMIDIOverlayBuffer(
             scene: scene,
@@ -639,6 +834,13 @@ public final class PlaybackGridNSView: NSView {
             midiOverlays: midiOverlays
         )
         PlaybackGridPerfLogger.end("grid.updateLayer.midiOverlayBuffer.ms", overlayBufferStart)
+        let containerOverlayStart = PlaybackGridPerfLogger.begin()
+        renderer.buildContainerOverlayBuffer(
+            scene: scene,
+            snapshot: snapshot,
+            overlays: containerOverlays
+        )
+        PlaybackGridPerfLogger.end("grid.updateLayer.containerOverlayBuffer.ms", containerOverlayStart)
         let automationOverlayStart = PlaybackGridPerfLogger.begin()
         renderer.buildAutomationOverlayBuffer(
             scene: scene,
@@ -750,6 +952,188 @@ public final class PlaybackGridNSView: NSView {
         return NSSize(width: width, height: scene.contentHeight)
     }
 
+    private func updateWaveformTileOverlay(visibleRect: CGRect, snapshot: PlaybackGridSnapshot) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        var visibleContainerIDs = Set<ID<Container>>()
+        let tilePixelsPerBar = quantizedWaveformPixelsPerBar(for: snapshot.pixelsPerBar)
+
+        for trackLayout in scene.trackLayouts {
+            for containerLayout in trackLayout.containers {
+                guard containerLayout.rect.intersects(visibleRect),
+                      let waveformData = tileWaveformData(for: containerLayout),
+                      !waveformData.extrema.isEmpty else {
+                    continue
+                }
+
+                let waveformRect = waveformRectForTile(
+                    containerLayout: containerLayout,
+                    pixelsPerBar: snapshot.pixelsPerBar
+                )
+                guard waveformRect.width >= 2,
+                      waveformRect.height >= 2,
+                      waveformRect.intersects(visibleRect) else {
+                    continue
+                }
+
+                visibleContainerIDs.insert(containerLayout.container.id)
+
+                let tileHash = hashWaveformTile(
+                    waveformData: waveformData,
+                    containerLayout: containerLayout,
+                    waveformHeight: waveformRect.height
+                )
+                if waveformTileHashes[containerLayout.container.id] != tileHash {
+                    waveformTileCache.invalidate(containerID: containerLayout.container.id)
+                    waveformTileHashes[containerLayout.container.id] = tileHash
+                }
+
+                let containerLengthBars = max(0.0001, Double(waveformRect.width / snapshot.pixelsPerBar))
+                let tile = waveformTileCache.tile(
+                    forContainerID: containerLayout.container.id,
+                    pixelsPerBar: tilePixelsPerBar
+                ) ?? waveformTileCache.generateTile(
+                    containerID: containerLayout.container.id,
+                    extrema: waveformData.extrema,
+                    rms: waveformData.rms,
+                    containerLengthBars: containerLengthBars,
+                    pixelsPerBar: tilePixelsPerBar,
+                    height: waveformRect.height,
+                    color: .white,
+                    contentsScale: waveformOverlayLayer.contentsScale
+                )
+
+                guard let tile else { continue }
+
+                let layer = waveformTileLayers[containerLayout.container.id] ?? {
+                    let layer = CALayer()
+                    layer.actions = [
+                        "position": NSNull(),
+                        "bounds": NSNull(),
+                        "frame": NSNull(),
+                        "hidden": NSNull(),
+                        "contents": NSNull()
+                    ]
+                    layer.contentsGravity = .resize
+                    layer.masksToBounds = true
+                    layer.cornerRadius = 3
+                    layer.minificationFilter = .linear
+                    layer.magnificationFilter = .linear
+                    layer.contentsScale = waveformOverlayLayer.contentsScale
+                    waveformOverlayLayer.addSublayer(layer)
+                    waveformTileLayers[containerLayout.container.id] = layer
+                    return layer
+                }()
+
+                layer.contentsScale = waveformOverlayLayer.contentsScale
+                layer.contents = tile.image
+                layer.frame = waveformRect.offsetBy(dx: -visibleRect.minX, dy: -visibleRect.minY)
+                layer.isHidden = false
+            }
+        }
+
+        for (containerID, layer) in waveformTileLayers where !visibleContainerIDs.contains(containerID) {
+            layer.isHidden = true
+        }
+
+        CATransaction.commit()
+    }
+
+    private func hideWaveformTileOverlay() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in waveformTileLayers.values {
+            layer.isHidden = true
+        }
+        CATransaction.commit()
+    }
+
+    private func waveformRectForTile(
+        containerLayout: PlaybackGridContainerLayout,
+        pixelsPerBar: CGFloat
+    ) -> CGRect {
+        var rect = containerLayout.rect
+        rect.origin.y += 1
+        rect.size.height = max(0, rect.height - 2)
+
+        if let audioDurationBars = containerLayout.audioDurationBars {
+            let availableBars = max(0, audioDurationBars - containerLayout.container.audioStartOffset)
+            let visibleBars = min(containerLayout.container.lengthBars, availableBars)
+            if visibleBars > 0 {
+                rect.size.width = CGFloat(visibleBars) * pixelsPerBar
+            }
+        }
+
+        return rect
+    }
+
+    private func quantizedWaveformPixelsPerBar(for pixelsPerBar: CGFloat) -> CGFloat {
+        let standard = WaveformTileCache.standardZoomLevels
+        guard let nearest = standard.min(by: { abs($0 - pixelsPerBar) < abs($1 - pixelsPerBar) }) else {
+            return pixelsPerBar
+        }
+        let ratio = pixelsPerBar / nearest
+        if ratio >= 0.75 && ratio <= 1.5 {
+            return nearest
+        }
+        return pixelsPerBar
+    }
+
+    private func tileWaveformData(for containerLayout: PlaybackGridContainerLayout) -> WaveformTileData? {
+        if let extrema = containerLayout.waveformExtrema, !extrema.isEmpty {
+            let rms = containerLayout.waveformRMS ?? extrema.map { max(abs($0.minimum), abs($0.maximum)) * 0.65 }
+            return WaveformTileData(extrema: extrema, rms: rms)
+        }
+        if let peaks = containerLayout.waveformPeaks, !peaks.isEmpty {
+            return WaveformTileData(
+                extrema: peaks.map { WaveformExtrema(minimum: -$0, maximum: $0) },
+                rms: containerLayout.waveformRMS ?? peaks
+            )
+        }
+        return nil
+    }
+
+    private func hashWaveformTile(
+        waveformData: WaveformTileData,
+        containerLayout: PlaybackGridContainerLayout,
+        waveformHeight: CGFloat
+    ) -> Int {
+        var hasher = Hasher()
+        hasher.combine(waveformData.extrema.count)
+        hasher.combine(waveformData.rms.count)
+        hasher.combine(Int(waveformHeight.rounded(.toNearestOrAwayFromZero)))
+        hasher.combine(containerLayout.container.lengthBars.bitPattern)
+        hasher.combine(containerLayout.container.audioStartOffset.bitPattern)
+        hasher.combine(containerLayout.audioDurationBars?.bitPattern)
+
+        let sampleCount = min(16, waveformData.extrema.count)
+        let stride = max(1, waveformData.extrema.count / sampleCount)
+        var index = 0
+        while index < waveformData.extrema.count {
+            let value = waveformData.extrema[index]
+            hasher.combine(value.minimum.bitPattern)
+            hasher.combine(value.maximum.bitPattern)
+            index += stride
+        }
+        if let last = waveformData.extrema.last {
+            hasher.combine(last.minimum.bitPattern)
+            hasher.combine(last.maximum.bitPattern)
+        }
+
+        let rmsSampleCount = min(8, waveformData.rms.count)
+        if rmsSampleCount > 0 {
+            let rmsStride = max(1, waveformData.rms.count / rmsSampleCount)
+            var rmsIndex = 0
+            while rmsIndex < waveformData.rms.count {
+                hasher.combine(waveformData.rms[rmsIndex].bitPattern)
+                rmsIndex += rmsStride
+            }
+        }
+
+        return hasher.finalize()
+    }
+
     private func staticSnapshotEqual(_ lhs: PlaybackGridSnapshot, _ rhs: PlaybackGridSnapshot) -> Bool {
         lhs.tracks == rhs.tracks
             && lhs.sections == rhs.sections
@@ -773,6 +1157,112 @@ public final class PlaybackGridNSView: NSView {
             && lhs.showRulerAndSections == rhs.showRulerAndSections
             && lhs.bottomPadding == rhs.bottomPadding
             && lhs.minimumContentHeight == rhs.minimumContentHeight
+    }
+
+    private func dirtyRectForSnapshotChange(
+        oldSnapshot: PlaybackGridSnapshot,
+        oldScene: PlaybackGridScene,
+        newSnapshot: PlaybackGridSnapshot,
+        newScene: PlaybackGridScene
+    ) -> CGRect {
+        if oldSnapshot.pixelsPerBar != newSnapshot.pixelsPerBar
+            || oldSnapshot.totalBars != newSnapshot.totalBars
+            || oldSnapshot.timeSignature != newSnapshot.timeSignature
+            || oldSnapshot.trackHeights != newSnapshot.trackHeights
+            || oldSnapshot.inlineMIDILaneHeights != newSnapshot.inlineMIDILaneHeights
+            || oldSnapshot.inlineMIDIConfigs != newSnapshot.inlineMIDIConfigs
+            || oldSnapshot.automationExpandedTrackIDs != newSnapshot.automationExpandedTrackIDs
+            || oldSnapshot.automationSubLaneHeight != newSnapshot.automationSubLaneHeight
+            || oldSnapshot.automationToolbarHeight != newSnapshot.automationToolbarHeight
+            || oldSnapshot.defaultTrackHeight != newSnapshot.defaultTrackHeight
+            || oldSnapshot.gridMode != newSnapshot.gridMode
+            || oldSnapshot.showRulerAndSections != newSnapshot.showRulerAndSections
+            || oldSnapshot.minimumContentHeight != newSnapshot.minimumContentHeight {
+            return visibleRect.intersection(bounds)
+        }
+
+        if oldSnapshot.selectedRange != newSnapshot.selectedRange
+            || oldSnapshot.rangeSelection != newSnapshot.rangeSelection {
+            return visibleRect.intersection(bounds)
+        }
+
+        var dirtyRect = CGRect.null
+
+        let oldContainers = Dictionary(uniqueKeysWithValues: oldScene.trackLayouts.flatMap { layout in
+            layout.containers.map { ($0.container.id, $0.rect) }
+        })
+        let newContainers = Dictionary(uniqueKeysWithValues: newScene.trackLayouts.flatMap { layout in
+            layout.containers.map { ($0.container.id, $0.rect) }
+        })
+        let containerIDs = Set(oldContainers.keys).union(newContainers.keys)
+        for containerID in containerIDs {
+            let oldRect = oldContainers[containerID]
+            let newRect = newContainers[containerID]
+            if oldRect != newRect {
+                if let oldRect { dirtyRect = dirtyRect.union(oldRect.insetBy(dx: -4, dy: -4)) }
+                if let newRect { dirtyRect = dirtyRect.union(newRect.insetBy(dx: -4, dy: -4)) }
+            } else if oldSnapshot.selectedContainerIDs.contains(containerID) != newSnapshot.selectedContainerIDs.contains(containerID),
+                      let newRect {
+                dirtyRect = dirtyRect.union(newRect.insetBy(dx: -4, dy: -4))
+            }
+        }
+
+        let oldSections = Dictionary(uniqueKeysWithValues: oldScene.sectionLayouts.map { ($0.section.id, $0.rect) })
+        let newSections = Dictionary(uniqueKeysWithValues: newScene.sectionLayouts.map { ($0.section.id, $0.rect) })
+        let sectionIDs = Set(oldSections.keys).union(newSections.keys)
+        for sectionID in sectionIDs {
+            let oldRect = oldSections[sectionID]
+            let newRect = newSections[sectionID]
+            if oldRect != newRect {
+                if let oldRect { dirtyRect = dirtyRect.union(oldRect.insetBy(dx: -2, dy: -2)) }
+                if let newRect { dirtyRect = dirtyRect.union(newRect.insetBy(dx: -2, dy: -2)) }
+            }
+        }
+
+        if dirtyRect.isNull {
+            return visibleRect.intersection(bounds)
+        }
+        return dirtyRect.intersection(bounds)
+    }
+
+    private func exposedRect(from oldVisible: CGRect, to newVisible: CGRect) -> CGRect {
+        guard !oldVisible.isNull else { return newVisible }
+        var dirtyRect = CGRect.null
+
+        if newVisible.minX < oldVisible.minX {
+            dirtyRect = dirtyRect.union(CGRect(
+                x: newVisible.minX,
+                y: newVisible.minY,
+                width: oldVisible.minX - newVisible.minX,
+                height: newVisible.height
+            ))
+        }
+        if newVisible.maxX > oldVisible.maxX {
+            dirtyRect = dirtyRect.union(CGRect(
+                x: oldVisible.maxX,
+                y: newVisible.minY,
+                width: newVisible.maxX - oldVisible.maxX,
+                height: newVisible.height
+            ))
+        }
+        if newVisible.minY < oldVisible.minY {
+            dirtyRect = dirtyRect.union(CGRect(
+                x: newVisible.minX,
+                y: newVisible.minY,
+                width: newVisible.width,
+                height: oldVisible.minY - newVisible.minY
+            ))
+        }
+        if newVisible.maxY > oldVisible.maxY {
+            dirtyRect = dirtyRect.union(CGRect(
+                x: newVisible.minX,
+                y: oldVisible.maxY,
+                width: newVisible.width,
+                height: newVisible.maxY - oldVisible.maxY
+            ))
+        }
+
+        return dirtyRect.intersection(bounds)
     }
 
     private func buildMIDINoteLabels(
@@ -1192,5 +1682,17 @@ public final class PlaybackGridNSView: NSView {
             }
         }
         return ordered
+    }
+}
+
+private final class CrossfadeCurveMenuInfo: NSObject {
+    let crossfadeID: ID<Crossfade>
+    let trackID: ID<Track>
+    let curveType: CrossfadeCurveType
+
+    init(crossfadeID: ID<Crossfade>, trackID: ID<Track>, curveType: CrossfadeCurveType) {
+        self.crossfadeID = crossfadeID
+        self.trackID = trackID
+        self.curveType = curveType
     }
 }

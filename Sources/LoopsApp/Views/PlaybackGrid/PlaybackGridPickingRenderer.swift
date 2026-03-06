@@ -178,6 +178,25 @@ public final class PlaybackGridPickingRenderer {
                         }
                     }
 
+                    if let fadeZone = detectFadeHandleZone(
+                        point: point,
+                        containerLayout: containerLayout,
+                        pixelsPerBar: snapshot.pixelsPerBar
+                    ) {
+                        return GridPickObject(
+                            id: makeID(
+                                kind: .containerZone,
+                                containerID: containerLayout.container.id,
+                                trackID: trackLayout.track.id,
+                                zone: fadeZone
+                            ),
+                            kind: .containerZone,
+                            containerID: containerLayout.container.id,
+                            trackID: trackLayout.track.id,
+                            zone: fadeZone
+                        )
+                    }
+
                     let zone = detectZone(point: point, rect: containerLayout.rect)
                     let effectiveZone: GridContainerZone = isInContainer ? zone : .move
                     return GridPickObject(
@@ -230,11 +249,11 @@ public final class PlaybackGridPickingRenderer {
         let isRightEdge = localX > rect.width - edge
         let relativeY = localY / max(rect.height, 1)
 
-        if relativeY < (1.0 / 3.0) {
+        if relativeY < 0.20 {
             if isLeftEdge { return .fadeLeft }
             if isRightEdge { return .fadeRight }
             return .selector
-        } else if relativeY < (2.0 / 3.0) {
+        } else if relativeY < 0.67 {
             if isLeftEdge { return .resizeLeft }
             if isRightEdge { return .resizeRight }
             return .move
@@ -360,6 +379,36 @@ public final class PlaybackGridPickingRenderer {
         if noteWidth <= 24 { return max(5.0, noteWidth * 0.48) }
         if noteWidth <= 64 { return max(8.0, min(20.0, noteWidth * 0.32)) }
         return max(11.0, min(24.0, noteWidth * 0.24))
+    }
+
+    private func detectFadeHandleZone(
+        point: CGPoint,
+        containerLayout: PlaybackGridContainerLayout,
+        pixelsPerBar: CGFloat
+    ) -> GridContainerZone? {
+        let rect = containerLayout.rect
+        let handleCenterY = rect.minY + 1
+        let hitRadius: CGFloat = 8
+
+        if let enterFade = containerLayout.enterFade, enterFade.duration > 0 {
+            let handleX = rect.minX + CGFloat(enterFade.duration) * pixelsPerBar
+            let dx = point.x - handleX
+            let dy = point.y - handleCenterY
+            if dx * dx + dy * dy <= hitRadius * hitRadius {
+                return .fadeLeft
+            }
+        }
+
+        if let exitFade = containerLayout.exitFade, exitFade.duration > 0 {
+            let handleX = rect.maxX - CGFloat(exitFade.duration) * pixelsPerBar
+            let dx = point.x - handleX
+            let dy = point.y - handleCenterY
+            if dx * dx + dy * dy <= hitRadius * hitRadius {
+                return .fadeRight
+            }
+        }
+
+        return nil
     }
 
     private func midiEditorRect(

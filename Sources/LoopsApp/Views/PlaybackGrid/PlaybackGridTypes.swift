@@ -67,7 +67,7 @@ public struct GridPickObject: Equatable {
 public enum PlaybackGridInteractionState: Equatable {
     case idle
     case scrubbingRuler
-    case selectingRange(startBar: Int, startPoint: CGPoint)
+    case selectingRange(startBar: Int, startPoint: CGPoint, containerID: ID<Container>?)
     case draggingContainer(context: PlaybackGridContainerDragContext)
     case creatingContainer(context: PlaybackGridContainerCreateContext)
     case resizingMIDILane(context: PlaybackGridMIDILaneResizeContext)
@@ -94,6 +94,7 @@ public struct PlaybackGridContainerDragContext: Equatable {
     public var kind: PlaybackGridContainerDragKind
     public var containerID: ID<Container>
     public var trackID: ID<Track>
+    public var container: Container
     public var startPoint: CGPoint
     public var originStartBar: Double
     public var originLengthBars: Double
@@ -102,6 +103,40 @@ public struct PlaybackGridContainerDragContext: Equatable {
     public var originEnterFadeCurve: CurveType
     public var originExitFadeDuration: Double
     public var originExitFadeCurve: CurveType
+}
+
+public struct PlaybackGridContainerOverlay: Equatable {
+    public var containerID: ID<Container>
+    public var trackID: ID<Track>
+    public var container: Container
+    public var waveformPeaks: [Float]?
+    public var waveformExtrema: [WaveformExtrema]?
+    public var waveformRMS: [Float]?
+    public var resolvedMIDINotes: [MIDINoteEvent]?
+    public var audioDurationBars: Double?
+    public var isGhost: Bool
+
+    public init(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        container: Container,
+        waveformPeaks: [Float]? = nil,
+        waveformExtrema: [WaveformExtrema]? = nil,
+        waveformRMS: [Float]? = nil,
+        resolvedMIDINotes: [MIDINoteEvent]? = nil,
+        audioDurationBars: Double? = nil,
+        isGhost: Bool
+    ) {
+        self.containerID = containerID
+        self.trackID = trackID
+        self.container = container
+        self.waveformPeaks = waveformPeaks
+        self.waveformExtrema = waveformExtrema
+        self.waveformRMS = waveformRMS
+        self.resolvedMIDINotes = resolvedMIDINotes
+        self.audioDurationBars = audioDurationBars
+        self.isGhost = isGhost
+    }
 }
 
 public struct PlaybackGridContainerCreateContext: Equatable {
@@ -262,6 +297,7 @@ public protocol PlaybackGridCommandSink: AnyObject {
     func setPlayhead(bar: Double)
     func selectSection(_ sectionID: ID<SectionRegion>)
     func selectRange(_ range: ClosedRange<Int>)
+    func selectContainerRange(containerID: ID<Container>, startBar: Double, endBar: Double)
     func clearRangeSelection()
     func selectContainer(_ containerID: ID<Container>, trackID: ID<Track>, modifiers: NSEvent.ModifierFlags)
     func openContainerEditor(_ containerID: ID<Container>, trackID: ID<Track>)
@@ -305,6 +341,11 @@ public protocol PlaybackGridCommandSink: AnyObject {
         endPosition: Double,
         breakpoints: [AutomationBreakpoint]
     )
+    func linkContainer(_ containerID: ID<Container>, trackID: ID<Track>)
+    func unlinkContainer(_ containerID: ID<Container>, trackID: ID<Track>)
+    func glueContainers(containerIDs: Set<ID<Container>>)
+    func toggleContainerArm(_ containerID: ID<Container>, trackID: ID<Track>)
+    func setCrossfadeCurveType(trackID: ID<Track>, crossfadeID: ID<Crossfade>, curveType: CrossfadeCurveType)
 }
 
 public extension PlaybackGridCommandSink {
@@ -354,6 +395,11 @@ public extension PlaybackGridCommandSink {
         endPosition: Double,
         breakpoints: [AutomationBreakpoint]
     ) {}
+    func linkContainer(_ containerID: ID<Container>, trackID: ID<Track>) {}
+    func unlinkContainer(_ containerID: ID<Container>, trackID: ID<Track>) {}
+    func glueContainers(containerIDs: Set<ID<Container>>) {}
+    func toggleContainerArm(_ containerID: ID<Container>, trackID: ID<Track>) {}
+    func setCrossfadeCurveType(trackID: ID<Track>, crossfadeID: ID<Crossfade>, curveType: CrossfadeCurveType) {}
 }
 
 public enum PlaybackGridLayout {
@@ -361,6 +407,7 @@ public enum PlaybackGridLayout {
     public static let sectionLaneHeight: CGFloat = 24
     public static let trackAreaTop: CGFloat = rulerHeight + sectionLaneHeight
     public static let bottomPadding: CGFloat = 200
+    public static let trackGap: CGFloat = 2
 }
 
 public struct PlaybackGridSnapshot: Equatable {
@@ -458,6 +505,8 @@ public struct PlaybackGridContainerLayout: Equatable {
     public var container: Container
     public var rect: CGRect
     public var waveformPeaks: [Float]?
+    public var waveformExtrema: [WaveformExtrema]?
+    public var waveformRMS: [Float]?
     public var isSelected: Bool
     public var resolvedMIDINotes: [MIDINoteEvent]?
     public var enterFade: FadeSettings?
@@ -497,12 +546,14 @@ public struct PlaybackGridRectInstance {
     public var size: SIMD2<Float>
     public var color: SIMD4<Float>
     public var cornerRadius: Float
+    public var borderWidth: Float
 
-    public init(origin: SIMD2<Float>, size: SIMD2<Float>, color: SIMD4<Float>, cornerRadius: Float = 0) {
+    public init(origin: SIMD2<Float>, size: SIMD2<Float>, color: SIMD4<Float>, cornerRadius: Float = 0, borderWidth: Float = 0) {
         self.origin = origin
         self.size = size
         self.color = color
         self.cornerRadius = cornerRadius
+        self.borderWidth = borderWidth
     }
 }
 

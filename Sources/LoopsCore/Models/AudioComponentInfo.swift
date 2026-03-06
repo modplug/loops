@@ -1,7 +1,7 @@
 import Foundation
 
 /// Codable representation of AudioComponentDescription for AU identification.
-public struct AudioComponentInfo: Codable, Equatable, Sendable {
+public struct AudioComponentInfo: Codable, Equatable, Hashable, Sendable {
     public var componentType: UInt32
     public var componentSubType: UInt32
     public var componentManufacturer: UInt32

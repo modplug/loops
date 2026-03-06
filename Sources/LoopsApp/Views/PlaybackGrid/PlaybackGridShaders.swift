@@ -15,6 +15,7 @@ struct PlaybackGridRectInstance {
     float2 size;
     float4 color;
     float cornerRadius;
+    float borderWidth;
 };
 
 struct PlaybackGridLineInstance {
@@ -51,6 +52,7 @@ struct RectVertexOut {
     float2 localPos;
     float2 rectSize;
     float cornerRadius;
+    float borderWidth;
 };
 
 vertex RectVertexOut pg_rect_vertex(
@@ -74,14 +76,15 @@ vertex RectVertexOut pg_rect_vertex(
     out.localPos = uv * inst.size;
     out.rectSize = inst.size;
     out.cornerRadius = inst.cornerRadius;
+    out.borderWidth = inst.borderWidth;
     return out;
 }
 
 fragment float4 pg_rect_fragment(RectVertexOut in [[stage_in]]) {
     float4 color = in.color;
+    float2 halfSize = in.rectSize * 0.5;
 
     if (in.cornerRadius > 0.0) {
-        float2 halfSize = in.rectSize * 0.5;
         float maxRadius = max(0.0, min(halfSize.x, halfSize.y) - 0.001);
         float radius = min(in.cornerRadius, maxRadius);
         if (radius <= 0.0) {
@@ -90,8 +93,21 @@ fragment float4 pg_rect_fragment(RectVertexOut in [[stage_in]]) {
         float2 center = halfSize;
         float2 d = abs(in.localPos - center) - halfSize + radius;
         float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
-        float alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
-        color.a *= alpha;
+        float outerAlpha = 1.0 - smoothstep(-0.5, 0.5, dist);
+
+        if (in.borderWidth > 0.0) {
+            float innerAlpha = smoothstep(-(in.borderWidth + 0.5), -(in.borderWidth - 0.5), dist);
+            color.a *= outerAlpha * innerAlpha;
+        } else {
+            color.a *= outerAlpha;
+        }
+    } else if (in.borderWidth > 0.0) {
+        float2 center = halfSize;
+        float2 d = abs(in.localPos - center) - halfSize;
+        float dist = max(d.x, d.y);
+        float outerAlpha = 1.0 - smoothstep(-0.5, 0.5, dist);
+        float innerAlpha = smoothstep(-(in.borderWidth + 0.5), -(in.borderWidth - 0.5), dist);
+        color.a *= outerAlpha * innerAlpha;
     }
 
     return color;
@@ -153,13 +169,16 @@ fragment float4 pg_line_fragment(LineVertexOut in [[stage_in]]) {
 struct WaveformVertexOut {
     float4 position [[position]];
     float4 color;
+    float2 waveformUV;
+    float amplitude;
+    float asymmetry;
 };
 
 vertex WaveformVertexOut pg_waveform_vertex(
     uint vertexID [[vertex_id]],
     constant PlaybackGridUniforms &uniforms [[buffer(0)]],
     constant PlaybackGridWaveformParams &params [[buffer(1)]],
-    constant float *allPeaks [[buffer(2)]]
+    constant float2 *allExtrema [[buffer(2)]]
 ) {
     uint peakCount = params.peakCount;
     uint peakIndex = vertexID / 2;
@@ -170,17 +189,48 @@ vertex WaveformVertexOut pg_waveform_vertex(
     float midY = params.containerOrigin.y + params.containerSize.y * 0.5;
     float halfHeight = params.containerSize.y * 0.5 * params.amplitude;
 
-    float peak = abs(allPeaks[params.peakOffset + min(peakIndex, peakCount - 1)]);
-    float y = isTop ? midY - peak * halfHeight : midY + peak * halfHeight;
+    float2 extrema = allExtrema[params.peakOffset + min(peakIndex, peakCount - 1)];
+    float minValue = clamp(extrema.x, -1.0, 1.0);
+    float maxValue = clamp(extrema.y, -1.0, 1.0);
+    float amplitude = max(abs(minValue), abs(maxValue));
+    float asymmetry = clamp((maxValue + minValue) * 0.5 + 0.5, 0.0, 1.0);
+    float y = isTop ? midY - maxValue * halfHeight : midY - minValue * halfHeight;
 
     WaveformVertexOut out;
     out.position = uniforms.projectionMatrix * float4(x, y, 0, 1);
     out.color = params.fillColor;
+    out.waveformUV = float2(t, isTop ? 0.0 : 1.0);
+    out.amplitude = amplitude;
+    out.asymmetry = asymmetry;
     return out;
 }
 
 fragment float4 pg_waveform_fragment(WaveformVertexOut in [[stage_in]]) {
-    return in.color;
+    float centerDist = abs(in.waveformUV.y - 0.5) * 2.0;
+    float center = 1.0 - centerDist;
+    float amplitude = sqrt(clamp(in.amplitude, 0.0, 1.0));
+
+    float edgeAA = max(fwidth(centerDist) * 1.2, 0.02);
+    float bodyMask = 1.0 - smoothstep(1.0 - edgeAA, 1.0, centerDist);
+    float innerLift = pow(max(center, 0.0), 1.15);
+    float edgeShade = smoothstep(0.58, 0.98, centerDist) * bodyMask;
+
+    float horizontalFade = smoothstep(0.0, 0.018, in.waveformUV.x)
+        * smoothstep(0.0, 0.018, 1.0 - in.waveformUV.x);
+
+    float3 base = in.color.rgb;
+    float3 lifted = min(base + float3(0.03, 0.03, 0.035) + (0.03 * amplitude), float3(1.0));
+    float3 shaded = max(base - float3(0.04, 0.04, 0.04), float3(0.0));
+
+    float3 rgb = mix(shaded, lifted, 0.68 + (0.12 * innerLift));
+    rgb = mix(rgb, base, 0.10 * edgeShade);
+
+    float alpha = in.color.a;
+    alpha *= bodyMask;
+    alpha *= horizontalFade;
+    alpha *= 0.90 + (0.10 * innerLift) + (0.05 * amplitude);
+
+    return float4(rgb, alpha);
 }
 
 struct MIDIVertexOut {
@@ -216,6 +266,7 @@ vertex MIDIVertexOut pg_midi_vertex(
 
 fragment float4 pg_midi_fragment(MIDIVertexOut in [[stage_in]]) {
     float4 color = in.color;
+    float bodyMask = 1.0;
     if (in.cornerRadius > 0.0) {
         float2 halfSize = in.rectSize * 0.5;
         float maxRadius = max(0.0, min(halfSize.x, halfSize.y) - 0.001);
@@ -226,9 +277,22 @@ fragment float4 pg_midi_fragment(MIDIVertexOut in [[stage_in]]) {
         float2 center = halfSize;
         float2 d = abs(in.localPos - center) - halfSize + radius;
         float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
-        float alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
-        color.a *= alpha;
+        bodyMask = 1.0 - smoothstep(-0.5, 0.5, dist);
+        color.a *= bodyMask;
     }
+
+    float width = max(in.rectSize.x, 1.0);
+    float height = max(in.rectSize.y, 1.0);
+    float2 uv = float2(in.localPos.x / width, in.localPos.y / height);
+    float gloss = pow(max(1.0 - uv.y, 0.0), 1.7) * smoothstep(0.02, 0.3, uv.y);
+    float centerLift = pow(max(1.0 - abs(uv.x - 0.5) * 2.0, 0.0), 1.25);
+    float edgeShade = smoothstep(0.0, 0.12, uv.x) * smoothstep(0.0, 0.12, 1.0 - uv.x);
+
+    float3 lifted = min(color.rgb + float3(0.05, 0.05, 0.06), float3(1.0));
+    float3 glossColor = min(color.rgb + float3(0.14, 0.12, 0.14), float3(1.0));
+    color.rgb = mix(color.rgb, lifted, 0.18 * centerLift);
+    color.rgb = mix(color.rgb, glossColor, 0.18 * gloss * centerLift);
+    color.a *= 0.92 + (0.08 * edgeShade);
     return color;
 }
 

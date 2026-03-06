@@ -369,7 +369,7 @@ public struct ContainerView: View {
 
             // Fade curve overlays
             if container.enterFade != nil || container.exitFade != nil || enterFadeDragWidth != nil || exitFadeDragWidth != nil {
-                FadeOverlayShape(
+                let fadeShape = FadeOverlayShape(
                     containerWidth: containerWidth,
                     height: height,
                     enterFade: container.enterFade,
@@ -378,8 +378,12 @@ public struct ContainerView: View {
                     exitFadeDragWidth: exitFadeDragWidth,
                     pixelsPerBar: pixelsPerBar
                 )
-                .fill(Color.black.opacity(0.25))
-                .allowsHitTesting(false)
+                fadeShape
+                    .fill(Color.black.opacity(0.25))
+                    .allowsHitTesting(false)
+                fadeShape
+                    .stroke(Color.white.opacity(0.45), lineWidth: 1.5)
+                    .allowsHitTesting(false)
             }
 
             // Selector drag highlight (during active drag)

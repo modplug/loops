@@ -791,10 +791,10 @@ struct TimelineCanvasRangeSelectionTests {
     }
 
     @MainActor
-    @Test("Feature flag defaults to true")
-    func featureFlagDefaultsTrue() {
+    @Test("Timeline uses quantized frame widths by default")
+    func quantizedFrameWidthDefaults() {
         let vm = TimelineViewModel()
-        #expect(vm.useNSViewTimeline == true)
+        #expect(vm.quantizedFrameWidth >= 4096)
     }
 }
 
@@ -1745,21 +1745,10 @@ struct TimelineCanvasMouseEventTests {
     }
 }
 
-// MARK: - Feature Flag Integration Tests
+// MARK: - Timeline Integration Tests
 
-@Suite("TimelineCanvasView Feature Flag")
+@Suite("TimelineCanvasView Integration")
 struct TimelineCanvasFeatureFlagTests {
-
-    @MainActor
-    @Test("Feature flag toggles between true and false")
-    func featureFlagToggles() {
-        let vm = TimelineViewModel()
-        #expect(vm.useNSViewTimeline == true)
-        vm.useNSViewTimeline = false
-        #expect(vm.useNSViewTimeline == false)
-        vm.useNSViewTimeline = true
-        #expect(vm.useNSViewTimeline == true)
-    }
 
     @MainActor
     @Test("Canvas configure roundtrip preserves all data")

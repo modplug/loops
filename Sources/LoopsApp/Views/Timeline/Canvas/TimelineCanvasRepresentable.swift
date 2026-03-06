@@ -4,8 +4,7 @@ import LoopsCore
 /// SwiftUI bridge for TimelineCanvasView.
 /// Reads from TimelineViewModel and ProjectViewModel, pushes updates to the NSView.
 ///
-/// Usage: Drop this into the view hierarchy wherever the SwiftUI TimelineView was.
-/// The feature flag `useNSViewTimeline` controls which path is active.
+/// Usage: Drop this into the view hierarchy wherever the legacy TimelineView was.
 public struct TimelineCanvasRepresentable: NSViewRepresentable {
     let tracks: [Track]
     @Bindable var viewModel: TimelineViewModel

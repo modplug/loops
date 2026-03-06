@@ -486,6 +486,12 @@ struct PlaybackGridCoreTests {
             snapshot: snapshot
         )
 
+        #expect(!controller.activeContainerOverlays.isEmpty)
+        #expect(sink.lastMove == nil)
+        controller.handleMouseUp(
+            point: CGPoint(x: 360, y: PlaybackGridLayout.trackAreaTop + 50),
+            snapshot: snapshot
+        )
         #expect(sink.lastMove != nil)
         if let move = sink.lastMove {
             #expect(move.containerID == container.id)
@@ -663,6 +669,12 @@ struct PlaybackGridCoreTests {
             snapshot: snapshot
         )
 
+        #expect(!controller.activeContainerOverlays.isEmpty)
+        #expect(sink.lastEnterFade == nil)
+        controller.handleMouseUp(
+            point: CGPoint(x: 62, y: y),
+            snapshot: snapshot
+        )
         #expect(sink.lastEnterFade != nil)
         #expect(abs((sink.lastEnterFade?.duration ?? 0) - 1.5) < 0.0001)
         #expect(sink.lastEnterFade?.curve == .exponential)
@@ -1589,6 +1601,10 @@ private final class CommandSinkSpy: PlaybackGridCommandSink {
 
     func selectRange(_ range: ClosedRange<Int>) {
         lastRange = range
+    }
+
+    func selectContainerRange(containerID: ID<Container>, startBar: Double, endBar: Double) {
+        lastRange = Int(floor(startBar))...Int(ceil(endBar))
     }
 
     func moveContainer(_ containerID: ID<Container>, trackID: ID<Track>, newStartBar: Double) {

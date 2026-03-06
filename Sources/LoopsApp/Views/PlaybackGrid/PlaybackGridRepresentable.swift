@@ -19,6 +19,7 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
     var onPlayheadPosition: ((Double) -> Void)?
     var onSectionSelect: ((ID<SectionRegion>) -> Void)?
     var onRangeSelect: ((ClosedRange<Int>) -> Void)?
+    var onContainerRangeSelect: ((_ containerID: ID<Container>, _ startBar: Double, _ endBar: Double) -> Void)?
     var onRangeDeselect: (() -> Void)?
     var onContainerSelect: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ modifiers: NSEvent.ModifierFlags) -> Void)?
     var onContainerOpenEditor: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)?
@@ -50,6 +51,11 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
     var onUpdateTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     var onRemoveTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
     var onReplaceTrackAutomationBreakpoints: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
+    var onContainerLink: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)?
+    var onContainerUnlink: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)?
+    var onGlueContainers: ((_ containerIDs: Set<ID<Container>>) -> Void)?
+    var onToggleContainerArm: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)?
+    var onSetCrossfadeCurveType: ((_ trackID: ID<Track>, _ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)?
 
     public func makeNSView(context: Context) -> PlaybackGridNSView {
         PlaybackGridPerfLogger.bump("swiftui.representable.makeNSView")
@@ -58,6 +64,12 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
 
         view.waveformPeaksProvider = { [projectViewModel] container in
             projectViewModel.waveformPeaks(for: container)
+        }
+        view.waveformExtremaProvider = { [projectViewModel] container in
+            projectViewModel.waveformExtrema(for: container)
+        }
+        view.waveformRMSProvider = { [projectViewModel] container in
+            projectViewModel.waveformRMS(for: container)
         }
         view.audioDurationBarsProvider = { [projectViewModel] container in
             projectViewModel.recordingDurationBars(for: container)
@@ -89,6 +101,7 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
             onPlayheadPosition: onPlayheadPosition,
             onSectionSelect: onSectionSelect,
             onRangeSelect: onRangeSelect,
+            onContainerRangeSelect: onContainerRangeSelect,
             onRangeDeselect: onRangeDeselect,
             onContainerSelect: onContainerSelect,
             onContainerOpenEditor: onContainerOpenEditor,
@@ -119,7 +132,12 @@ public struct PlaybackGridRepresentable: NSViewRepresentable {
             onAddTrackAutomationBreakpoint: onAddTrackAutomationBreakpoint,
             onUpdateTrackAutomationBreakpoint: onUpdateTrackAutomationBreakpoint,
             onRemoveTrackAutomationBreakpoint: onRemoveTrackAutomationBreakpoint,
-            onReplaceTrackAutomationBreakpoints: onReplaceTrackAutomationBreakpoints
+            onReplaceTrackAutomationBreakpoints: onReplaceTrackAutomationBreakpoints,
+            onContainerLink: onContainerLink,
+            onContainerUnlink: onContainerUnlink,
+            onGlueContainers: onGlueContainers,
+            onToggleContainerArm: onToggleContainerArm,
+            onSetCrossfadeCurveType: onSetCrossfadeCurveType
         )
         view.setCommandSink(adapter)
 
@@ -160,6 +178,7 @@ private final class CommandAdapter: PlaybackGridCommandSink {
     private let onPlayheadPosition: ((Double) -> Void)?
     private let onSectionSelect: ((ID<SectionRegion>) -> Void)?
     private let onRangeSelect: ((ClosedRange<Int>) -> Void)?
+    private let onContainerRangeSelect: ((_ containerID: ID<Container>, _ startBar: Double, _ endBar: Double) -> Void)?
     private let onRangeDeselect: (() -> Void)?
     private let onContainerSelect: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ modifiers: NSEvent.ModifierFlags) -> Void)?
     private let onContainerOpenEditor: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)?
@@ -191,11 +210,17 @@ private final class CommandAdapter: PlaybackGridCommandSink {
     private let onUpdateTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?
     private let onRemoveTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?
     private let onReplaceTrackAutomationBreakpoints: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
+    private let onContainerLink: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)?
+    private let onContainerUnlink: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)?
+    private let onGlueContainers: ((_ containerIDs: Set<ID<Container>>) -> Void)?
+    private let onToggleContainerArm: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)?
+    private let onSetCrossfadeCurveType: ((_ trackID: ID<Track>, _ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)?
 
     init(
         onPlayheadPosition: ((Double) -> Void)?,
         onSectionSelect: ((ID<SectionRegion>) -> Void)?,
         onRangeSelect: ((ClosedRange<Int>) -> Void)?,
+        onContainerRangeSelect: ((_ containerID: ID<Container>, _ startBar: Double, _ endBar: Double) -> Void)?,
         onRangeDeselect: (() -> Void)?,
         onContainerSelect: ((_ containerID: ID<Container>, _ trackID: ID<Track>, _ modifiers: NSEvent.ModifierFlags) -> Void)?,
         onContainerOpenEditor: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)?,
@@ -226,11 +251,17 @@ private final class CommandAdapter: PlaybackGridCommandSink {
         onAddTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?,
         onUpdateTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpoint: AutomationBreakpoint) -> Void)?,
         onRemoveTrackAutomationBreakpoint: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ breakpointID: ID<AutomationBreakpoint>) -> Void)?,
-        onReplaceTrackAutomationBreakpoints: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?
+        onReplaceTrackAutomationBreakpoints: ((_ trackID: ID<Track>, _ laneID: ID<AutomationLane>, _ startPosition: Double, _ endPosition: Double, _ breakpoints: [AutomationBreakpoint]) -> Void)?,
+        onContainerLink: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)? = nil,
+        onContainerUnlink: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)? = nil,
+        onGlueContainers: ((_ containerIDs: Set<ID<Container>>) -> Void)? = nil,
+        onToggleContainerArm: ((_ containerID: ID<Container>, _ trackID: ID<Track>) -> Void)? = nil,
+        onSetCrossfadeCurveType: ((_ trackID: ID<Track>, _ crossfadeID: ID<Crossfade>, _ curveType: CrossfadeCurveType) -> Void)? = nil
     ) {
         self.onPlayheadPosition = onPlayheadPosition
         self.onSectionSelect = onSectionSelect
         self.onRangeSelect = onRangeSelect
+        self.onContainerRangeSelect = onContainerRangeSelect
         self.onRangeDeselect = onRangeDeselect
         self.onContainerSelect = onContainerSelect
         self.onContainerOpenEditor = onContainerOpenEditor
@@ -262,6 +293,11 @@ private final class CommandAdapter: PlaybackGridCommandSink {
         self.onUpdateTrackAutomationBreakpoint = onUpdateTrackAutomationBreakpoint
         self.onRemoveTrackAutomationBreakpoint = onRemoveTrackAutomationBreakpoint
         self.onReplaceTrackAutomationBreakpoints = onReplaceTrackAutomationBreakpoints
+        self.onContainerLink = onContainerLink
+        self.onContainerUnlink = onContainerUnlink
+        self.onGlueContainers = onGlueContainers
+        self.onToggleContainerArm = onToggleContainerArm
+        self.onSetCrossfadeCurveType = onSetCrossfadeCurveType
     }
 
     func setPlayhead(bar: Double) {
@@ -274,6 +310,10 @@ private final class CommandAdapter: PlaybackGridCommandSink {
 
     func selectRange(_ range: ClosedRange<Int>) {
         onRangeSelect?(range)
+    }
+
+    func selectContainerRange(containerID: ID<Container>, startBar: Double, endBar: Double) {
+        onContainerRangeSelect?(containerID, startBar, endBar)
     }
 
     func clearRangeSelection() {
@@ -413,6 +453,26 @@ private final class CommandAdapter: PlaybackGridCommandSink {
         breakpoints: [AutomationBreakpoint]
     ) {
         onReplaceTrackAutomationBreakpoints?(trackID, laneID, startPosition, endPosition, breakpoints)
+    }
+
+    func linkContainer(_ containerID: ID<Container>, trackID: ID<Track>) {
+        onContainerLink?(containerID, trackID)
+    }
+
+    func unlinkContainer(_ containerID: ID<Container>, trackID: ID<Track>) {
+        onContainerUnlink?(containerID, trackID)
+    }
+
+    func glueContainers(containerIDs: Set<ID<Container>>) {
+        onGlueContainers?(containerIDs)
+    }
+
+    func toggleContainerArm(_ containerID: ID<Container>, trackID: ID<Track>) {
+        onToggleContainerArm?(containerID, trackID)
+    }
+
+    func setCrossfadeCurveType(trackID: ID<Track>, crossfadeID: ID<Crossfade>, curveType: CrossfadeCurveType) {
+        onSetCrossfadeCurveType?(trackID, crossfadeID, curveType)
     }
 }
 

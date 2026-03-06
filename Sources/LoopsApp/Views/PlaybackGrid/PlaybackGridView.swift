@@ -139,7 +139,17 @@ public struct PlaybackGridView: View {
             onPlayheadPosition: onPlayheadPosition,
             onSectionSelect: onSectionSelect,
             onRangeSelect: onRangeSelect,
-            onRangeDeselect: onRangeDeselect,
+            onContainerRangeSelect: { [selectionState] containerID, startBar, endBar in
+                selectionState.rangeSelection = SelectionState.RangeSelection(
+                    containerID: containerID,
+                    startBar: startBar,
+                    endBar: endBar
+                )
+            },
+            onRangeDeselect: { [selectionState] in
+                selectionState.rangeSelection = nil
+                onRangeDeselect?()
+            },
             onContainerSelect: { containerID, trackID, modifiers in
                 handleContainerSelection(containerID: containerID, trackID: trackID, modifiers: modifiers)
             },
@@ -297,6 +307,23 @@ public struct PlaybackGridView: View {
                     endPosition: endPosition,
                     replacements: breakpoints
                 )
+            },
+            onContainerLink: { containerID, trackID in
+                guard let container = tracks.first(where: { $0.id == trackID })?.containers
+                    .first(where: { $0.id == containerID }) else { return }
+                _ = projectViewModel.cloneContainer(trackID: trackID, containerID: containerID, newStartBar: container.endBar)
+            },
+            onContainerUnlink: { containerID, trackID in
+                projectViewModel.consolidateContainer(trackID: trackID, containerID: containerID)
+            },
+            onGlueContainers: { containerIDs in
+                projectViewModel.glueContainers(containerIDs: containerIDs)
+            },
+            onToggleContainerArm: { containerID, trackID in
+                projectViewModel.toggleContainerRecordArm(trackID: trackID, containerID: containerID)
+            },
+            onSetCrossfadeCurveType: { trackID, crossfadeID, curveType in
+                projectViewModel.setCrossfadeCurveType(trackID: trackID, crossfadeID: crossfadeID, curveType: curveType)
             }
         )
         .frame(width: displayWidth, height: displayHeight)

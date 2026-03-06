@@ -3,6 +3,8 @@ import LoopsCore
 
 public final class PlaybackGridSceneBuilder {
     public var waveformPeaksProvider: ((_ container: Container) -> [Float]?)?
+    public var waveformExtremaProvider: ((_ container: Container) -> [WaveformExtrema]?)?
+    public var waveformRMSProvider: ((_ container: Container) -> [Float]?)?
     public var audioDurationBarsProvider: ((_ container: Container) -> Double?)?
     public var resolvedMIDISequenceProvider: ((_ container: Container) -> MIDISequence?)?
 
@@ -47,6 +49,8 @@ public final class PlaybackGridSceneBuilder {
                 let width = CGFloat(container.lengthBars) * snapshot.pixelsPerBar
                 let rect = CGRect(x: x, y: yOffset, width: width, height: baseHeight)
                 let peaks = waveformPeaksProvider?(container)
+                let extrema = waveformExtremaProvider?(container)
+                let rms = waveformRMSProvider?(container)
                 let durationBars = audioDurationBarsProvider?(container)
                 let notes = resolvedMIDISequenceProvider?(container)?.notes
 
@@ -54,6 +58,8 @@ public final class PlaybackGridSceneBuilder {
                     container: container,
                     rect: rect,
                     waveformPeaks: peaks,
+                    waveformExtrema: extrema,
+                    waveformRMS: rms,
                     isSelected: snapshot.selectedContainerIDs.contains(container.id),
                     resolvedMIDINotes: notes,
                     enterFade: container.enterFade,
@@ -72,7 +78,7 @@ public final class PlaybackGridSceneBuilder {
                 containers: containerLayouts
             ))
 
-            yOffset += totalTrackHeight
+            yOffset += totalTrackHeight + PlaybackGridLayout.trackGap
         }
 
         var sectionLayouts: [PlaybackGridSectionLayout] = []

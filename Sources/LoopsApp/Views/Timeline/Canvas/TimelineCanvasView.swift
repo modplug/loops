@@ -1081,11 +1081,14 @@ public final class TimelineCanvasView: NSView {
         context.saveGState()
         context.clip(to: rect)
 
+        let outlineColor = NSColor.white.withAlphaComponent(0.45).cgColor
+
         // Enter fade (left side) — darkened area showing gain ramp 0→1
         if let fade = enterFade, fade.duration > 0 {
             let fadeWidth = CGFloat(fade.duration) * pixelsPerBar
             let steps = max(Int(fadeWidth / 2), 20)
             let path = CGMutablePath()
+            let curvePath = CGMutablePath()
             path.move(to: CGPoint(x: rect.minX, y: rect.minY))
             for i in 0...steps {
                 let t = Double(i) / Double(steps)
@@ -1093,12 +1096,21 @@ public final class TimelineCanvasView: NSView {
                 let x = rect.minX + CGFloat(t) * fadeWidth
                 let y = rect.minY + CGFloat(gain) * rect.height
                 path.addLine(to: CGPoint(x: x, y: y))
+                if i == 0 {
+                    curvePath.move(to: CGPoint(x: x, y: y))
+                } else {
+                    curvePath.addLine(to: CGPoint(x: x, y: y))
+                }
             }
             path.addLine(to: CGPoint(x: rect.minX + fadeWidth, y: rect.minY))
             path.closeSubpath()
             context.addPath(path)
             context.setFillColor(NSColor.black.withAlphaComponent(0.25).cgColor)
             context.fillPath()
+            context.addPath(curvePath)
+            context.setStrokeColor(outlineColor)
+            context.setLineWidth(1.5)
+            context.strokePath()
         }
 
         // Exit fade (right side) — darkened area showing gain ramp 1→0
@@ -1107,6 +1119,7 @@ public final class TimelineCanvasView: NSView {
             let steps = max(Int(fadeWidth / 2), 20)
             let startX = rect.maxX - fadeWidth
             let path = CGMutablePath()
+            let curvePath = CGMutablePath()
             path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
             for i in 0...steps {
                 let t = Double(i) / Double(steps)
@@ -1114,12 +1127,21 @@ public final class TimelineCanvasView: NSView {
                 let x = startX + CGFloat(t) * fadeWidth
                 let y = rect.minY + CGFloat(gain) * rect.height
                 path.addLine(to: CGPoint(x: x, y: y))
+                if i == 0 {
+                    curvePath.move(to: CGPoint(x: x, y: y))
+                } else {
+                    curvePath.addLine(to: CGPoint(x: x, y: y))
+                }
             }
             path.addLine(to: CGPoint(x: startX, y: rect.minY))
             path.closeSubpath()
             context.addPath(path)
             context.setFillColor(NSColor.black.withAlphaComponent(0.25).cgColor)
             context.fillPath()
+            context.addPath(curvePath)
+            context.setStrokeColor(outlineColor)
+            context.setLineWidth(1.5)
+            context.strokePath()
         }
 
         context.restoreGState()

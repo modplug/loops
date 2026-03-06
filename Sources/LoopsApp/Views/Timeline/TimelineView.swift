@@ -69,13 +69,7 @@ public struct TimelineView: View {
     }
 
     public var body: some View {
-        if viewModel.useNSViewTimeline && viewModel.useMetalTimeline {
-            metalBody
-        } else if viewModel.useNSViewTimeline {
-            canvasBody
-        } else {
-            swiftUIBody
-        }
+        metalBody
     }
 
     // MARK: - Metal GPU Rendering Path
