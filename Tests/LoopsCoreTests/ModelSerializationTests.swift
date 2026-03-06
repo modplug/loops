@@ -926,13 +926,15 @@ struct ModelSerializationTests {
             ],
             outputPorts: [
                 OutputPort(deviceUID: "MyInterface", streamIndex: 0, channelOffset: 0, layout: .stereo, defaultName: "Out 1/2", customName: "Main Mix")
-            ]
+            ],
+            lowLatencyRecordingEnabled: false
         )
         let decoded = try roundTrip(settings)
         #expect(settings == decoded)
         #expect(decoded.inputPorts.count == 1)
         #expect(decoded.outputPorts.count == 1)
         #expect(decoded.inputPorts[0].customName == "Guitar")
+        #expect(decoded.lowLatencyRecordingEnabled == false)
     }
 
     @Test("AudioDeviceSettings migrates from legacy format")
@@ -951,6 +953,7 @@ struct ModelSerializationTests {
         #expect(decoded.bufferSize == 256)
         #expect(decoded.inputPorts.isEmpty)
         #expect(decoded.outputPorts.isEmpty)
+        #expect(decoded.lowLatencyRecordingEnabled == true)
     }
 
     // MARK: - BarBeatPosition

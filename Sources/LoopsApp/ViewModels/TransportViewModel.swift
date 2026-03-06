@@ -7,6 +7,9 @@ import LoopsEngine
 @Observable
 @MainActor
 public final class TransportViewModel {
+    private static let transportSyncDebugEnabled =
+        ProcessInfo.processInfo.environment["LOOPS_TRANSPORT_SYNC_DEBUG"] == "1"
+
     public var isPlaying: Bool = false
     public var isRecordArmed: Bool = false
     public var isMetronomeEnabled: Bool = false
@@ -41,9 +44,38 @@ public final class TransportViewModel {
     /// Writes are @MainActor-only; the scheduler's internal lock protects
     /// concurrent reads. PlaybackScheduler is @unchecked Sendable.
     private(set) var playbackScheduler: PlaybackScheduler?
-    private var containerRecorder: ContainerRecorder?
+    private var recordController: RecordController?
     private var playbackGeneration = 0
     private var playbackTask: Task<Void, Never>?
+    private var playbackTaskSequence = 0
+    private var audioDeviceSettings = AudioDeviceSettings()
+    private(set) var lastPlaybackStartReceipt: PlaybackStartReceipt?
+
+    /// Estimated monitoring latency for the currently selected live monitor path.
+    public private(set) var monitorLatencySeconds: Double = 0
+    public private(set) var playbackLatencySummary = PlaybackLatencySummary()
+    public private(set) var activeRecordingSessionCount: Int = 0
+    public private(set) var recordingDroppedBufferCount: Int = 0
+    public private(set) var recordingDroppedSampleCount: Int64 = 0
+
+    /// Estimated output path latency from the current audio device.
+    public var outputLatencySeconds: Double {
+        engineManager?.outputPresentationLatencySeconds ?? 0
+    }
+
+    /// Compensated playback latency excluding startup headroom.
+    public var playbackLatencySeconds: Double {
+        outputLatencySeconds + (lastPlaybackStartReceipt?.maxPathLatencySeconds ?? 0)
+    }
+
+    public var playbackPathLatencySeconds: Double {
+        playbackLatencySummary.maxPathLatencySeconds
+    }
+
+    /// Startup compensation used to line up playback with the transport clock.
+    public var playbackStartupCompensationSeconds: Double {
+        lastPlaybackStartReceipt?.startupCompensationSeconds ?? 0
+    }
 
     /// Closure to fetch the current song context for playback.
     /// Set by the view layer so play() always uses the latest data.
@@ -56,6 +88,10 @@ public final class TransportViewModel {
     /// Called when waveform peaks are updated during recording.
     /// Parameters: containerID, peaks array.
     public var onRecordingPeaksUpdated: ((ID<Container>, [Float]) -> Void)?
+
+    /// Called when waveform data is updated during recording.
+    /// Parameters: containerID, peaks array, extrema array, rms array.
+    public var onRecordingWaveformUpdated: ((ID<Container>, [Float], [WaveformExtrema], [Float]) -> Void)?
 
     /// Called when recording completes for a container.
     /// Parameters: trackID, containerID, SourceRecording.
@@ -101,7 +137,7 @@ public final class TransportViewModel {
                     )
                 } else {
                     // No engine — let playhead start immediately
-                    self.transport.completeAudioSync()
+                    self.transport.completeAudioSync(receipt: nil)
                 }
                 self.syncFromTransport()
             }
@@ -113,8 +149,14 @@ public final class TransportViewModel {
         }
     }
 
+    private func transportDebug(_ message: @autoclosure () -> String) {
+        guard Self.transportSyncDebugEnabled else { return }
+        print("[TRANSPORTSYNC] \(message())")
+    }
+
     public func play() {
         playbackGeneration += 1
+        transportDebug("play requested gen=\(playbackGeneration) bar=\(String(format: "%.6f", playheadBar))")
         transport.bpm = bpm
         transport.timeSignature = timeSignature
         transport.countInBars = countInBars
@@ -158,6 +200,11 @@ public final class TransportViewModel {
                                 self?.failedContainerIDs = failedIDs
                             }
                         }
+                        scheduler.onLatencySummaryChanged = { [weak self] summary in
+                            Task { @MainActor [weak self] in
+                                self?.playbackLatencySummary = summary
+                            }
+                        }
                         playbackScheduler = scheduler
                     }
                     schedulePlayback(
@@ -191,6 +238,11 @@ public final class TransportViewModel {
                                 self?.failedContainerIDs = failedIDs
                             }
                         }
+                        scheduler.onLatencySummaryChanged = { [weak self] summary in
+                            Task { @MainActor [weak self] in
+                                self?.playbackLatencySummary = summary
+                            }
+                        }
                         playbackScheduler = scheduler
                     }
                 }
@@ -203,12 +255,11 @@ public final class TransportViewModel {
 
     public func pause() {
         playbackGeneration += 1
+        transportDebug("pause requested gen=\(playbackGeneration) bar=\(String(format: "%.6f", playheadBar))")
         stopContainerRecording()
-        playbackTask?.cancel()
-        playbackTask = nil
-        // Favor responsiveness on repeated transport toggles.
-        playbackScheduler?.removeTrackLevelTaps()
-        playbackScheduler?.stop(skipDeclick: true)
+        enqueueStopBarrier(skipDeclick: true)
+        lastPlaybackStartReceipt = nil
+        playbackLatencySummary = PlaybackLatencySummary()
         engineManager?.removeMasterLevelTap()
         engineManager?.metronome?.setEnabled(false)
         transport.pause()
@@ -217,11 +268,11 @@ public final class TransportViewModel {
 
     public func stop() {
         playbackGeneration += 1
+        transportDebug("stop requested gen=\(playbackGeneration) bar=\(String(format: "%.6f", playheadBar))")
         stopContainerRecording()
-        playbackTask?.cancel()
-        playbackTask = nil
-        playbackScheduler?.removeTrackLevelTaps()
-        playbackScheduler?.stop(skipDeclick: true)
+        enqueueStopBarrier(skipDeclick: true)
+        lastPlaybackStartReceipt = nil
+        playbackLatencySummary = PlaybackLatencySummary()
         engineManager?.removeMasterLevelTap()
         engineManager?.metronome?.setEnabled(false)
         engineManager?.metronome?.reset()
@@ -245,11 +296,11 @@ public final class TransportViewModel {
         if wasPlaying {
             // Stop current playback and scheduler synchronously
             playbackGeneration += 1
+            transportDebug("handleSongChanged stop requested gen=\(playbackGeneration) bar=\(String(format: "%.6f", playheadBar))")
             stopContainerRecording()
-            playbackTask?.cancel()
-            playbackTask = nil
-            playbackScheduler?.removeTrackLevelTaps()
-            playbackScheduler?.stop(skipDeclick: true)
+            enqueueStopBarrier(skipDeclick: true)
+            lastPlaybackStartReceipt = nil
+            playbackLatencySummary = PlaybackLatencySummary()
             engineManager?.removeMasterLevelTap()
             engineManager?.metronome?.setEnabled(false)
             engineManager?.metronome?.reset()
@@ -350,14 +401,15 @@ public final class TransportViewModel {
     /// playback from the new position so audio is rescheduled.
     public func seek(toBar bar: Double) {
         playbackGeneration += 1
+        transportDebug(
+            "seek requested gen=\(playbackGeneration) fromBar=\(String(format: "%.6f", playheadBar)) "
+                + "toBar=\(String(format: "%.6f", bar)) playing=\(isPlaying)"
+        )
         let wasPlaying = isPlaying
         if wasPlaying {
             stopContainerRecording()
-            playbackTask?.cancel()
-            playbackTask = nil
+            enqueueStopBarrier(skipDeclick: true)
             // Stop synchronously with skipDeclick — we're about to restart playback
-            playbackScheduler?.removeTrackLevelTaps()
-            playbackScheduler?.stop(skipDeclick: true)
             engineManager?.metronome?.reset()
             transport.pause()
         }
@@ -430,16 +482,41 @@ public final class TransportViewModel {
 
         if enabled {
             Task {
-                await monitor.enableMonitoring(
+                let descriptor = await monitor.enableMonitoring(
                     trackID: track.id,
                     insertEffects: track.insertEffects,
                     volume: track.volume,
-                    pan: track.pan
+                    pan: track.pan,
+                    monitoringMode: track.recordingMonitoringMode,
+                    lowLatencyPolicy: LowLatencyModePolicy(
+                        enabled: audioDeviceSettings.lowLatencyRecordingEnabled,
+                        preferredMonitoringMode: .splitFastMonitor
+                    )
                 )
+                await MainActor.run {
+                    self.monitorLatencySeconds = descriptor.estimatedLatencySeconds
+                }
             }
         } else {
             monitor.disableMonitoring(trackID: track.id)
+            monitorLatencySeconds = 0
         }
+    }
+
+    public func applyAudioDeviceSettings(_ settings: AudioDeviceSettings) {
+        let shouldRefreshMonitors = audioDeviceSettings.lowLatencyRecordingEnabled != settings.lowLatencyRecordingEnabled
+        audioDeviceSettings = settings
+        guard shouldRefreshMonitors,
+              let context = songProvider?()
+        else { return }
+
+        for track in context.song.tracks where track.isMonitoring && track.kind == .audio {
+            setInputMonitoring(track: track, enabled: true)
+        }
+    }
+
+    public func monitorPathDescriptor(trackID: ID<Track>) -> MonitorPathDescriptor? {
+        engineManager?.inputMonitor?.monitorPathDescriptor(trackID: trackID)
     }
 
     /// Sends a MIDI note event to the instrument on the given track.
@@ -469,6 +546,11 @@ public final class TransportViewModel {
         scheduler.onEffectChainStatusChanged = { [weak self] failedIDs in
             Task { @MainActor [weak self] in
                 self?.failedContainerIDs = failedIDs
+            }
+        }
+        scheduler.onLatencySummaryChanged = { [weak self] summary in
+            Task { @MainActor [weak self] in
+                self?.playbackLatencySummary = summary
             }
         }
         playbackScheduler = scheduler
@@ -617,6 +699,8 @@ public final class TransportViewModel {
     ) {
         let gen = playbackGeneration
         let previousTask = playbackTask
+        playbackTaskSequence += 1
+        let taskID = playbackTaskSequence
         previousTask?.cancel()
         // Use graph-shape fingerprints so cosmetic changes (rename, volume,
         // pan, container move) don't trigger a full audio-graph rebuild.
@@ -624,28 +708,46 @@ public final class TransportViewModel {
             song: song,
             recordingIDs: Set(recordings.keys)
         ) ?? true
+        transportDebug(
+            "schedulePlayback create task=\(taskID) gen=\(gen) fromBar=\(String(format: "%.6f", fromBar)) "
+                + "needsPrepare=\(needsPrepare) hasPrevious=\(previousTask != nil)"
+        )
         playbackTask = Task {
+            self.transportDebug("schedulePlayback task=\(taskID) waiting previous task")
             // Wait for any in-flight prepare (e.g. from ensureEngineReadyForPreview)
             // to finish before starting ours — prevents concurrent engine graph mutations.
             _ = await previousTask?.value
+            self.transportDebug("schedulePlayback task=\(taskID) previous task completed")
             guard self.playbackGeneration == gen else {
+                self.transportDebug(
+                    "schedulePlayback task=\(taskID) stale generation current=\(self.playbackGeneration) expected=\(gen)"
+                )
                 return
             }
             if needsPrepare {
+                self.transportDebug("schedulePlayback task=\(taskID) prepare begin")
                 await scheduler?.prepare(song: song, sourceRecordings: recordings)
                 guard self.playbackGeneration == gen else { return }
+                self.transportDebug("schedulePlayback task=\(taskID) prepare complete")
                 // Install per-track level taps after graph is built
                 scheduler?.installTrackLevelTaps()
             }
             // stop() was already called synchronously before this Task was created,
             // so we can proceed directly to play().
             guard self.playbackGeneration == gen else { return }
-            scheduler?.play(
+            self.transportDebug("schedulePlayback task=\(taskID) play begin")
+            let startReceipt = scheduler?.play(
                 song: song,
                 fromBar: fromBar,
                 bpm: bpm,
                 timeSignature: timeSignature,
                 sampleRate: sampleRate
+            )
+            self.lastPlaybackStartReceipt = startReceipt
+            self.transportDebug(
+                "schedulePlayback task=\(taskID) play complete hostStart=\(startReceipt?.hostStartTime ?? 0) "
+                    + "startup=\(String(format: "%.6f", startReceipt?.startupCompensationSeconds ?? 0)) "
+                    + "maxLatency=\(String(format: "%.6f", startReceipt?.maxPathLatencySeconds ?? 0))"
             )
             // Reinstall taps for resume paths where needsPrepare is false.
             scheduler?.installTrackLevelTaps()
@@ -664,12 +766,43 @@ public final class TransportViewModel {
 
             // Audio player nodes are now started — calibrate the playhead
             // so it starts advancing in sync with audible output.
-            let outputLatency = self.engineManager?.engine.outputNode.presentationLatency ?? 0
-            let schedulerStartupCompensation = scheduler?.playbackStartupCompensationSeconds ?? 0
             self.transport.completeAudioSync(
-                audioOutputLatency: outputLatency + schedulerStartupCompensation
+                receipt: startReceipt,
+                audioOutputLatency: self.engineManager?.engine.outputNode.presentationLatency ?? 0
             )
             self.syncFromTransport()
+            self.transportDebug("schedulePlayback task=\(taskID) completeAudioSync finished")
+        }
+    }
+
+    /// Ensures stop/restart transitions wait for any in-flight prepare/play task
+    /// to unwind before touching the scheduler again. Without this barrier, rapid
+    /// stop/start or seek/play can let an older task finish scheduling after a
+    /// newer restart has already begun.
+    private func enqueueStopBarrier(skipDeclick: Bool) {
+        let gen = playbackGeneration
+        let previousTask = playbackTask
+        playbackTaskSequence += 1
+        let taskID = playbackTaskSequence
+        previousTask?.cancel()
+        transportDebug(
+            "enqueueStopBarrier create task=\(taskID) gen=\(gen) skipDeclick=\(skipDeclick) "
+                + "hasPrevious=\(previousTask != nil)"
+        )
+        playbackTask = Task {
+            self.transportDebug("enqueueStopBarrier task=\(taskID) waiting previous task")
+            _ = await previousTask?.value
+            self.transportDebug("enqueueStopBarrier task=\(taskID) previous task completed")
+            guard self.playbackGeneration == gen else {
+                self.transportDebug(
+                    "enqueueStopBarrier task=\(taskID) stale generation current=\(self.playbackGeneration) expected=\(gen)"
+                )
+                return
+            }
+            self.transportDebug("enqueueStopBarrier task=\(taskID) scheduler.stop begin")
+            self.playbackScheduler?.removeTrackLevelTaps()
+            self.playbackScheduler?.stop(skipDeclick: skipDeclick)
+            self.transportDebug("enqueueStopBarrier task=\(taskID) scheduler.stop complete")
         }
     }
 
@@ -704,14 +837,24 @@ public final class TransportViewModel {
         guard !armed.isEmpty else { return }
         guard let engine = engineManager else { return }
 
-        let recorder = ContainerRecorder(engine: engine.engine, audioDirURL: audioDir)
+        let recorder = RecordController(engine: engine.engine, audioDirURL: audioDir)
         recorder.onPeaksUpdated = { [weak self] containerID, peaks in
             self?.onRecordingPeaksUpdated?(containerID, peaks)
+        }
+        recorder.onWaveformUpdated = { [weak self] containerID, peaks, extrema, rms in
+            self?.onRecordingWaveformUpdated?(containerID, peaks, extrema, rms)
         }
         recorder.onRecordingComplete = { [weak self] trackID, containerID, recording in
             self?.onRecordingComplete?(trackID, containerID, recording)
         }
-        containerRecorder = recorder
+        recorder.onDiagnosticsUpdated = { [weak self] diagnostics in
+            Task { @MainActor [weak self] in
+                self?.activeRecordingSessionCount = diagnostics.activeSessionCount
+                self?.recordingDroppedBufferCount = diagnostics.totalDroppedBufferCount
+                self?.recordingDroppedSampleCount = diagnostics.totalDroppedSampleCount
+            }
+        }
+        recordController = recorder
         recorder.startMonitoring(
             armedContainers: armed,
             fromBar: fromBar,
@@ -723,8 +866,11 @@ public final class TransportViewModel {
 
     /// Stops container recording if active.
     private func stopContainerRecording() {
-        containerRecorder?.stopMonitoring()
-        containerRecorder = nil
+        recordController?.stopMonitoring()
+        recordController = nil
+        activeRecordingSessionCount = 0
+        recordingDroppedBufferCount = 0
+        recordingDroppedSampleCount = 0
     }
 
     private func syncFromTransport() {

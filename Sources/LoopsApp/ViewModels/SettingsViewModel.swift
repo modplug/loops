@@ -11,10 +11,20 @@ public final class SettingsViewModel {
     public var allDevices: [AudioDevice] = []
     public var isEngineRunning: Bool = false
     public var currentSampleRate: Double = 44100.0
+    public var playbackPathLatencyMs: Double = 0
+    public var compensatedTrackCount: Int = 0
 
     public var inputPorts: [InputPort] = []
     public var outputPorts: [OutputPort] = []
     public var availableSampleRates: [Double] = []
+    public var lowLatencyRecordingEnabled: Bool = true {
+        didSet {
+            guard !isApplyingSettings else { return }
+            publishSettingsChange()
+        }
+    }
+
+    public var onSettingsChanged: ((AudioDeviceSettings) -> Void)?
 
     public var selectedDeviceUID: String? {
         didSet {
@@ -33,6 +43,7 @@ public final class SettingsViewModel {
     }
 
     private let engineManager: AudioEngineManager
+    private var isApplyingSettings = false
 
     public init(engineManager: AudioEngineManager) {
         self.engineManager = engineManager
@@ -59,17 +70,24 @@ public final class SettingsViewModel {
             sampleRate: selectedSampleRate,
             bufferSize: bufferSize,
             inputPorts: inputPorts,
-            outputPorts: outputPorts
+            outputPorts: outputPorts,
+            lowLatencyRecordingEnabled: lowLatencyRecordingEnabled
         )
     }
 
     /// Applies persisted settings to the view model.
     public func apply(settings: AudioDeviceSettings) {
+        isApplyingSettings = true
+        defer {
+            isApplyingSettings = false
+            publishSettingsChange()
+        }
         // Set device without triggering onDeviceChanged (we'll merge ports manually)
         let uid = settings.deviceUID
         selectedDeviceUID = uid
         selectedSampleRate = settings.sampleRate
         bufferSize = settings.bufferSize
+        lowLatencyRecordingEnabled = settings.lowLatencyRecordingEnabled
 
         // Enumerate fresh ports, then merge saved custom names
         if let uid, let device = engineManager.deviceManager.device(forUID: uid) {
@@ -89,12 +107,14 @@ public final class SettingsViewModel {
     public func renameInputPort(portID: String, name: String) {
         guard let index = inputPorts.firstIndex(where: { $0.id == portID }) else { return }
         inputPorts[index].customName = name.isEmpty ? nil : name
+        publishSettingsChange()
     }
 
     /// Renames an output port by its stable ID.
     public func renameOutputPort(portID: String, name: String) {
         guard let index = outputPorts.firstIndex(where: { $0.id == portID }) else { return }
         outputPorts[index].customName = name.isEmpty ? nil : name
+        publishSettingsChange()
     }
 
     /// Calculated latency in milliseconds based on buffer size and sample rate.
@@ -102,6 +122,20 @@ public final class SettingsViewModel {
         let rate = selectedSampleRate ?? currentSampleRate
         guard rate > 0 else { return 0 }
         return Double(bufferSize) / rate * 1000.0
+    }
+
+    public var estimatedMonitorLatencyMs: Double {
+        let base = latencyMs
+        return lowLatencyRecordingEnabled ? base : base + engineManager.outputPresentationLatencySeconds * 1000.0
+    }
+
+    public var compensatedPlaybackLatencyMs: Double {
+        latencyMs + engineManager.outputPresentationLatencySeconds * 1000.0
+    }
+
+    public func applyPlaybackLatencySummary(_ summary: PlaybackLatencySummary) {
+        playbackPathLatencyMs = summary.maxPathLatencySeconds * 1000.0
+        compensatedTrackCount = summary.compensatedTrackCount
     }
 
     // MARK: - Private
@@ -124,7 +158,7 @@ public final class SettingsViewModel {
             outputPorts = []
             availableSampleRates = []
         }
-        applyDeviceChange()
+        applySettingsUpdate()
     }
 
     /// Merges freshly enumerated ports with saved ports, preserving custom names.
@@ -150,6 +184,7 @@ public final class SettingsViewModel {
         } catch {
             syncFromEngine()
         }
+        publishSettingsChange()
     }
 
     private func applyBufferSizeChange() {
@@ -159,5 +194,15 @@ public final class SettingsViewModel {
         } catch {
             syncFromEngine()
         }
+        publishSettingsChange()
+    }
+
+    private func applySettingsUpdate() {
+        guard !isApplyingSettings else { return }
+        applyDeviceChange()
+    }
+
+    private func publishSettingsChange() {
+        onSettingsChanged?(currentSettings())
     }
 }

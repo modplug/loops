@@ -11,19 +11,23 @@ public struct AudioDeviceSettings: Codable, Equatable, Sendable {
     public var inputPorts: [InputPort]
     /// Named output ports on the selected device.
     public var outputPorts: [OutputPort]
+    /// Enables the low-latency monitor path while recording armed tracks.
+    public var lowLatencyRecordingEnabled: Bool
 
     public init(
         deviceUID: String? = nil,
         sampleRate: Double? = nil,
         bufferSize: Int = 256,
         inputPorts: [InputPort] = [],
-        outputPorts: [OutputPort] = []
+        outputPorts: [OutputPort] = [],
+        lowLatencyRecordingEnabled: Bool = true
     ) {
         self.deviceUID = deviceUID
         self.sampleRate = sampleRate
         self.bufferSize = bufferSize
         self.inputPorts = inputPorts
         self.outputPorts = outputPorts
+        self.lowLatencyRecordingEnabled = lowLatencyRecordingEnabled
     }
 
     // MARK: - Backward-compatible decoding
@@ -38,6 +42,7 @@ public struct AudioDeviceSettings: Codable, Equatable, Sendable {
         // New keys
         case inputPorts
         case outputPorts
+        case lowLatencyRecordingEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,6 +52,7 @@ public struct AudioDeviceSettings: Codable, Equatable, Sendable {
         sampleRate = try container.decodeIfPresent(Double.self, forKey: .sampleRate)
         inputPorts = try container.decodeIfPresent([InputPort].self, forKey: .inputPorts) ?? []
         outputPorts = try container.decodeIfPresent([OutputPort].self, forKey: .outputPorts) ?? []
+        lowLatencyRecordingEnabled = try container.decodeIfPresent(Bool.self, forKey: .lowLatencyRecordingEnabled) ?? true
 
         // Try new single-device key first, then fall back to legacy output device UID
         if let uid = try container.decodeIfPresent(String.self, forKey: .deviceUID) {
@@ -65,5 +71,6 @@ public struct AudioDeviceSettings: Codable, Equatable, Sendable {
         try container.encode(bufferSize, forKey: .bufferSize)
         try container.encode(inputPorts, forKey: .inputPorts)
         try container.encode(outputPorts, forKey: .outputPorts)
+        try container.encode(lowLatencyRecordingEnabled, forKey: .lowLatencyRecordingEnabled)
     }
 }

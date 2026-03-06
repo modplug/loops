@@ -22,6 +22,7 @@ public final class AudioEngineManager: @unchecked Sendable {
 
     public private(set) var isRunning: Bool = false
     public private(set) var currentSampleRate: Double = 44100.0
+    public private(set) var currentBufferSize: Int = 256
 
     private var deviceChangeObserver: NSObjectProtocol?
 
@@ -119,6 +120,7 @@ public final class AudioEngineManager: @unchecked Sendable {
     public func setBufferSize(_ size: Int) throws {
         let validSizes = [64, 128, 256, 512, 1024]
         guard validSizes.contains(size) else { return }
+        currentBufferSize = size
 
         let wasRunning = isRunning
         if wasRunning { stop() }
@@ -154,11 +156,13 @@ public final class AudioEngineManager: @unchecked Sendable {
             }
             // Apply buffer size to this device
             setDeviceBufferSize(deviceID: device.id, size: UInt32(settings.bufferSize))
+            currentBufferSize = settings.bufferSize
         } else if let deviceID = deviceManager.defaultOutputDeviceID() {
             if let requestedRate = settings.sampleRate, requestedRate > 0 {
                 setDeviceSampleRate(deviceID: deviceID, rate: requestedRate)
             }
             setDeviceBufferSize(deviceID: deviceID, size: UInt32(settings.bufferSize))
+            currentBufferSize = settings.bufferSize
         }
 
         if wasRunning {
@@ -180,6 +184,16 @@ public final class AudioEngineManager: @unchecked Sendable {
             return AVAudioFormat(standardFormatWithSampleRate: currentSampleRate, channels: 1)!
         }
         return engine.inputNode.inputFormat(forBus: 0)
+    }
+
+    public var deviceBufferLatencySeconds: Double {
+        guard currentSampleRate > 0 else { return 0 }
+        return Double(currentBufferSize) / currentSampleRate
+    }
+
+    public var outputPresentationLatencySeconds: Double {
+        guard isRunning else { return 0 }
+        return max(0, engine.outputNode.presentationLatency)
     }
 
     /// Checks if a given sample rate is supported by the current output device.

@@ -18,6 +18,8 @@ public final class AudioImporter: Sendable {
 
     public init() {}
 
+    private static let defaultTargetSampleRate = 44100.0
+
     /// Checks if a file URL has a supported audio extension.
     public static func isSupportedAudioFile(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
@@ -42,71 +44,194 @@ public final class AudioImporter: Sendable {
     /// Imports an audio file into the project's audio directory.
     /// Converts the audio to CAF format and generates waveform peaks.
     /// Returns a SourceRecording with the imported audio's metadata.
-    public func importAudio(from sourceURL: URL, to audioDirectory: URL) throws -> SourceRecording {
-        let recording = try importAudioFile(from: sourceURL, to: audioDirectory)
+    public func importAudio(
+        from sourceURL: URL,
+        to audioDirectory: URL,
+        targetSampleRate: Double? = nil
+    ) throws -> SourceRecording {
+        let recording = try importAudioFile(
+            from: sourceURL,
+            to: audioDirectory,
+            targetSampleRate: targetSampleRate
+        )
         // Generate waveform peaks synchronously
         let destURL = audioDirectory.appendingPathComponent(recording.filename)
         let generator = WaveformGenerator()
-        let peaks = try? generator.generatePeaks(from: destURL)
+        let renderData = try? generator.generateRenderData(from: destURL)
         return SourceRecording(
             id: recording.id,
             filename: recording.filename,
             sampleRate: recording.sampleRate,
             sampleCount: recording.sampleCount,
-            waveformPeaks: peaks
+            waveformPeaks: renderData?.peaks,
+            waveformExtrema: renderData?.extrema,
+            waveformRMS: renderData?.rms
         )
     }
 
     /// Imports an audio file into the project's audio directory (file copy only, no peak generation).
     /// Returns a SourceRecording with metadata but nil waveformPeaks.
-    public func importAudioFile(from sourceURL: URL, to audioDirectory: URL) throws -> SourceRecording {
+    public func importAudioFile(
+        from sourceURL: URL,
+        to audioDirectory: URL,
+        targetSampleRate: Double? = nil
+    ) throws -> SourceRecording {
         let filename = UUID().uuidString + ".caf"
         let destinationURL = audioDirectory.appendingPathComponent(filename)
 
         // Create audio directory if needed
         try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
 
-        // Read source file
+        let targetRate = sanitizedTargetSampleRate(targetSampleRate)
+        let sampleCount = try conformAudioFile(
+            from: sourceURL,
+            to: destinationURL,
+            targetSampleRate: targetRate
+        )
+
+        return SourceRecording(
+            filename: filename,
+            sampleRate: targetRate,
+            sampleCount: sampleCount,
+            waveformPeaks: nil
+        )
+    }
+
+    public func ensurePlaybackConformedFile(
+        from sourceURL: URL,
+        cacheDirectory: URL,
+        key: String,
+        targetSampleRate: Double
+    ) throws -> URL {
+        let targetRate = sanitizedTargetSampleRate(targetSampleRate)
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+
+        let destinationURL = cacheDirectory.appendingPathComponent("\(key)-\(Int(targetRate.rounded())).caf")
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            return destinationURL
+        }
+
+        _ = try conformAudioFile(from: sourceURL, to: destinationURL, targetSampleRate: targetRate)
+        return destinationURL
+    }
+
+    private func sanitizedTargetSampleRate(_ targetSampleRate: Double?) -> Double {
+        let rate = targetSampleRate ?? Self.defaultTargetSampleRate
+        return rate > 0 ? rate : Self.defaultTargetSampleRate
+    }
+
+    @discardableResult
+    private func conformAudioFile(
+        from sourceURL: URL,
+        to destinationURL: URL,
+        targetSampleRate: Double
+    ) throws -> Int64 {
         let sourceFile = try AVAudioFile(forReading: sourceURL)
-        let processingFormat = sourceFile.processingFormat
+        let sourceFormat = sourceFile.processingFormat
         let totalFrames = AVAudioFrameCount(sourceFile.length)
 
         guard totalFrames > 0 else {
             throw LoopsError.importFailed(reason: "Audio file is empty")
         }
 
-        // Write as CAF
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: processingFormat.sampleRate,
-            AVNumberOfChannelsKey: processingFormat.channelCount,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsNonInterleaved: processingFormat.isInterleaved ? false : true
-        ]
-
-        let destFile = try AVAudioFile(forWriting: destinationURL, settings: settings)
-
-        // Copy in chunks
-        let chunkSize: AVAudioFrameCount = 65536
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: chunkSize) else {
-            throw LoopsError.importFailed(reason: "Could not create audio buffer")
+        guard let destinationFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: targetSampleRate,
+            channels: sourceFormat.channelCount,
+            interleaved: true
+        ) else {
+            throw LoopsError.importFailed(reason: "Could not create destination audio format")
         }
 
-        var sampleCount: Int64 = 0
-        while sourceFile.framePosition < sourceFile.length {
-            let framesToRead = min(chunkSize, AVAudioFrameCount(sourceFile.length - sourceFile.framePosition))
-            try sourceFile.read(into: buffer, frameCount: framesToRead)
-            try destFile.write(from: buffer)
-            sampleCount += Int64(buffer.frameLength)
-        }
-
-        return SourceRecording(
-            filename: filename,
-            sampleRate: processingFormat.sampleRate,
-            sampleCount: sampleCount,
-            waveformPeaks: nil
+        let destFile = try AVAudioFile(
+            forWriting: destinationURL,
+            settings: destinationFormat.settings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: true
         )
+
+        guard let converter = AVAudioConverter(from: sourceFormat, to: destinationFormat) else {
+            throw LoopsError.importFailed(reason: "Could not create audio converter")
+        }
+
+        let inputChunkSize: AVAudioFrameCount = 32768
+        let outputChunkSize = AVAudioFrameCount(
+            max(
+                4096,
+                Int(ceil(Double(inputChunkSize) * targetSampleRate / sourceFormat.sampleRate)) + 1024
+            )
+        )
+
+        guard let sourceBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: inputChunkSize) else {
+            throw LoopsError.importFailed(reason: "Could not create source audio buffer")
+        }
+
+        var sourceExhausted = false
+        var sampleCount: Int64 = 0
+
+        while true {
+            guard let destBuffer = AVAudioPCMBuffer(
+                pcmFormat: destinationFormat,
+                frameCapacity: outputChunkSize
+            ) else {
+                throw LoopsError.importFailed(reason: "Could not create destination audio buffer")
+            }
+
+            var conversionError: NSError?
+            let status = converter.convert(to: destBuffer, error: &conversionError) { _, outStatus in
+                if sourceExhausted {
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                sourceBuffer.frameLength = 0
+                do {
+                    let framesToRead = min(
+                        inputChunkSize,
+                        AVAudioFrameCount(max(sourceFile.length - sourceFile.framePosition, 0))
+                    )
+                    if framesToRead == 0 {
+                        sourceExhausted = true
+                        outStatus.pointee = .endOfStream
+                        return nil
+                    }
+                    try sourceFile.read(into: sourceBuffer, frameCount: framesToRead)
+                } catch {
+                    sourceExhausted = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                if sourceBuffer.frameLength == 0 {
+                    sourceExhausted = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                outStatus.pointee = .haveData
+                return sourceBuffer
+            }
+
+            if let conversionError {
+                throw conversionError
+            }
+
+            if destBuffer.frameLength > 0 {
+                try destFile.write(from: destBuffer)
+                sampleCount += Int64(destBuffer.frameLength)
+            }
+
+            switch status {
+            case .haveData, .inputRanDry:
+                continue
+            case .endOfStream:
+                return sampleCount
+            case .error:
+                throw LoopsError.importFailed(reason: "Audio conversion failed")
+            @unknown default:
+                throw LoopsError.importFailed(reason: "Unexpected audio conversion status")
+            }
+        }
     }
 
     /// Calculates the number of bars an audio file spans at a given tempo and time signature.

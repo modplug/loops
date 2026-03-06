@@ -134,7 +134,21 @@ public struct LoopsRootView: View {
         .onChange(of: setlistViewModel?.isPerformMode) { _, newValue in
             transportViewModel.isPerformMode = newValue ?? false
         }
+        .onChange(of: transportViewModel.playbackLatencySummary) { _, newValue in
+            settingsViewModel?.applyPlaybackLatencySummary(newValue)
+        }
         .onAppear {
+            if let settingsViewModel {
+                settingsViewModel.apply(settings: viewModel.project.audioDeviceSettings)
+                settingsViewModel.applyPlaybackLatencySummary(transportViewModel.playbackLatencySummary)
+                transportViewModel.applyAudioDeviceSettings(viewModel.project.audioDeviceSettings)
+                settingsViewModel.onSettingsChanged = { [weak viewModel, weak transportViewModel] settings in
+                    Task { @MainActor [weak viewModel, weak transportViewModel] in
+                        viewModel?.project.audioDeviceSettings = settings
+                        transportViewModel?.applyAudioDeviceSettings(settings)
+                    }
+                }
+            }
             transportViewModel.songProvider = { [weak viewModel] in
                 guard let vm = viewModel, let song = vm.currentSong else { return nil }
                 return (song: song, recordings: vm.project.sourceRecordings, audioDir: vm.audioDirectory)
@@ -155,9 +169,12 @@ public struct LoopsRootView: View {
                 guard let vm = viewModel, let tvm = timelineViewModel else { return }
                 vm.saveViewSettings(tvm.captureViewSettings())
             }
-            viewModel.onWillSave = { [weak viewModel, weak timelineViewModel] in
+            viewModel.onWillSave = { [weak viewModel, weak timelineViewModel, weak settingsViewModel] in
                 guard let vm = viewModel, let tvm = timelineViewModel else { return }
                 vm.saveViewSettings(tvm.captureViewSettings())
+                if let settingsViewModel {
+                    vm.project.audioDeviceSettings = settingsViewModel.currentSettings()
+                }
             }
             // Wire song change handler: reset playhead and apply new song's view settings
             viewModel.onSongChanged = { [weak transportViewModel, weak viewModel, weak timelineViewModel] in
@@ -195,6 +212,9 @@ public struct LoopsRootView: View {
             // Wire container recording callbacks
             transportViewModel.onRecordingPeaksUpdated = { [weak viewModel] containerID, peaks in
                 viewModel?.updateRecordingPeaks(containerID: containerID, peaks: peaks)
+            }
+            transportViewModel.onRecordingWaveformUpdated = { [weak viewModel] containerID, peaks, extrema, rms in
+                viewModel?.updateRecordingWaveform(containerID: containerID, peaks: peaks, extrema: extrema, rms: rms)
             }
             transportViewModel.onRecordingComplete = { [weak viewModel] trackID, containerID, recording in
                 viewModel?.setContainerRecording(trackID: trackID, containerID: containerID, recording: recording)

@@ -14,7 +14,7 @@ struct InputMonitorTests {
         let trackID = ID<Track>()
 
         // Enable monitoring (no AU effects, basic routing)
-        await monitor.enableMonitoring(
+        _ = await monitor.enableMonitoring(
             trackID: trackID,
             insertEffects: [],
             volume: 1.0,
@@ -35,7 +35,7 @@ struct InputMonitorTests {
         let trackID = ID<Track>()
 
         // Enable monitoring
-        await monitor.enableMonitoring(
+        _ = await monitor.enableMonitoring(
             trackID: trackID,
             insertEffects: [],
             volume: 0.8,
@@ -71,7 +71,7 @@ struct InputMonitorTests {
         let monitor = InputMonitor(engine: engine)
         let trackID = ID<Track>()
 
-        await monitor.enableMonitoring(
+        _ = await monitor.enableMonitoring(
             trackID: trackID,
             insertEffects: [],
             volume: 1.0,
@@ -91,8 +91,8 @@ struct InputMonitorTests {
         let trackA = ID<Track>()
         let trackB = ID<Track>()
 
-        await monitor.enableMonitoring(trackID: trackA, insertEffects: [], volume: 1.0, pan: 0.0)
-        await monitor.enableMonitoring(trackID: trackB, insertEffects: [], volume: 0.5, pan: -0.5)
+        _ = await monitor.enableMonitoring(trackID: trackA, insertEffects: [], volume: 1.0, pan: 0.0)
+        _ = await monitor.enableMonitoring(trackID: trackB, insertEffects: [], volume: 0.5, pan: -0.5)
         #expect(monitor.monitoredTrackIDs.count == 2)
 
         monitor.cleanup()
@@ -108,7 +108,7 @@ struct InputMonitorTests {
         let trackID = ID<Track>()
 
         // Seed with valid state
-        await monitor.enableMonitoring(trackID: trackID, insertEffects: [], volume: 1.0, pan: 0.0)
+        _ = await monitor.enableMonitoring(trackID: trackID, insertEffects: [], volume: 1.0, pan: 0.0)
 
         // Background: hammer suppress/unsuppress (reads + writes trackSubgraphs)
         let suppressor = Task.detached(priority: .high) {
@@ -123,7 +123,7 @@ struct InputMonitorTests {
 
         // Foreground: repeatedly enable (clears + rebuilds trackSubgraphs)
         for _ in 0..<100 {
-            await monitor.enableMonitoring(trackID: trackID, insertEffects: [], volume: 1.0, pan: 0.0)
+            _ = await monitor.enableMonitoring(trackID: trackID, insertEffects: [], volume: 1.0, pan: 0.0)
         }
 
         await suppressor.value
@@ -138,7 +138,7 @@ struct InputMonitorTests {
 
         // Seed with valid state
         for id in trackIDs {
-            await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
+            _ = await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
         }
 
         // Background: hammer suppress/unsuppress on all tracks
@@ -157,7 +157,7 @@ struct InputMonitorTests {
         for _ in 0..<30 {
             monitor.cleanup()
             for id in trackIDs {
-                await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
+                _ = await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
             }
         }
 
@@ -172,7 +172,7 @@ struct InputMonitorTests {
         let trackIDs = (0..<10).map { _ in ID<Track>() }
 
         for id in trackIDs {
-            await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
+            _ = await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
         }
 
         // Background: hammer query methods (reads trackSubgraphs)
@@ -189,10 +189,59 @@ struct InputMonitorTests {
         for i in 0..<100 {
             let id = trackIDs[i % trackIDs.count]
             monitor.disableMonitoring(trackID: id)
-            await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
+            _ = await monitor.enableMonitoring(trackID: id, insertEffects: [], volume: 1.0, pan: 0.0)
         }
 
         await reader.value
         monitor.cleanup()
+    }
+
+    @Test("Low-latency split monitor prefers fast path for effected tracks")
+    func splitFastMonitorPrefersFastPath() async {
+        let engine = AVAudioEngine()
+        let monitor = InputMonitor(engine: engine)
+        let trackID = ID<Track>()
+        let effect = InsertEffect(
+            component: AudioComponentInfo(componentType: 0x61756678, componentSubType: 0x646c6179, componentManufacturer: 0x6170706c),
+            displayName: "Delay",
+            orderIndex: 0
+        )
+
+        let descriptor = await monitor.enableMonitoring(
+            trackID: trackID,
+            insertEffects: [effect],
+            volume: 1.0,
+            pan: 0.0,
+            monitoringMode: .splitFastMonitor,
+            lowLatencyPolicy: LowLatencyModePolicy(enabled: true, highLatencyThresholdSeconds: 0)
+        )
+
+        #expect(descriptor.usesFastPath)
+        #expect(descriptor.insertedEffectCount == 0)
+        #expect(monitor.monitorPathDescriptor(trackID: trackID)?.usesFastPath == true)
+    }
+
+    @Test("Exact-path monitor preserves effect path when low-latency mode is enabled")
+    func exactPathMonitorKeepsEffects() async {
+        let engine = AVAudioEngine()
+        let monitor = InputMonitor(engine: engine)
+        let trackID = ID<Track>()
+        let effect = InsertEffect(
+            component: AudioComponentInfo(componentType: 0x61756678, componentSubType: 0x646c6179, componentManufacturer: 0x6170706c),
+            displayName: "Delay",
+            orderIndex: 0
+        )
+
+        let descriptor = await monitor.enableMonitoring(
+            trackID: trackID,
+            insertEffects: [effect],
+            volume: 1.0,
+            pan: 0.0,
+            monitoringMode: .exactPath,
+            lowLatencyPolicy: LowLatencyModePolicy(enabled: true, highLatencyThresholdSeconds: 0)
+        )
+
+        #expect(!descriptor.usesFastPath)
+        #expect(descriptor.insertedEffectCount == 1)
     }
 }

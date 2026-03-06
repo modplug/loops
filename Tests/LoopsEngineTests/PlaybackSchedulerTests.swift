@@ -17,6 +17,50 @@ private let clickAssetURL: URL? = {
 
 private let clickAssetTestsEnabled = audioTestsEnabled && clickAssetURL != nil
 
+private let tyvenClickAssetURL: URL? = {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let url = root.appendingPathComponent("assets/tyven-klikk.mp3")
+    return FileManager.default.fileExists(atPath: url.path) ? url : nil
+}()
+
+private let tyvenBackingAssetURL: URL? = {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let url = root.appendingPathComponent("assets/tyven-tracks.mp3")
+    return FileManager.default.fileExists(atPath: url.path) ? url : nil
+}()
+
+private let tyvenBassAssetURL: URL? = {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let url = root.appendingPathComponent("assets/tyven-bass.mp3")
+    return FileManager.default.fileExists(atPath: url.path) ? url : nil
+}()
+
+private let tyvenTellingAssetURL: URL? = {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let url = root.appendingPathComponent("assets/tyven-telling.mp3")
+    return FileManager.default.fileExists(atPath: url.path) ? url : nil
+}()
+
+private let tyvenVoxAssetURL: URL? = {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let url = root.appendingPathComponent("assets/tyven-vox.mp3")
+    return FileManager.default.fileExists(atPath: url.path) ? url : nil
+}()
+
+private let tyvenStemAssetURLs: [URL]? = {
+    let urls = [
+        tyvenBackingAssetURL,
+        tyvenClickAssetURL,
+        tyvenTellingAssetURL,
+        tyvenVoxAssetURL,
+        tyvenBassAssetURL,
+    ]
+    guard urls.allSatisfy({ $0 != nil }) else { return nil }
+    return urls.compactMap { $0 }
+}()
+
+private let tyvenAssetTestsEnabled = audioTestsEnabled && tyvenStemAssetURLs != nil
+
 @Suite("PlaybackScheduler Tests", .serialized)
 @MainActor
 struct PlaybackSchedulerTests {
@@ -133,6 +177,52 @@ struct PlaybackSchedulerTests {
             await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
         }
 
+        scheduler.cleanup()
+    }
+
+    @Test("Large session 128 tracks and 2048 clips prepares and restarts from later bars",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(2)))
+    func largeSessionPrepareAndRestart() async throws {
+        let fixture = try Self.makeLargeSessionFixture(trackCount: 128, clipsPerTrack: 16)
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let engine = try Self.makeRunningEngine()
+        defer { engine.stop() }
+
+        let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        let summary = scheduler.latencySummary
+        #expect(summary.maxPathLatencySeconds >= 0)
+        #expect(summary.highLatencyTrackCount >= 0)
+        #expect(summary.compensatedTrackCount >= 0)
+
+        let firstReceipt = scheduler.play(
+            song: fixture.song,
+            fromBar: 33.0,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        #expect(firstReceipt.hostStartTime != nil)
+        #expect(firstReceipt.startupCompensationSeconds >= 0)
+        Self.renderFrames(engine: engine, count: 6)
+
+        scheduler.stop(skipDeclick: true)
+
+        let secondReceipt = scheduler.play(
+            song: fixture.song,
+            fromBar: 49.0,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        #expect(secondReceipt.hostStartTime != nil)
+        #expect(secondReceipt.startupCompensationSeconds >= 0)
+        Self.renderFrames(engine: engine, count: 6)
+
+        scheduler.stop(skipDeclick: true)
         scheduler.cleanup()
     }
 
@@ -2085,14 +2175,14 @@ struct PlaybackSchedulerTests {
         let scheduler = PlaybackScheduler(engine: engine, audioDirURL: tempDir)
         await scheduler.prepare(song: song, sourceRecordings: recordings)
 
-        // Only 2 active effects should be in the scheduler
+        // Effect lookup uses the full sorted effect index, including bypassed slots.
         let unit0 = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 0)
         let unit1 = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 1)
         let unit2 = scheduler.liveEffectUnit(containerID: containerID, effectIndex: 2)
 
         #expect(unit0 != nil, "Active effect A should be at scheduler index 0")
-        #expect(unit1 != nil, "Active effect C should be at scheduler index 1")
-        #expect(unit2 == nil, "No effect at scheduler index 2 (only 2 active)")
+        #expect(unit1 == nil, "Bypassed effect B should not have a live unit")
+        #expect(unit2 != nil, "Active effect C should remain addressable at full index 2")
 
         scheduler.cleanup()
     }
@@ -3015,6 +3105,76 @@ struct PlaybackSchedulerTests {
         return (tempDir, song, recordings)
     }
 
+    /// Creates a session-scale fixture that reuses one rendered source file
+    /// across many tracks and clips, matching the large-session target without
+    /// spending time generating thousands of unique assets.
+    private static func makeLargeSessionFixture(
+        trackCount: Int = 128,
+        clipsPerTrack: Int = 16,
+        sampleRate: Double = 44100,
+        clipLengthBars: Double = 4.0,
+        amplitude: Float = 0.1
+    ) throws -> (
+        tempDir: URL,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording]
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let beatsPerBar = 4.0
+        let secondsPerBeat = 60.0 / 120.0
+        let samplesPerBar = beatsPerBar * secondsPerBeat * sampleRate
+        let sampleCount = AVAudioFrameCount(clipLengthBars * samplesPerBar)
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+        buffer.frameLength = sampleCount
+        if let data = buffer.floatChannelData {
+            let freq = Float(220.0 * 2.0 * Double.pi / sampleRate)
+            for frame in 0..<Int(sampleCount) {
+                let envelope = min(1.0, Float(frame) / max(1, Float(sampleCount) * 0.05))
+                data[0][frame] = sin(freq * Float(frame)) * amplitude * envelope
+            }
+        }
+
+        let filename = "large-session.caf"
+        let fileURL = tempDir.appendingPathComponent(filename)
+        let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+        try file.write(from: buffer)
+
+        let recordingID = ID<SourceRecording>()
+        let recording = SourceRecording(
+            filename: filename,
+            sampleRate: sampleRate,
+            sampleCount: Int64(sampleCount)
+        )
+
+        var tracks: [Track] = []
+        tracks.reserveCapacity(trackCount)
+        for trackIndex in 0..<trackCount {
+            var containers: [Container] = []
+            containers.reserveCapacity(clipsPerTrack)
+            for clipIndex in 0..<clipsPerTrack {
+                containers.append(
+                    Container(
+                        name: "Clip \(trackIndex)-\(clipIndex)",
+                        startBar: 1.0 + Double(clipIndex) * clipLengthBars,
+                        lengthBars: clipLengthBars,
+                        sourceRecordingID: recordingID
+                    )
+                )
+            }
+            tracks.append(
+                Track(name: "Track \(trackIndex)", kind: .audio, containers: containers)
+            )
+        }
+
+        let song = Song(name: "Large Session Test", tracks: tracks)
+        return (tempDir, song, [recordingID: recording])
+    }
+
     /// Creates N unique stems, then duplicates that same set across multiple layers.
     /// Layer 2+ reuses the exact same SourceRecording IDs as layer 1, mirroring
     /// "first 5 tracks + same 5 tracks again" real-world sessions.
@@ -3086,6 +3246,84 @@ struct PlaybackSchedulerTests {
         return (tempDir, song, recordings)
     }
 
+    private static func makeLongTransientDuplicatedStemFixture(
+        stemCount: Int = 5,
+        duplicateLayers: Int = 2,
+        totalBars: Double = 48.0,
+        sampleRate: Double = 44100,
+        amplitude: Float = 0.08
+    ) throws -> (
+        tempDir: URL,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording]
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let beatsPerBar = 4.0
+        let secondsPerBeat = 60.0 / 120.0
+        let samplesPerBeat = secondsPerBeat * sampleRate
+        let sampleCount = AVAudioFrameCount(totalBars * beatsPerBar * samplesPerBeat)
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+
+        var recordings: [ID<SourceRecording>: SourceRecording] = [:]
+        var stemRecordingIDs: [ID<SourceRecording>] = []
+        var tracks: [Track] = []
+
+        for stemIndex in 0..<stemCount {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sampleCount)!
+            buffer.frameLength = sampleCount
+            if let data = buffer.floatChannelData {
+                let clickLength = Int(min(samplesPerBeat * 0.18, 4096.0))
+                let carrier = Float((330.0 + Double(stemIndex) * 37.0) * 2.0 * Double.pi / sampleRate)
+                let beatCount = Int(totalBars * beatsPerBar)
+                let stemDecay = 8.0 + Double(stemIndex) * 1.25
+                for beat in 0..<beatCount {
+                    let startFrame = Int(Double(beat) * samplesPerBeat)
+                    let accent: Float = beat % Int(beatsPerBar) == 0 ? 1.0 : 0.72
+                    for offset in 0..<clickLength {
+                        let frame = startFrame + offset
+                        guard frame < Int(sampleCount) else { break }
+                        let t = Double(offset) / samplesPerBeat
+                        let envelope = Float(exp(-stemDecay * t))
+                        let body = sinf(carrier * Float(offset))
+                        data[0][frame] += body * envelope * amplitude * accent
+                    }
+                }
+            }
+
+            let filename = "long-transient-stem\(stemIndex).caf"
+            let fileURL = tempDir.appendingPathComponent(filename)
+            let file = try AVAudioFile(forWriting: fileURL, settings: format.settings)
+            try file.write(from: buffer)
+
+            let recID = ID<SourceRecording>()
+            recordings[recID] = SourceRecording(
+                filename: filename,
+                sampleRate: sampleRate,
+                sampleCount: Int64(sampleCount)
+            )
+            stemRecordingIDs.append(recID)
+        }
+
+        for layer in 0..<duplicateLayers {
+            for stemIndex in 0..<stemCount {
+                let recID = stemRecordingIDs[stemIndex]
+                let container = Container(
+                    name: "Long Transient Stem \(stemIndex) L\(layer)",
+                    startBar: 1,
+                    lengthBars: totalBars,
+                    sourceRecordingID: recID
+                )
+                tracks.append(Track(name: "Long Track L\(layer)S\(stemIndex)", kind: .audio, containers: [container]))
+            }
+        }
+
+        let song = Song(name: "Long Transient Duplicated Stem Fixture", tracks: tracks)
+        return (tempDir, song, recordings)
+    }
+
     /// Builds a duplicated-stem fixture from a real transient source file.
     /// Each stem is imported from the same click asset, then layer 2+ reuses
     /// the exact recording IDs from layer 1.
@@ -3136,6 +3374,56 @@ struct PlaybackSchedulerTests {
         }
 
         let song = Song(name: "Click Asset Duplicated Stem Fixture", tracks: tracks)
+        return (tempDir, song, recordings)
+    }
+
+    private static func makeAssetStemLayerFixture(
+        assetURLs: [URL],
+        duplicateLayers: Int,
+        containerLengthBars: Double,
+        trackVolume: Float
+    ) throws -> (
+        tempDir: URL,
+        song: Song,
+        recordings: [ID<SourceRecording>: SourceRecording]
+    ) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PlaybackSchedulerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let importer = AudioImporter()
+        var recordings: [ID<SourceRecording>: SourceRecording] = [:]
+        var stemRecordingIDs: [ID<SourceRecording>] = []
+
+        for assetURL in assetURLs {
+            let imported = try importer.importAudioFile(from: assetURL, to: tempDir)
+            recordings[imported.id] = imported
+            stemRecordingIDs.append(imported.id)
+        }
+
+        var tracks: [Track] = []
+        tracks.reserveCapacity(stemRecordingIDs.count * duplicateLayers)
+        for layer in 0..<duplicateLayers {
+            for (stemIndex, recID) in stemRecordingIDs.enumerated() {
+                let baseName = assetURLs[stemIndex].deletingPathExtension().lastPathComponent
+                let container = Container(
+                    name: "\(baseName) L\(layer)",
+                    startBar: 1,
+                    lengthBars: containerLengthBars,
+                    sourceRecordingID: recID
+                )
+                tracks.append(
+                    Track(
+                        name: "\(baseName) L\(layer)",
+                        kind: .audio,
+                        volume: trackVolume,
+                        containers: [container]
+                    )
+                )
+            }
+        }
+
+        let song = Song(name: "Asset Stem Layer Fixture", tracks: tracks)
         return (tempDir, song, recordings)
     }
 
@@ -3193,6 +3481,218 @@ struct PlaybackSchedulerTests {
         let singleSong = buildSong(layers: 1, name: "Click Asset Single Layer")
         let doubleSong = buildSong(layers: 2, name: "Click Asset Double Layer")
         return (tempDir, singleSong, doubleSong, recordings)
+    }
+
+    private static func assertTransportStyleLaterBarRestartAccurate(
+        assetURL: URL,
+        stemCount: Int,
+        duplicateLayers: Int,
+        containerLengthBars: Double,
+        restartBar: Double,
+        trackVolume: Float,
+        startFrame: Int = 2048
+    ) async throws {
+        let fixture = try Self.makeClickAssetDuplicatedStemFixture(
+            assetURL: assetURL,
+            stemCount: stemCount,
+            duplicateLayers: duplicateLayers,
+            containerLengthBars: containerLengthBars,
+            trackVolume: trackVolume
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let prerollFrames = Int((restartBar - 1.0) * samplesPerBar)
+        let totalFrames = Int(2.0 * samplesPerBar)
+
+        let referenceEngine = try Self.makeRunningEngine()
+        defer { referenceEngine.stop() }
+        let referenceScheduler = PlaybackScheduler(engine: referenceEngine, audioDirURL: fixture.tempDir)
+        await referenceScheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        referenceScheduler.play(
+            song: fixture.song,
+            fromBar: restartBar,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        let referenceOutput = try Self.renderToBuffer(engine: referenceEngine, frameCount: totalFrames)
+        referenceScheduler.stop(skipDeclick: true)
+        referenceScheduler.cleanup()
+
+        let testEngine = try Self.makeRunningEngine()
+        defer { testEngine.stop() }
+        let scheduler = PlaybackScheduler(engine: testEngine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        var generation = 0
+        var playbackTask: Task<Void, Never>?
+
+        func schedulePlay(fromBar: Double) {
+            generation += 1
+            let gen = generation
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            playbackTask = Task {
+                _ = await previousTask?.value
+                guard generation == gen else { return }
+                scheduler.play(
+                    song: fixture.song,
+                    fromBar: fromBar,
+                    bpm: 120,
+                    timeSignature: TimeSignature(),
+                    sampleRate: 44100
+                )
+            }
+        }
+
+        func enqueueStopBarrier() {
+            generation += 1
+            let gen = generation
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            playbackTask = Task {
+                _ = await previousTask?.value
+                guard generation == gen else { return }
+                scheduler.stop(skipDeclick: true)
+            }
+        }
+
+        schedulePlay(fromBar: 1.0)
+        await playbackTask?.value
+        _ = try Self.renderToBuffer(engine: testEngine, frameCount: prerollFrames)
+
+        enqueueStopBarrier()
+        schedulePlay(fromBar: restartBar)
+        await playbackTask?.value
+
+        let restartedOutput = try Self.renderToBuffer(engine: testEngine, frameCount: totalFrames)
+        scheduler.stop(skipDeclick: true)
+        scheduler.cleanup()
+
+        let endFrame = min(Int(referenceOutput.frameLength), Int(restartedOutput.frameLength))
+        var maxDifference: Float = 0
+        var referencePeak: Float = 0
+        if let referenceData = referenceOutput.floatChannelData,
+           let restartedData = restartedOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                let a = referenceData[0][frame]
+                let b = restartedData[0][frame]
+                referencePeak = max(referencePeak, abs(a))
+                maxDifference = max(maxDifference, abs(a - b))
+            }
+        }
+
+        #expect(referencePeak > 0.001, "Reference render too quiet for a meaningful later-bar transport restart comparison")
+        #expect(
+            maxDifference < 0.0005,
+            "Later-bar transport restart from bar \(restartBar) drifted for \(assetURL.lastPathComponent): max sample difference \(maxDifference)"
+        )
+    }
+
+    private static func assertTransportStyleLaterBarRestartAccurate(
+        assetURLs: [URL],
+        duplicateLayers: Int,
+        containerLengthBars: Double,
+        restartBar: Double,
+        trackVolume: Float,
+        startFrame: Int = 2048
+    ) async throws {
+        let fixture = try Self.makeAssetStemLayerFixture(
+            assetURLs: assetURLs,
+            duplicateLayers: duplicateLayers,
+            containerLengthBars: containerLengthBars,
+            trackVolume: trackVolume
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let prerollFrames = Int((restartBar - 1.0) * samplesPerBar)
+        let totalFrames = Int(2.0 * samplesPerBar)
+
+        let referenceEngine = try Self.makeRunningEngine()
+        defer { referenceEngine.stop() }
+        let referenceScheduler = PlaybackScheduler(engine: referenceEngine, audioDirURL: fixture.tempDir)
+        await referenceScheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        referenceScheduler.play(
+            song: fixture.song,
+            fromBar: restartBar,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        let referenceOutput = try Self.renderToBuffer(engine: referenceEngine, frameCount: totalFrames)
+        referenceScheduler.stop(skipDeclick: true)
+        referenceScheduler.cleanup()
+
+        let testEngine = try Self.makeRunningEngine()
+        defer { testEngine.stop() }
+        let scheduler = PlaybackScheduler(engine: testEngine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        var generation = 0
+        var playbackTask: Task<Void, Never>?
+
+        func schedulePlay(fromBar: Double) {
+            generation += 1
+            let gen = generation
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            playbackTask = Task {
+                _ = await previousTask?.value
+                guard generation == gen else { return }
+                scheduler.play(
+                    song: fixture.song,
+                    fromBar: fromBar,
+                    bpm: 120,
+                    timeSignature: TimeSignature(),
+                    sampleRate: 44100
+                )
+            }
+        }
+
+        func enqueueStopBarrier() {
+            generation += 1
+            let gen = generation
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            playbackTask = Task {
+                _ = await previousTask?.value
+                guard generation == gen else { return }
+                scheduler.stop(skipDeclick: true)
+            }
+        }
+
+        schedulePlay(fromBar: 1.0)
+        await playbackTask?.value
+        _ = try Self.renderToBuffer(engine: testEngine, frameCount: prerollFrames)
+
+        enqueueStopBarrier()
+        schedulePlay(fromBar: restartBar)
+        await playbackTask?.value
+
+        let restartedOutput = try Self.renderToBuffer(engine: testEngine, frameCount: totalFrames)
+        scheduler.stop(skipDeclick: true)
+        scheduler.cleanup()
+
+        let endFrame = min(Int(referenceOutput.frameLength), Int(restartedOutput.frameLength))
+        var maxDifference: Float = 0
+        var referencePeak: Float = 0
+        if let referenceData = referenceOutput.floatChannelData,
+           let restartedData = restartedOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                let a = referenceData[0][frame]
+                let b = restartedData[0][frame]
+                referencePeak = max(referencePeak, abs(a))
+                maxDifference = max(maxDifference, abs(a - b))
+            }
+        }
+
+        #expect(referencePeak > 0.001, "Reference render too quiet for a meaningful later-bar transport restart comparison")
+        #expect(
+            maxDifference < 0.0005,
+            "Later-bar transport restart from bar \(restartBar) drifted for \(assetURLs.count) real stems x \(duplicateLayers) layers: max sample difference \(maxDifference)"
+        )
     }
 
     /// Renders frames from an offline engine into a single output buffer.
@@ -3439,6 +3939,59 @@ struct PlaybackSchedulerTests {
                 "Expected ~64x amplitude ratio, got \(ratio) (single=\(singlePeak), many=\(manyPeak))")
     }
 
+    @Test("Aligned duplicate tracks remain sample-accurate at 128 tracks",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(3)))
+    func multiTrackConstructiveInterferenceOneHundredTwentyEightTracks() async throws {
+        let singleFixture = try Self.makeIdenticalTrackFixture(trackCount: 1, amplitude: 0.0025)
+        defer { try? FileManager.default.removeItem(at: singleFixture.tempDir) }
+
+        let engine1 = try Self.makeRunningEngine()
+        let scheduler1 = PlaybackScheduler(engine: engine1, audioDirURL: singleFixture.tempDir)
+        await scheduler1.prepare(song: singleFixture.song, sourceRecordings: singleFixture.recordings)
+        scheduler1.play(
+            song: singleFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let totalFrames = Int(4.0 * samplesPerBar)
+        let singleOutput = try Self.renderToBuffer(engine: engine1, frameCount: totalFrames)
+        scheduler1.stop()
+        scheduler1.cleanup()
+        engine1.stop()
+
+        let manyFixture = try Self.makeIdenticalTrackFixture(trackCount: 128, amplitude: 0.0025)
+        defer { try? FileManager.default.removeItem(at: manyFixture.tempDir) }
+
+        let engineMany = try Self.makeRunningEngine()
+        let schedulerMany = PlaybackScheduler(engine: engineMany, audioDirURL: manyFixture.tempDir)
+        await schedulerMany.prepare(song: manyFixture.song, sourceRecordings: manyFixture.recordings)
+        schedulerMany.play(
+            song: manyFixture.song, fromBar: 1.0, bpm: 120,
+            timeSignature: TimeSignature(), sampleRate: 44100
+        )
+        let manyOutput = try Self.renderToBuffer(engine: engineMany, frameCount: totalFrames)
+        schedulerMany.stop()
+        schedulerMany.cleanup()
+        engineMany.stop()
+
+        var singlePeak: Float = 0
+        var manyPeak: Float = 0
+        let startFrame = 256
+        let endFrame = min(Int(singleOutput.frameLength), Int(manyOutput.frameLength))
+        if let singleData = singleOutput.floatChannelData,
+           let manyData = manyOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                singlePeak = max(singlePeak, abs(singleData[0][frame]))
+                manyPeak = max(manyPeak, abs(manyData[0][frame]))
+            }
+        }
+
+        let ratio = singlePeak > 0 ? manyPeak / singlePeak : 0
+        #expect(ratio > 112.0 && ratio < 140.0,
+                "Expected ~128x amplitude ratio, got \(ratio) (single=\(singlePeak), many=\(manyPeak))")
+    }
+
     @Test("Duplicated stems on separate tracks remain phase-locked",
           .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
           .timeLimit(.minutes(2)))
@@ -3493,6 +4046,435 @@ struct PlaybackSchedulerTests {
         let ratio = singlePeak > 0 ? doublePeak / singlePeak : 0
         #expect(ratio > 1.9 && ratio < 2.1,
                 "Expected duplicated stem layer ratio ~2x, got \(ratio) (single=\(singlePeak), double=\(doublePeak))")
+    }
+
+    @Test("Repeated restart from the same seek position remains sample-accurate",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(2)))
+    func repeatedRestartFromSameSeekPositionRemainsSampleAccurate() async throws {
+        let fixture = try Self.makeDuplicatedStemFixture(stemCount: 4, duplicateLayers: 2, amplitude: 0.01)
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let seekBar = 2.0
+        let totalFrames = Int(2.0 * samplesPerBar)
+
+        func renderPass() async throws -> AVAudioPCMBuffer {
+            let engine = try Self.makeRunningEngine()
+            defer { engine.stop() }
+
+            let scheduler = PlaybackScheduler(engine: engine, audioDirURL: fixture.tempDir)
+            await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+            scheduler.play(
+                song: fixture.song,
+                fromBar: seekBar,
+                bpm: 120,
+                timeSignature: TimeSignature(),
+                sampleRate: 44100
+            )
+            let output = try Self.renderToBuffer(engine: engine, frameCount: totalFrames)
+            scheduler.stop()
+            scheduler.cleanup()
+            return output
+        }
+
+        let firstOutput = try await renderPass()
+        let secondOutput = try await renderPass()
+
+        let startFrame = 512
+        let endFrame = min(Int(firstOutput.frameLength), Int(secondOutput.frameLength))
+        var maxDifference: Float = 0
+        var referencePeak: Float = 0
+        if let firstData = firstOutput.floatChannelData,
+           let secondData = secondOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                let a = firstData[0][frame]
+                let b = secondData[0][frame]
+                referencePeak = max(referencePeak, abs(a))
+                maxDifference = max(maxDifference, abs(a - b))
+            }
+        }
+
+        #expect(referencePeak > 0.001, "Reference render too quiet for a meaningful restart comparison")
+        #expect(
+            maxDifference < 0.0005,
+            "Repeated restart from bar \(seekBar) drifted: max sample difference \(maxDifference)"
+        )
+    }
+
+    @Test("Live seek restart on the same prepared scheduler remains sample-accurate",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(2)))
+    func liveSeekRestartOnSamePreparedSchedulerRemainsSampleAccurate() async throws {
+        let fixture = try Self.makeDuplicatedStemFixture(stemCount: 5, duplicateLayers: 2, amplitude: 0.01)
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let seekBar = 3.0
+        let prerollFrames = Int(1.0 * samplesPerBar)
+        let totalFrames = Int(2.0 * samplesPerBar)
+
+        let referenceEngine = try Self.makeRunningEngine()
+        defer { referenceEngine.stop() }
+        let referenceScheduler = PlaybackScheduler(engine: referenceEngine, audioDirURL: fixture.tempDir)
+        await referenceScheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        referenceScheduler.play(
+            song: fixture.song,
+            fromBar: seekBar,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        let referenceOutput = try Self.renderToBuffer(engine: referenceEngine, frameCount: totalFrames)
+        referenceScheduler.stop(skipDeclick: true)
+        referenceScheduler.cleanup()
+
+        let testEngine = try Self.makeRunningEngine()
+        defer { testEngine.stop() }
+        let testScheduler = PlaybackScheduler(engine: testEngine, audioDirURL: fixture.tempDir)
+        await testScheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        testScheduler.play(
+            song: fixture.song,
+            fromBar: 1.0,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        _ = try Self.renderToBuffer(engine: testEngine, frameCount: prerollFrames)
+        testScheduler.stop(skipDeclick: true)
+
+        testScheduler.play(
+            song: fixture.song,
+            fromBar: seekBar,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        let seekedOutput = try Self.renderToBuffer(engine: testEngine, frameCount: totalFrames)
+        testScheduler.stop(skipDeclick: true)
+        testScheduler.cleanup()
+
+        let startFrame = 512
+        let endFrame = min(Int(referenceOutput.frameLength), Int(seekedOutput.frameLength))
+        var maxDifference: Float = 0
+        var referencePeak: Float = 0
+        if let referenceData = referenceOutput.floatChannelData,
+           let seekedData = seekedOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                let a = referenceData[0][frame]
+                let b = seekedData[0][frame]
+                referencePeak = max(referencePeak, abs(a))
+                maxDifference = max(maxDifference, abs(a - b))
+            }
+        }
+
+        #expect(referencePeak > 0.001, "Reference render too quiet for a meaningful live-seek comparison")
+        #expect(
+            maxDifference < 0.0005,
+            "Live seek restart from bar \(seekBar) drifted on a reused scheduler: max sample difference \(maxDifference)"
+        )
+    }
+
+    @Test("Stop and restart from a later bar on the same prepared scheduler remains sample-accurate",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(2)))
+    func stopAndRestartFromLaterBarOnSamePreparedSchedulerRemainsSampleAccurate() async throws {
+        let fixture = try Self.makeDuplicatedStemFixture(stemCount: 5, duplicateLayers: 2, amplitude: 0.01)
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let restartBar = 3.0
+        let prerollFrames = Int(1.0 * samplesPerBar)
+        let totalFrames = Int(2.0 * samplesPerBar)
+
+        let referenceEngine = try Self.makeRunningEngine()
+        defer { referenceEngine.stop() }
+        let referenceScheduler = PlaybackScheduler(engine: referenceEngine, audioDirURL: fixture.tempDir)
+        await referenceScheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        referenceScheduler.play(
+            song: fixture.song,
+            fromBar: restartBar,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        let referenceOutput = try Self.renderToBuffer(engine: referenceEngine, frameCount: totalFrames)
+        referenceScheduler.stop(skipDeclick: true)
+        referenceScheduler.cleanup()
+
+        let testEngine = try Self.makeRunningEngine()
+        defer { testEngine.stop() }
+        let testScheduler = PlaybackScheduler(engine: testEngine, audioDirURL: fixture.tempDir)
+        await testScheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        testScheduler.play(
+            song: fixture.song,
+            fromBar: 1.0,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        _ = try Self.renderToBuffer(engine: testEngine, frameCount: prerollFrames)
+        testScheduler.stop(skipDeclick: true)
+
+        testScheduler.play(
+            song: fixture.song,
+            fromBar: restartBar,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        let restartedOutput = try Self.renderToBuffer(engine: testEngine, frameCount: totalFrames)
+        testScheduler.stop(skipDeclick: true)
+        testScheduler.cleanup()
+
+        let startFrame = 512
+        let endFrame = min(Int(referenceOutput.frameLength), Int(restartedOutput.frameLength))
+        var maxDifference: Float = 0
+        var referencePeak: Float = 0
+        if let referenceData = referenceOutput.floatChannelData,
+           let restartedData = restartedOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                let a = referenceData[0][frame]
+                let b = restartedData[0][frame]
+                referencePeak = max(referencePeak, abs(a))
+                maxDifference = max(maxDifference, abs(a - b))
+            }
+        }
+
+        #expect(referencePeak > 0.001, "Reference render too quiet for a meaningful stop/restart comparison")
+        #expect(
+            maxDifference < 0.0005,
+            "Stop/restart from bar \(restartBar) drifted on a reused scheduler: max sample difference \(maxDifference)"
+        )
+    }
+
+    @Test("Transport-style rapid stop and restart remains sample-accurate",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(2)))
+    func transportStyleRapidStopAndRestartRemainsSampleAccurate() async throws {
+        let fixture = try Self.makeDuplicatedStemFixture(stemCount: 5, duplicateLayers: 2, amplitude: 0.01)
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let restartBar = 3.0
+        let prerollFrames = Int(1.0 * samplesPerBar)
+        let totalFrames = Int(2.0 * samplesPerBar)
+
+        let referenceEngine = try Self.makeRunningEngine()
+        defer { referenceEngine.stop() }
+        let referenceScheduler = PlaybackScheduler(engine: referenceEngine, audioDirURL: fixture.tempDir)
+        await referenceScheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        referenceScheduler.play(
+            song: fixture.song,
+            fromBar: restartBar,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        let referenceOutput = try Self.renderToBuffer(engine: referenceEngine, frameCount: totalFrames)
+        referenceScheduler.stop(skipDeclick: true)
+        referenceScheduler.cleanup()
+
+        let testEngine = try Self.makeRunningEngine()
+        defer { testEngine.stop() }
+        let scheduler = PlaybackScheduler(engine: testEngine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        var generation = 0
+        var playbackTask: Task<Void, Never>?
+
+        func schedulePlay(fromBar: Double) {
+            generation += 1
+            let gen = generation
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            playbackTask = Task {
+                _ = await previousTask?.value
+                guard generation == gen else { return }
+                scheduler.play(
+                    song: fixture.song,
+                    fromBar: fromBar,
+                    bpm: 120,
+                    timeSignature: TimeSignature(),
+                    sampleRate: 44100
+                )
+            }
+        }
+
+        func enqueueStopBarrier() {
+            generation += 1
+            let gen = generation
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            playbackTask = Task {
+                _ = await previousTask?.value
+                guard generation == gen else { return }
+                scheduler.stop(skipDeclick: true)
+            }
+        }
+
+        schedulePlay(fromBar: 1.0)
+        await playbackTask?.value
+        _ = try Self.renderToBuffer(engine: testEngine, frameCount: prerollFrames)
+
+        enqueueStopBarrier()
+        schedulePlay(fromBar: restartBar)
+        await playbackTask?.value
+
+        let restartedOutput = try Self.renderToBuffer(engine: testEngine, frameCount: totalFrames)
+        scheduler.stop(skipDeclick: true)
+        scheduler.cleanup()
+
+        let startFrame = 512
+        let endFrame = min(Int(referenceOutput.frameLength), Int(restartedOutput.frameLength))
+        var maxDifference: Float = 0
+        var referencePeak: Float = 0
+        if let referenceData = referenceOutput.floatChannelData,
+           let restartedData = restartedOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                let a = referenceData[0][frame]
+                let b = restartedData[0][frame]
+                referencePeak = max(referencePeak, abs(a))
+                maxDifference = max(maxDifference, abs(a - b))
+            }
+        }
+
+        #expect(referencePeak > 0.001, "Reference render too quiet for a meaningful transport-style restart comparison")
+        #expect(
+            maxDifference < 0.0005,
+            "Transport-style stop/restart from bar \(restartBar) drifted: max sample difference \(maxDifference)"
+        )
+    }
+
+    @Test("Transport-style later-bar rapid restart on long transient stems remains sample-accurate",
+          .enabled(if: audioTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 to run"),
+          .timeLimit(.minutes(3)))
+    func transportStyleLaterBarRapidRestartOnLongTransientStemsRemainsSampleAccurate() async throws {
+        let fixture = try Self.makeLongTransientDuplicatedStemFixture(stemCount: 5, duplicateLayers: 2, totalBars: 48.0)
+        defer { try? FileManager.default.removeItem(at: fixture.tempDir) }
+
+        let samplesPerBar = 4.0 * (60.0 / 120.0) * 44100.0
+        let restartBar = 41.375
+        let prerollFrames = Int((restartBar - 1.0) * samplesPerBar)
+        let totalFrames = Int(2.0 * samplesPerBar)
+
+        let referenceEngine = try Self.makeRunningEngine()
+        defer { referenceEngine.stop() }
+        let referenceScheduler = PlaybackScheduler(engine: referenceEngine, audioDirURL: fixture.tempDir)
+        await referenceScheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+        referenceScheduler.play(
+            song: fixture.song,
+            fromBar: restartBar,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44100
+        )
+        let referenceOutput = try Self.renderToBuffer(engine: referenceEngine, frameCount: totalFrames)
+        referenceScheduler.stop(skipDeclick: true)
+        referenceScheduler.cleanup()
+
+        let testEngine = try Self.makeRunningEngine()
+        defer { testEngine.stop() }
+        let scheduler = PlaybackScheduler(engine: testEngine, audioDirURL: fixture.tempDir)
+        await scheduler.prepare(song: fixture.song, sourceRecordings: fixture.recordings)
+
+        var generation = 0
+        var playbackTask: Task<Void, Never>?
+
+        func schedulePlay(fromBar: Double) {
+            generation += 1
+            let gen = generation
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            playbackTask = Task {
+                _ = await previousTask?.value
+                guard generation == gen else { return }
+                scheduler.play(
+                    song: fixture.song,
+                    fromBar: fromBar,
+                    bpm: 120,
+                    timeSignature: TimeSignature(),
+                    sampleRate: 44100
+                )
+            }
+        }
+
+        func enqueueStopBarrier() {
+            generation += 1
+            let gen = generation
+            let previousTask = playbackTask
+            previousTask?.cancel()
+            playbackTask = Task {
+                _ = await previousTask?.value
+                guard generation == gen else { return }
+                scheduler.stop(skipDeclick: true)
+            }
+        }
+
+        schedulePlay(fromBar: 1.0)
+        await playbackTask?.value
+        _ = try Self.renderToBuffer(engine: testEngine, frameCount: prerollFrames)
+
+        enqueueStopBarrier()
+        schedulePlay(fromBar: restartBar)
+        await playbackTask?.value
+
+        let restartedOutput = try Self.renderToBuffer(engine: testEngine, frameCount: totalFrames)
+        scheduler.stop(skipDeclick: true)
+        scheduler.cleanup()
+
+        let startFrame = 1024
+        let endFrame = min(Int(referenceOutput.frameLength), Int(restartedOutput.frameLength))
+        var maxDifference: Float = 0
+        var referencePeak: Float = 0
+        if let referenceData = referenceOutput.floatChannelData,
+           let restartedData = restartedOutput.floatChannelData {
+            for frame in startFrame..<endFrame {
+                let a = referenceData[0][frame]
+                let b = restartedData[0][frame]
+                referencePeak = max(referencePeak, abs(a))
+                maxDifference = max(maxDifference, abs(a - b))
+            }
+        }
+
+        #expect(referencePeak > 0.001, "Reference render too quiet for a meaningful later-bar transport restart comparison")
+        #expect(
+            maxDifference < 0.0005,
+            "Later-bar transport-style stop/restart from bar \(restartBar) drifted: max sample difference \(maxDifference)"
+        )
+    }
+
+    @Test("Tyven click duplicated layers remain sample-accurate after later-bar transport restart",
+          .enabled(if: tyvenAssetTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 and provide Tyven assets under assets/"),
+          .timeLimit(.minutes(3)))
+    func tyvenClickDuplicatedLayersRemainSampleAccurateAfterLaterBarTransportRestart() async throws {
+        guard let assetURL = tyvenClickAssetURL else { return }
+        try await Self.assertTransportStyleLaterBarRestartAccurate(
+            assetURL: assetURL,
+            stemCount: 5,
+            duplicateLayers: 3,
+            containerLengthBars: 109.0,
+            restartBar: 41.375,
+            trackVolume: 0.08,
+            startFrame: 1024
+        )
+    }
+
+    @Test("Tyven five stems x three layers remain sample-accurate after later-bar transport restart",
+          .enabled(if: tyvenAssetTestsEnabled, "Set LOOPS_AUDIO_TESTS=1 and provide Tyven assets under assets/"),
+          .timeLimit(.minutes(4)))
+    func tyvenFiveStemsThreeLayersRemainSampleAccurateAfterLaterBarTransportRestart() async throws {
+        guard let assetURLs = tyvenStemAssetURLs else { return }
+        try await Self.assertTransportStyleLaterBarRestartAccurate(
+            assetURLs: assetURLs,
+            duplicateLayers: 3,
+            containerLengthBars: 109.0,
+            restartBar: 41.375,
+            trackVolume: 0.08,
+            startFrame: 1024
+        )
     }
 
     @Test("Click asset duplicated layers remain phase-locked at 64 tracks",

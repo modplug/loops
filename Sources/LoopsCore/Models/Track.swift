@@ -19,6 +19,20 @@ public enum TrackKind: String, Codable, Sendable, CaseIterable {
     }
 }
 
+public enum RecordingMonitoringMode: String, Codable, Sendable, CaseIterable {
+    case splitFastMonitor
+    case exactPath
+
+    public var displayName: String {
+        switch self {
+        case .splitFastMonitor:
+            return "Fast Monitor"
+        case .exactPath:
+            return "Exact Path"
+        }
+    }
+}
+
 public struct Track: Codable, Sendable, Identifiable {
     public var id: ID<Track>
     public var name: String
@@ -44,6 +58,8 @@ public struct Track: Codable, Sendable, Identifiable {
     public var midiInputChannel: UInt8?
     public var isRecordArmed: Bool
     public var isMonitoring: Bool
+    /// Monitoring path policy used while this track is armed for recording.
+    public var recordingMonitoringMode: RecordingMonitoringMode
     /// Whether the track-level effect chain is bypassed (audio routes directly to output).
     public var isEffectChainBypassed: Bool
     /// Track-level automation lanes (volume, pan, or track-level effect parameters).
@@ -75,6 +91,7 @@ public struct Track: Codable, Sendable, Identifiable {
         midiInputChannel: UInt8? = nil,
         isRecordArmed: Bool = false,
         isMonitoring: Bool = false,
+        recordingMonitoringMode: RecordingMonitoringMode = .splitFastMonitor,
         isEffectChainBypassed: Bool = false,
         trackAutomationLanes: [AutomationLane] = [],
         expressionPedalCC: UInt8? = nil,
@@ -99,6 +116,7 @@ public struct Track: Codable, Sendable, Identifiable {
         self.midiInputChannel = midiInputChannel
         self.isRecordArmed = isRecordArmed
         self.isMonitoring = isMonitoring
+        self.recordingMonitoringMode = recordingMonitoringMode
         self.isEffectChainBypassed = isEffectChainBypassed
         self.trackAutomationLanes = trackAutomationLanes
         self.expressionPedalCC = expressionPedalCC
@@ -117,6 +135,7 @@ public struct Track: Codable, Sendable, Identifiable {
         case midiInputDeviceID, midiInputChannel
         case isRecordArmed
         case isMonitoring
+        case recordingMonitoringMode
         case isEffectChainBypassed
         case trackAutomationLanes
         case expressionPedalCC
@@ -145,6 +164,7 @@ public struct Track: Codable, Sendable, Identifiable {
         midiInputChannel = try c.decodeIfPresent(UInt8.self, forKey: .midiInputChannel)
         isRecordArmed = try c.decodeIfPresent(Bool.self, forKey: .isRecordArmed) ?? false
         isMonitoring = try c.decodeIfPresent(Bool.self, forKey: .isMonitoring) ?? false
+        recordingMonitoringMode = try c.decodeIfPresent(RecordingMonitoringMode.self, forKey: .recordingMonitoringMode) ?? .splitFastMonitor
         isEffectChainBypassed = try c.decodeIfPresent(Bool.self, forKey: .isEffectChainBypassed) ?? false
         trackAutomationLanes = try c.decodeIfPresent([AutomationLane].self, forKey: .trackAutomationLanes) ?? []
         expressionPedalCC = try c.decodeIfPresent(UInt8.self, forKey: .expressionPedalCC)
@@ -181,6 +201,7 @@ public struct Track: Codable, Sendable, Identifiable {
         try c.encodeIfPresent(midiInputChannel, forKey: .midiInputChannel)
         try c.encode(isRecordArmed, forKey: .isRecordArmed)
         try c.encode(isMonitoring, forKey: .isMonitoring)
+        try c.encode(recordingMonitoringMode, forKey: .recordingMonitoringMode)
         try c.encode(isEffectChainBypassed, forKey: .isEffectChainBypassed)
         if !trackAutomationLanes.isEmpty {
             try c.encode(trackAutomationLanes, forKey: .trackAutomationLanes)
@@ -204,7 +225,8 @@ extension Track: Equatable {
         guard lhs.isMuted == rhs.isMuted,
               lhs.isSoloed == rhs.isSoloed,
               lhs.isRecordArmed == rhs.isRecordArmed,
-              lhs.isMonitoring == rhs.isMonitoring else { return false }
+              lhs.isMonitoring == rhs.isMonitoring,
+              lhs.recordingMonitoringMode == rhs.recordingMonitoringMode else { return false }
         // Continuous-change scalars (volume, pan)
         guard lhs.volume == rhs.volume,
               lhs.pan == rhs.pan else { return false }

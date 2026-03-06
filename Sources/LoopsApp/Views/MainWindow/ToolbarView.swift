@@ -115,15 +115,43 @@ public struct ToolbarView: View {
                 .buttonStyle(.plain)
                 .help("Stop")
 
-                // Return to bar 1
-                Button(action: { viewModel.setPlayheadPosition(1.0) }) {
-                    Image(systemName: "backward.end.fill")
-                        .foregroundStyle(.primary)
-                        .font(.caption)
-                }
-                .buttonStyle(.plain)
-                .help("Return to Start")
+            // Return to bar 1
+            Button(action: { viewModel.setPlayheadPosition(1.0) }) {
+                Image(systemName: "backward.end.fill")
+                    .foregroundStyle(.primary)
+                    .font(.caption)
             }
+            .buttonStyle(.plain)
+            .help("Return to Start")
+
+            if viewModel.monitorLatencySeconds > 0 || viewModel.playbackLatencySeconds > 0 {
+                Divider().frame(height: 20)
+                HStack(spacing: 8) {
+                    if viewModel.monitorLatencySeconds > 0 {
+                        latencyBadge(
+                            title: "Mon",
+                            valueMs: viewModel.monitorLatencySeconds * 1000.0,
+                            tint: .orange
+                        )
+                    }
+                    if viewModel.playbackLatencySeconds > 0 {
+                        latencyBadge(
+                            title: "Play",
+                            valueMs: viewModel.playbackLatencySeconds * 1000.0,
+                            tint: .blue
+                        )
+                    }
+                    if viewModel.playbackPathLatencySeconds > 0 {
+                        latencyBadge(
+                            title: "PDC",
+                            valueMs: viewModel.playbackPathLatencySeconds * 1000.0,
+                            tint: .teal
+                        )
+                    }
+                }
+                .help(latencyHelpText)
+            }
+        }
 
             Divider().frame(height: 24)
 
@@ -430,6 +458,45 @@ public struct ToolbarView: View {
     private var isAdaptiveMode: Bool {
         if case .adaptive = gridMode { return true }
         return false
+    }
+
+    @ViewBuilder
+    private func latencyBadge(title: String, valueMs: Double, tint: Color) -> some View {
+        Text("\(title) \(String(format: "%.1f", valueMs))ms")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(tint.opacity(0.16))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(tint.opacity(0.45), lineWidth: 1)
+            )
+    }
+
+    private var latencyHelpText: String {
+        var parts: [String] = []
+        if viewModel.monitorLatencySeconds > 0 {
+            parts.append(String(format: "Monitor latency %.1f ms", viewModel.monitorLatencySeconds * 1000.0))
+        }
+        if viewModel.playbackLatencySeconds > 0 {
+            parts.append(String(format: "Compensated playback latency %.1f ms", viewModel.playbackLatencySeconds * 1000.0))
+        }
+        if viewModel.playbackPathLatencySeconds > 0 {
+            parts.append(String(
+                format: "Plugin delay compensation %.1f ms across %d tracks (%d delayed)",
+                viewModel.playbackPathLatencySeconds * 1000.0,
+                viewModel.playbackLatencySummary.highLatencyTrackCount,
+                viewModel.playbackLatencySummary.compensatedTrackCount
+            ))
+        }
+        if viewModel.playbackStartupCompensationSeconds > 0 {
+            parts.append(String(format: "Startup compensation %.1f ms", viewModel.playbackStartupCompensationSeconds * 1000.0))
+        }
+        return parts.joined(separator: " • ")
     }
 }
 

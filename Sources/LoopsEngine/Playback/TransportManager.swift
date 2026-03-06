@@ -57,9 +57,8 @@ public final class TransportManager: @unchecked Sendable {
     /// advancing before audio player nodes have actually started rendering.
     public private(set) var isWaitingForAudioSync: Bool = false
 
-    private var displayLink: Timer?
-    private var playbackStartTime: CFAbsoluteTime = 0
-    private var playbackStartBar: Double = 1.0
+    private let transportClock = TransportClock()
+    private var displayLink: DispatchSourceTimer?
     private var countInStartTime: CFAbsoluteTime = 0
     private var countInDurationSeconds: Double = 0
 
@@ -89,10 +88,12 @@ public final class TransportManager: @unchecked Sendable {
         } else {
             state = isRecordArmed ? .recording : .playing
             isWaitingForAudioSync = waitForAudioSync
-            if !waitForAudioSync {
-                playbackStartTime = CACurrentMediaTime()
-            }
-            playbackStartBar = playheadBar
+            transportClock.start(
+                anchorBar: playheadBar,
+                bpm: bpm,
+                timeSignature: timeSignature,
+                waitForSync: waitForAudioSync
+            )
             startTimer()
         }
     }
@@ -102,6 +103,7 @@ public final class TransportManager: @unchecked Sendable {
     /// count-in to recording while audio is being scheduled asynchronously.
     public func beginWaitForAudioSync() {
         isWaitingForAudioSync = true
+        transportClock.beginWaitForSync(currentBar: playheadBar, bpm: bpm, timeSignature: timeSignature)
     }
 
     /// Resumes playhead tracking, calibrated to the current moment plus
@@ -111,10 +113,15 @@ public final class TransportManager: @unchecked Sendable {
     /// - Parameter audioOutputLatency: The hardware output latency in seconds
     ///   (e.g. from `AVAudioNode.presentationLatency`). The playhead will wait
     ///   this long before advancing, matching audible output timing.
-    public func completeAudioSync(audioOutputLatency: Double = 0) {
+    public func completeAudioSync(receipt: PlaybackStartReceipt? = nil, audioOutputLatency: Double = 0) {
         guard isWaitingForAudioSync else { return }
-        playbackStartTime = CACurrentMediaTime() + audioOutputLatency
-        playbackStartBar = playheadBar
+        transportClock.completeSync(
+            currentBar: playheadBar,
+            bpm: bpm,
+            timeSignature: timeSignature,
+            receipt: receipt,
+            audioOutputLatency: audioOutputLatency
+        )
         isWaitingForAudioSync = false
     }
 
@@ -125,6 +132,7 @@ public final class TransportManager: @unchecked Sendable {
         state = .stopped
         countInBarsRemaining = 0
         isWaitingForAudioSync = false
+        transportClock.stop(at: playheadBar)
     }
 
     /// Stops playback. When `returnToStartEnabled` is true, returns playhead
@@ -144,6 +152,7 @@ public final class TransportManager: @unchecked Sendable {
             }
         }
 
+        transportClock.stop(at: playheadBar)
         onPositionUpdate?(playheadBar)
     }
 
@@ -166,11 +175,8 @@ public final class TransportManager: @unchecked Sendable {
     /// Sets the playhead position (1-based bars).
     public func setPlayheadPosition(_ bar: Double) {
         let wasPlaying = state == .playing || state == .recording
-        if wasPlaying {
-            playbackStartTime = CACurrentMediaTime()
-            playbackStartBar = max(bar, 1.0)
-        }
         playheadBar = max(bar, 1.0)
+        transportClock.setBar(playheadBar, whileRunning: wasPlaying, bpm: bpm, timeSignature: timeSignature)
         onPositionUpdate?(playheadBar)
     }
 
@@ -190,16 +196,17 @@ public final class TransportManager: @unchecked Sendable {
 
     private func startTimer() {
         stopTimer()
-        // ~60fps position updates
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(16))
+        timer.setEventHandler { [weak self] in
             self?.tick()
         }
-        RunLoop.main.add(timer, forMode: .common)
+        timer.resume()
         displayLink = timer
     }
 
     private func stopTimer() {
-        displayLink?.invalidate()
+        displayLink?.cancel()
         displayLink = nil
     }
 
@@ -217,8 +224,7 @@ public final class TransportManager: @unchecked Sendable {
                 // Count-in complete — transition to recording
                 state = .recording
                 countInBarsRemaining = 0
-                playbackStartTime = CACurrentMediaTime()
-                playbackStartBar = playheadBar
+                transportClock.beginWaitForSync(currentBar: playheadBar, bpm: bpm, timeSignature: timeSignature)
                 onCountInComplete?()
             }
             return
@@ -232,12 +238,7 @@ public final class TransportManager: @unchecked Sendable {
             return
         }
 
-        // Clamp to non-negative: when audioOutputLatency pushes
-        // playbackStartTime into the future, the playhead holds at
-        // playbackStartBar until audio reaches the speakers.
-        let elapsed = max(0, CACurrentMediaTime() - playbackStartTime)
-        let barsElapsed = elapsed / barDurationSeconds
-        playheadBar = playbackStartBar + barsElapsed
+        playheadBar = transportClock.currentBar()
         onPositionUpdate?(playheadBar)
     }
 }

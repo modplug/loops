@@ -142,6 +142,52 @@ struct AudioImporterTests {
         #expect(recording.waveformPeaks == nil)
     }
 
+    @Test("importAudioFile conforms source sample rate to target session rate")
+    func importAudioFileConformsSampleRate() throws {
+        let sourceURL = try createTestAudioFile(sampleRate: 48000, durationSeconds: 2.0)
+        let audioDir = temporaryAudioDir()
+        defer {
+            cleanup(sourceURL)
+            cleanup(audioDir)
+        }
+
+        let importer = AudioImporter()
+        let recording = try importer.importAudioFile(
+            from: sourceURL,
+            to: audioDir,
+            targetSampleRate: 44100
+        )
+
+        let destURL = audioDir.appendingPathComponent(recording.filename)
+        let importedFile = try AVAudioFile(forReading: destURL)
+
+        #expect(recording.sampleRate == 44100)
+        #expect(importedFile.processingFormat.sampleRate == 44100)
+        #expect(abs(Double(recording.sampleCount) / 44100.0 - 2.0) < 0.02)
+    }
+
+    @Test("ensurePlaybackConformedFile creates cached playback file at target sample rate")
+    func ensurePlaybackConformedFileCreatesCachedFile() throws {
+        let sourceURL = try createTestAudioFile(sampleRate: 48000, durationSeconds: 1.0)
+        let cacheDir = temporaryAudioDir()
+        defer {
+            cleanup(sourceURL)
+            cleanup(cacheDir)
+        }
+
+        let importer = AudioImporter()
+        let conformedURL = try importer.ensurePlaybackConformedFile(
+            from: sourceURL,
+            cacheDirectory: cacheDir,
+            key: "test-recording",
+            targetSampleRate: 44100
+        )
+
+        let conformedFile = try AVAudioFile(forReading: conformedURL)
+        #expect(FileManager.default.fileExists(atPath: conformedURL.path))
+        #expect(conformedFile.processingFormat.sampleRate == 44100)
+    }
+
     @Test("Progressive peak generation matches complete generation")
     func progressivePeaksMatchComplete() throws {
         let sourceURL = try createTestAudioFile(sampleRate: 44100, durationSeconds: 2.0)

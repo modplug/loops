@@ -9,6 +9,7 @@ import LoopsCore
 public final class InputMonitor: @unchecked Sendable {
     private let engine: AVAudioEngine
     private let audioUnitHost: AudioUnitHost
+    private let latencyCoordinator = LatencyCoordinator()
     private let lock = NSLock()
 
     /// Shared mixer that receives audio from the input node and distributes
@@ -21,8 +22,10 @@ public final class InputMonitor: @unchecked Sendable {
 
     /// Per-track monitoring subgraph.
     private struct TrackMonitorSubgraph {
+        let feedMixer: AVAudioMixerNode
         let monitorMixer: AVAudioMixerNode
         let effectUnits: [AVAudioUnit]
+        let descriptor: MonitorPathDescriptor
         var isSuppressed: Bool
         var volume: Float
         var pan: Float
@@ -40,26 +43,29 @@ public final class InputMonitor: @unchecked Sendable {
 
     /// IDs of all tracks currently being monitored.
     public var monitoredTrackIDs: Set<ID<Track>> {
-        lock.lock()
-        let keys = Set(trackSubgraphs.keys)
-        lock.unlock()
-        return keys
+        lock.withLock {
+            Set(trackSubgraphs.keys)
+        }
     }
 
     /// Whether a given track is actively being monitored.
     public func isMonitoring(trackID: ID<Track>) -> Bool {
-        lock.lock()
-        let result = trackSubgraphs[trackID] != nil
-        lock.unlock()
-        return result
+        lock.withLock {
+            trackSubgraphs[trackID] != nil
+        }
     }
 
     /// Whether a given track's monitoring is suppressed due to container playback.
     public func isSuppressed(trackID: ID<Track>) -> Bool {
-        lock.lock()
-        let result = trackSubgraphs[trackID]?.isSuppressed ?? false
-        lock.unlock()
-        return result
+        lock.withLock {
+            trackSubgraphs[trackID]?.isSuppressed ?? false
+        }
+    }
+
+    public func monitorPathDescriptor(trackID: ID<Track>) -> MonitorPathDescriptor? {
+        lock.withLock {
+            trackSubgraphs[trackID]?.descriptor
+        }
     }
 
     // MARK: - Enable / Disable
@@ -70,13 +76,18 @@ public final class InputMonitor: @unchecked Sendable {
         trackID: ID<Track>,
         insertEffects: [InsertEffect],
         volume: Float,
-        pan: Float
-    ) async {
+        pan: Float,
+        monitoringMode: RecordingMonitoringMode = .splitFastMonitor,
+        lowLatencyPolicy: LowLatencyModePolicy = LowLatencyModePolicy()
+    ) async -> MonitorPathDescriptor {
         // Disable first if already monitoring this track
         disableMonitoring(trackID: trackID)
 
+        let feedMixer = AVAudioMixerNode()
         let monitorMixer = AVAudioMixerNode()
+        engine.attach(feedMixer)
         engine.attach(monitorMixer)
+        feedMixer.volume = 1.0
         monitorMixer.volume = volume
         monitorMixer.pan = pan
 
@@ -84,24 +95,43 @@ public final class InputMonitor: @unchecked Sendable {
         connectDistributorIfNeeded()
 
         // Connect dry path immediately so monitoring is instant
-        engine.connect(inputDistributor, to: monitorMixer, format: nil)
+        engine.connect(inputDistributor, to: feedMixer, format: nil)
+        engine.connect(feedMixer, to: monitorMixer, format: nil)
         engine.connect(monitorMixer, to: engine.mainMixerNode, format: nil)
 
-        lock.lock()
-        trackSubgraphs[trackID] = TrackMonitorSubgraph(
-            monitorMixer: monitorMixer,
-            effectUnits: [],
-            isSuppressed: false,
-            volume: volume,
-            pan: pan
-        )
-        lock.unlock()
-
-        // Load AU effects in the background, then hot-swap the chain
-        let activeEffects = insertEffects
+        let sortedActiveEffects = insertEffects
             .sorted(by: { $0.orderIndex < $1.orderIndex })
             .filter { !$0.isBypassed }
-        guard !activeEffects.isEmpty else { return }
+        let fingerprint = LatencyCoordinator.MonitorFingerprint(
+            trackID: trackID,
+            mode: monitoringMode,
+            policyEnabled: lowLatencyPolicy.enabled,
+            effectComponents: sortedActiveEffects.map(\.component)
+        )
+        let descriptor = latencyCoordinator.monitorDescriptor(
+            for: fingerprint,
+            policy: lowLatencyPolicy
+        ) {
+            // The serialized component model does not expose live AU latency.
+            // Use a conservative per-plugin heuristic until units are loaded.
+            Double(sortedActiveEffects.count) * 0.004
+        }
+
+        lock.withLock {
+            trackSubgraphs[trackID] = TrackMonitorSubgraph(
+                feedMixer: feedMixer,
+                monitorMixer: monitorMixer,
+                effectUnits: [],
+                descriptor: descriptor,
+                isSuppressed: false,
+                volume: volume,
+                pan: pan
+            )
+        }
+
+        // Load AU effects in the background, then hot-swap the chain
+        let activeEffects = descriptor.usesFastPath ? [] : sortedActiveEffects
+        guard !activeEffects.isEmpty else { return descriptor }
 
         var effectUnits: [AVAudioUnit] = []
         for effect in activeEffects {
@@ -115,42 +145,57 @@ public final class InputMonitor: @unchecked Sendable {
         }
 
         // Bail if monitoring was disabled while loading
-        lock.lock()
-        let stillMonitoring = trackSubgraphs[trackID] != nil
-        lock.unlock()
+        let stillMonitoring = lock.withLock {
+            trackSubgraphs[trackID] != nil
+        }
 
         guard stillMonitoring, !effectUnits.isEmpty else {
             for unit in effectUnits {
                 engine.disconnectNodeOutput(unit)
                 engine.detach(unit)
             }
-            return
+            return descriptor
         }
 
-        // Hot-swap: replace dry path with effect chain
-        engine.disconnectNodeOutput(inputDistributor)
-        engine.connect(inputDistributor, to: effectUnits[0], format: nil)
+        // Hot-swap this track only: replace the per-track dry feed with the effect chain.
+        engine.disconnectNodeOutput(feedMixer)
+        engine.connect(feedMixer, to: effectUnits[0], format: nil)
         for i in 0..<(effectUnits.count - 1) {
             engine.connect(effectUnits[i], to: effectUnits[i + 1], format: nil)
         }
         engine.connect(effectUnits[effectUnits.count - 1], to: monitorMixer, format: nil)
 
-        lock.lock()
-        trackSubgraphs[trackID] = TrackMonitorSubgraph(
-            monitorMixer: monitorMixer,
-            effectUnits: effectUnits,
-            isSuppressed: false,
-            volume: volume,
-            pan: pan
+        let exactLatencySeconds = effectUnits.reduce(into: 0.0) { partial, unit in
+            partial += unitLatencySeconds(unit)
+        }
+        let updatedDescriptor = MonitorPathDescriptor(
+            trackID: descriptor.trackID,
+            mode: descriptor.mode,
+            usesFastPath: descriptor.usesFastPath,
+            insertedEffectCount: effectUnits.count,
+            estimatedLatencySeconds: descriptor.usesFastPath ? 0 : exactLatencySeconds
         )
-        lock.unlock()
+
+        latencyCoordinator.updateMonitorDescriptor(updatedDescriptor, for: fingerprint)
+        lock.withLock {
+            trackSubgraphs[trackID] = TrackMonitorSubgraph(
+                feedMixer: feedMixer,
+                monitorMixer: monitorMixer,
+                effectUnits: effectUnits,
+                descriptor: updatedDescriptor,
+                isSuppressed: false,
+                volume: volume,
+                pan: pan
+            )
+        }
+        return updatedDescriptor
     }
 
     /// Disables input monitoring for a track, tearing down its audio subgraph.
     public func disableMonitoring(trackID: ID<Track>) {
-        lock.lock()
-        let subgraph = trackSubgraphs.removeValue(forKey: trackID)
-        lock.unlock()
+        let subgraph = lock.withLock {
+            trackSubgraphs.removeValue(forKey: trackID)
+        }
         guard let subgraph else { return }
         teardownSubgraph(subgraph)
         disconnectDistributorIfUnused()
@@ -161,38 +206,37 @@ public final class InputMonitor: @unchecked Sendable {
     /// Suppresses monitoring on a track (sets volume to 0) to avoid doubling
     /// when containers are playing on that track.
     public func suppressMonitoring(trackID: ID<Track>) {
-        lock.lock()
-        guard var subgraph = trackSubgraphs[trackID], !subgraph.isSuppressed else {
-            lock.unlock()
-            return
+        lock.withLock {
+            guard var subgraph = trackSubgraphs[trackID], !subgraph.isSuppressed else {
+                return
+            }
+            subgraph.isSuppressed = true
+            subgraph.monitorMixer.volume = 0
+            trackSubgraphs[trackID] = subgraph
         }
-        subgraph.isSuppressed = true
-        subgraph.monitorMixer.volume = 0
-        trackSubgraphs[trackID] = subgraph
-        lock.unlock()
     }
 
     /// Re-enables monitoring on a track after container playback stops.
     public func unsuppressMonitoring(trackID: ID<Track>) {
-        lock.lock()
-        guard var subgraph = trackSubgraphs[trackID], subgraph.isSuppressed else {
-            lock.unlock()
-            return
+        lock.withLock {
+            guard var subgraph = trackSubgraphs[trackID], subgraph.isSuppressed else {
+                return
+            }
+            subgraph.isSuppressed = false
+            subgraph.monitorMixer.volume = subgraph.volume
+            trackSubgraphs[trackID] = subgraph
         }
-        subgraph.isSuppressed = false
-        subgraph.monitorMixer.volume = subgraph.volume
-        trackSubgraphs[trackID] = subgraph
-        lock.unlock()
     }
 
     // MARK: - Cleanup
 
     /// Tears down all monitoring subgraphs.
     public func cleanup() {
-        lock.lock()
-        let subgraphs = trackSubgraphs
-        trackSubgraphs.removeAll()
-        lock.unlock()
+        let subgraphs = lock.withLock { () -> [ID<Track>: TrackMonitorSubgraph] in
+            let current = trackSubgraphs
+            trackSubgraphs.removeAll()
+            return current
+        }
         for (_, subgraph) in subgraphs {
             teardownSubgraph(subgraph)
         }
@@ -202,36 +246,50 @@ public final class InputMonitor: @unchecked Sendable {
     // MARK: - Private
 
     private func connectDistributorIfNeeded() {
-        lock.lock()
-        guard !isDistributorConnected else {
-            lock.unlock()
-            return
+        let shouldConnect = lock.withLock { () -> Bool in
+            guard !isDistributorConnected else { return false }
+            isDistributorConnected = true
+            return true
         }
-        isDistributorConnected = true
-        lock.unlock()
+        guard shouldConnect else { return }
         engine.attach(inputDistributor)
         let inputFormat = engine.inputNode.inputFormat(forBus: 0)
         engine.connect(engine.inputNode, to: inputDistributor, format: inputFormat)
     }
 
     private func disconnectDistributorIfUnused() {
-        lock.lock()
-        guard isDistributorConnected, trackSubgraphs.isEmpty else {
-            lock.unlock()
-            return
+        let shouldDisconnect = lock.withLock { () -> Bool in
+            guard isDistributorConnected, trackSubgraphs.isEmpty else { return false }
+            isDistributorConnected = false
+            return true
         }
-        isDistributorConnected = false
-        lock.unlock()
+        guard shouldDisconnect else { return }
         engine.disconnectNodeOutput(inputDistributor)
         engine.detach(inputDistributor)
     }
 
     private func teardownSubgraph(_ subgraph: TrackMonitorSubgraph) {
+        engine.disconnectNodeOutput(subgraph.feedMixer)
+        engine.detach(subgraph.feedMixer)
         for unit in subgraph.effectUnits {
             engine.disconnectNodeOutput(unit)
             engine.detach(unit)
         }
         engine.disconnectNodeOutput(subgraph.monitorMixer)
         engine.detach(subgraph.monitorMixer)
+    }
+
+    private func unitLatencySeconds(_ unit: AVAudioUnit) -> Double {
+        let latency = max(unit.auAudioUnit.latency, unit.latency)
+        guard latency.isFinite, latency > 0 else { return 0 }
+        return latency
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }

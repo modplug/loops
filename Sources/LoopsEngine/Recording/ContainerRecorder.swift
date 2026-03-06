@@ -18,8 +18,11 @@ public final class ContainerRecorder: @unchecked Sendable {
         let containerID: ID<Container>
         let trackID: ID<Track>
         let writer: CAFWriter
+        let bufferQueue: RecordBufferQueue
         let filename: String
         var peaks: [Float]
+        var extrema: [WaveformExtrema]
+        var rms: [Float]
         /// Accumulates raw samples between peak calculations.
         var pendingSamples: [Float]
     }
@@ -52,6 +55,7 @@ public final class ContainerRecorder: @unchecked Sendable {
     /// Called on the main thread when peaks are updated during recording.
     /// Parameters: containerID, peaks array.
     public var onPeaksUpdated: ((ID<Container>, [Float]) -> Void)?
+    public var onWaveformUpdated: ((ID<Container>, [Float], [WaveformExtrema], [Float]) -> Void)?
 
     /// Called on the main thread when recording completes for a container.
     /// Parameters: trackID, containerID, SourceRecording.
@@ -194,8 +198,14 @@ public final class ContainerRecorder: @unchecked Sendable {
                     containerID: target.containerID,
                     trackID: target.trackID,
                     writer: writer,
+                    bufferQueue: RecordBufferQueue(
+                        writer: writer,
+                        label: "com.loops.containerRecorder.\(filename)"
+                    ),
                     filename: filename,
                     peaks: [],
+                    extrema: [],
+                    rms: [],
                     pendingSamples: []
                 )
                 activeRecording = recording
@@ -212,20 +222,28 @@ public final class ContainerRecorder: @unchecked Sendable {
         lock.unlock()
 
         // Write the buffer to the file
-        do {
-            try rec.writer.write(buffer)
-        } catch {
+        if let copiedBuffer = Self.copy(buffer: buffer) {
+            _ = rec.bufferQueue.enqueue(copiedBuffer)
         }
 
-        // Extract samples for peak calculation (mono mix)
+        // Extract signed mono-ish samples for waveform calculation.
         if let channelData = buffer.floatChannelData {
             let channelCount = Int(buffer.format.channelCount)
             for i in 0..<frameCount {
-                var sample: Float = 0
+                var positive: Float = 0
+                var negative: Float = 0
                 for ch in 0..<channelCount {
-                    sample = max(sample, abs(channelData[ch][i]))
+                    let sample = channelData[ch][i]
+                    positive = max(positive, sample)
+                    negative = min(negative, sample)
                 }
-                rec.pendingSamples.append(sample)
+                let signedSample: Float
+                if abs(positive) >= abs(negative) {
+                    signedSample = positive
+                } else {
+                    signedSample = negative
+                }
+                rec.pendingSamples.append(signedSample)
             }
         }
 
@@ -235,22 +253,32 @@ public final class ContainerRecorder: @unchecked Sendable {
         lock.unlock()
 
         var newPeaks: [Float] = []
+        var newExtrema: [WaveformExtrema] = []
+        var newRMS: [Float] = []
         while rec.pendingSamples.count >= spp {
-            var maxVal: Float = 0
-            for i in 0..<spp {
-                let absVal = rec.pendingSamples[i]
-                if absVal > maxVal {
-                    maxVal = absVal
+            let bucket = Array(rec.pendingSamples.prefix(spp))
+            bucket.withUnsafeBufferPointer { samples in
+                let extrema = WaveformGenerator.extremaFromSamples(samples, samplesPerBucket: samples.count)
+                let rms = WaveformGenerator.rmsFromSamples(samples, samplesPerBucket: samples.count)
+                if let first = extrema.first {
+                    newExtrema.append(first)
+                    newPeaks.append(min(max(abs(first.minimum), abs(first.maximum)), 1.0))
+                }
+                if let first = rms.first {
+                    newRMS.append(first)
                 }
             }
-            newPeaks.append(min(maxVal, 1.0))
             rec.pendingSamples.removeFirst(spp)
         }
 
         if !newPeaks.isEmpty {
             rec.peaks.append(contentsOf: newPeaks)
+            rec.extrema.append(contentsOf: newExtrema)
+            rec.rms.append(contentsOf: newRMS)
             let containerID = rec.containerID
             let currentPeaks = rec.peaks
+            let currentExtrema = rec.extrema
+            let currentRMS = rec.rms
 
             lock.lock()
             activeRecording = rec
@@ -258,8 +286,10 @@ public final class ContainerRecorder: @unchecked Sendable {
 
             // Notify UI about peak updates on main thread
             let callback = onPeaksUpdated
+            let waveformCallback = onWaveformUpdated
             DispatchQueue.main.async {
                 callback?(containerID, currentPeaks)
+                waveformCallback?(containerID, currentPeaks, currentExtrema, currentRMS)
             }
         } else {
             lock.lock()
@@ -269,25 +299,33 @@ public final class ContainerRecorder: @unchecked Sendable {
     }
 
     private func finalizeRecording(_ recording: ActiveRecording) {
-        let sampleCount = recording.writer.close()
+        let sampleCount = recording.bufferQueue.finish()
 
         // Generate final peak from any remaining pending samples
         var finalPeaks = recording.peaks
+        var finalExtrema = recording.extrema
+        var finalRMS = recording.rms
         if !recording.pendingSamples.isEmpty {
-            var maxVal: Float = 0
-            for sample in recording.pendingSamples {
-                if sample > maxVal {
-                    maxVal = sample
+            recording.pendingSamples.withUnsafeBufferPointer { samples in
+                let extrema = WaveformGenerator.extremaFromSamples(samples, samplesPerBucket: samples.count)
+                let rms = WaveformGenerator.rmsFromSamples(samples, samplesPerBucket: samples.count)
+                if let first = extrema.first {
+                    finalExtrema.append(first)
+                    finalPeaks.append(min(max(abs(first.minimum), abs(first.maximum)), 1.0))
+                }
+                if let first = rms.first {
+                    finalRMS.append(first)
                 }
             }
-            finalPeaks.append(min(maxVal, 1.0))
         }
 
         let sourceRecording = SourceRecording(
             filename: recording.filename,
             sampleRate: sampleRate,
             sampleCount: sampleCount,
-            waveformPeaks: finalPeaks
+            waveformPeaks: finalPeaks,
+            waveformExtrema: finalExtrema,
+            waveformRMS: finalRMS
         )
 
         let trackID = recording.trackID
@@ -296,5 +334,21 @@ public final class ContainerRecorder: @unchecked Sendable {
         DispatchQueue.main.async {
             callback?(trackID, containerID, sourceRecording)
         }
+    }
+
+    private static func copy(buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let copied = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else {
+            return nil
+        }
+        copied.frameLength = buffer.frameLength
+
+        let channelCount = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+        for channel in 0..<channelCount {
+            guard let src = buffer.floatChannelData?[channel],
+                  let dst = copied.floatChannelData?[channel] else { continue }
+            dst.update(from: src, count: frameCount)
+        }
+        return copied
     }
 }

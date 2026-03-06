@@ -83,6 +83,8 @@ public final class ProjectViewModel {
     public var recentProjectURLs: [URL] = []
 
     public var liveRecordingPeaks: [ID<Container>: [Float]] = [:]
+    public var liveRecordingExtrema: [ID<Container>: [WaveformExtrema]] = [:]
+    public var liveRecordingRMS: [ID<Container>: [Float]] = [:]
 
     /// Callback fired when a recording completes and needs to be registered with the
     /// running PlaybackScheduler. Parameters: recordingID, filename, linked containers
@@ -650,6 +652,16 @@ public final class ProjectViewModel {
         hasUnsavedChanges = true
     }
 
+    /// Sets the monitoring path policy on a track.
+    public func setTrackRecordingMonitoringMode(trackID: ID<Track>, mode: RecordingMonitoringMode) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard project.songs[currentSongIndex].tracks[index].recordingMonitoringMode != mode else { return }
+        registerUndo(actionName: "Change Monitoring Mode")
+        project.songs[currentSongIndex].tracks[index].recordingMonitoringMode = mode
+        hasUnsavedChanges = true
+    }
+
     /// Sets the volume on a track.
     public func setTrackVolume(trackID: ID<Track>, volume: Float) {
         guard !project.songs.isEmpty else { return }
@@ -1080,9 +1092,13 @@ public final class ProjectViewModel {
 
         // Clear live recording peaks now that final peaks are in the SourceRecording
         liveRecordingPeaks.removeValue(forKey: containerID)
+        liveRecordingExtrema.removeValue(forKey: containerID)
+        liveRecordingRMS.removeValue(forKey: containerID)
         // Also clear live peaks from linked containers
         for linked in linkedContainersToSchedule {
             liveRecordingPeaks.removeValue(forKey: linked.id)
+            liveRecordingExtrema.removeValue(forKey: linked.id)
+            liveRecordingRMS.removeValue(forKey: linked.id)
         }
 
         hasUnsavedChanges = true
@@ -2504,6 +2520,11 @@ public final class ProjectViewModel {
 
     /// Imports an audio file into a track, creating a container at the specified bar.
     /// Returns the new container ID, or nil if import failed.
+    private var preferredImportSampleRate: Double {
+        let configured = project.audioDeviceSettings.sampleRate ?? 44100.0
+        return configured > 0 ? configured : 44100.0
+    }
+
     public func importAudio(
         url: URL,
         trackID: ID<Track>,
@@ -2515,7 +2536,11 @@ public final class ProjectViewModel {
 
         registerUndo(actionName: "Import Audio")
         let importer = AudioImporter()
-        let recording = try importer.importAudio(from: url, to: audioDirectory)
+        let recording = try importer.importAudio(
+            from: url,
+            to: audioDirectory,
+            targetSampleRate: preferredImportSampleRate
+        )
 
         // Calculate container length in bars
         guard let song = currentSong else { return nil }
@@ -2570,15 +2595,19 @@ public final class ProjectViewModel {
         // Generate peaks from source URL immediately (sub-second for typical files).
         // This runs before the background file copy so waveform appears instantly.
         let generator = WaveformGenerator()
-        let peaks = try? generator.generatePeaks(from: url)
+        let renderData = try? generator.generateRenderData(from: url)
 
         let recordingID = ID<SourceRecording>()
+        let targetSampleRate = preferredImportSampleRate
+        let conformedSampleCount = Int64((metadata.durationSeconds * targetSampleRate).rounded())
         let recording = SourceRecording(
             id: recordingID,
             filename: "",
-            sampleRate: metadata.sampleRate,
-            sampleCount: metadata.sampleCount,
-            waveformPeaks: peaks
+            sampleRate: targetSampleRate,
+            sampleCount: conformedSampleCount,
+            waveformPeaks: renderData?.peaks,
+            waveformExtrema: renderData?.extrema,
+            waveformRMS: renderData?.rms
         )
 
         let container = Container(
@@ -2607,10 +2636,16 @@ public final class ProjectViewModel {
         let viewModel = self
         Task.detached {
             let importer = AudioImporter()
-            guard let imported = try? importer.importAudioFile(from: url, to: audioDirectory) else { return }
+            guard let imported = try? importer.importAudioFile(
+                from: url,
+                to: audioDirectory,
+                targetSampleRate: targetSampleRate
+            ) else { return }
 
             await MainActor.run {
                 viewModel.project.sourceRecordings[recordingID]?.filename = imported.filename
+                viewModel.project.sourceRecordings[recordingID]?.sampleRate = imported.sampleRate
+                viewModel.project.sourceRecordings[recordingID]?.sampleCount = imported.sampleCount
                 viewModel.hasUnsavedChanges = true
             }
         }
@@ -2652,6 +2687,56 @@ public final class ProjectViewModel {
         return Array(allPeaks[startIdx..<endIdx])
     }
 
+    public func waveformExtrema(for container: Container) -> [WaveformExtrema]? {
+        if let liveExtrema = liveRecordingExtrema[container.id], !liveExtrema.isEmpty {
+            return liveExtrema
+        }
+        guard let recordingID = container.sourceRecordingID,
+              let recording = project.sourceRecordings[recordingID],
+              let allExtrema = recording.waveformExtrema, !allExtrema.isEmpty else { return nil }
+
+        guard let totalFileBars = recordingDurationBars(for: container),
+              totalFileBars > 0 else { return allExtrema }
+
+        let offset = container.audioStartOffset
+        let length = container.lengthBars
+
+        if offset < 0.001 && length >= totalFileBars - 0.01 {
+            return allExtrema
+        }
+
+        let extremaCount = Double(allExtrema.count)
+        let startIdx = max(0, Int((offset / totalFileBars) * extremaCount))
+        let endIdx = min(allExtrema.count, Int(((offset + length) / totalFileBars) * extremaCount))
+        guard startIdx < endIdx else { return allExtrema }
+        return Array(allExtrema[startIdx..<endIdx])
+    }
+
+    public func waveformRMS(for container: Container) -> [Float]? {
+        if let liveRMS = liveRecordingRMS[container.id], !liveRMS.isEmpty {
+            return liveRMS
+        }
+        guard let recordingID = container.sourceRecordingID,
+              let recording = project.sourceRecordings[recordingID],
+              let allRMS = recording.waveformRMS, !allRMS.isEmpty else { return nil }
+
+        guard let totalFileBars = recordingDurationBars(for: container),
+              totalFileBars > 0 else { return allRMS }
+
+        let offset = container.audioStartOffset
+        let length = container.lengthBars
+
+        if offset < 0.001 && length >= totalFileBars - 0.01 {
+            return allRMS
+        }
+
+        let rmsCount = Double(allRMS.count)
+        let startIdx = max(0, Int((offset / totalFileBars) * rmsCount))
+        let endIdx = min(allRMS.count, Int(((offset + length) / totalFileBars) * rmsCount))
+        guard startIdx < endIdx else { return allRMS }
+        return Array(allRMS[startIdx..<endIdx])
+    }
+
     /// Returns the total duration of the source recording in bars, or nil if unknown.
     public func recordingDurationBars(for container: Container) -> Double? {
         guard let recordingID = container.sourceRecordingID,
@@ -2667,8 +2752,15 @@ public final class ProjectViewModel {
     /// Updates live waveform peaks during an in-progress recording.
     /// Also propagates peaks to all linked containers (clones and link group members)
     /// so the waveform draws in real-time across all copies.
-    public func updateRecordingPeaks(containerID: ID<Container>, peaks: [Float]) {
+    public func updateRecordingWaveform(
+        containerID: ID<Container>,
+        peaks: [Float],
+        extrema: [WaveformExtrema],
+        rms: [Float]
+    ) {
         liveRecordingPeaks[containerID] = peaks
+        liveRecordingExtrema[containerID] = extrema
+        liveRecordingRMS[containerID] = rms
 
         // Propagate to linked containers
         guard let song = currentSong else { return }
@@ -2683,8 +2775,15 @@ public final class ProjectViewModel {
             let overridesRecording = container.overriddenFields.contains(.sourceRecording)
             if (isCloneOfRecorded || sharesLinkGroup) && !overridesRecording {
                 liveRecordingPeaks[container.id] = peaks
+                liveRecordingExtrema[container.id] = extrema
+                liveRecordingRMS[container.id] = rms
             }
         }
+    }
+
+    public func updateRecordingPeaks(containerID: ID<Container>, peaks: [Float]) {
+        let extrema = peaks.map { WaveformExtrema(minimum: -$0, maximum: $0) }
+        updateRecordingWaveform(containerID: containerID, peaks: peaks, extrema: extrema, rms: peaks)
     }
 
     // MARK: - MIDI Sequence Editing
@@ -2927,11 +3026,13 @@ public final class ProjectViewModel {
                 let peaks = try? generator.generatePeaks(from: url)
 
                 let recordingID = ID<SourceRecording>()
+                let targetSampleRate = preferredImportSampleRate
+                let conformedSampleCount = Int64((metadata.durationSeconds * targetSampleRate).rounded())
                 let recording = SourceRecording(
                     id: recordingID,
                     filename: "",
-                    sampleRate: metadata.sampleRate,
-                    sampleCount: metadata.sampleCount,
+                    sampleRate: targetSampleRate,
+                    sampleCount: conformedSampleCount,
                     waveformPeaks: peaks
                 )
 
@@ -2954,9 +3055,15 @@ public final class ProjectViewModel {
                 let viewModel = self
                 Task.detached {
                     let audioImporter = AudioImporter()
-                    guard let imported = try? audioImporter.importAudioFile(from: url, to: dir) else { return }
+                    guard let imported = try? audioImporter.importAudioFile(
+                        from: url,
+                        to: dir,
+                        targetSampleRate: targetSampleRate
+                    ) else { return }
                     await MainActor.run {
                         viewModel.project.sourceRecordings[recordingID]?.filename = imported.filename
+                        viewModel.project.sourceRecordings[recordingID]?.sampleRate = imported.sampleRate
+                        viewModel.project.sourceRecordings[recordingID]?.sampleCount = imported.sampleCount
                         viewModel.hasUnsavedChanges = true
                     }
                 }

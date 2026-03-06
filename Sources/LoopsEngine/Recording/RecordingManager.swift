@@ -7,6 +7,7 @@ import LoopsCore
 public actor RecordingManager {
     public private(set) var isRecording: Bool = false
     private var currentWriter: CAFWriter?
+    private var currentBufferQueue: RecordBufferQueue?
     private var inputNode: AVAudioInputNode?
     private let audioDirURL: URL
 
@@ -27,13 +28,19 @@ public actor RecordingManager {
         let fileURL = audioDirURL.appendingPathComponent(filename)
 
         let writer = try CAFWriter(url: fileURL, sampleRate: sampleRate)
+        let bufferQueue = RecordBufferQueue(
+            writer: writer,
+            label: "com.loops.recording.queue.\(filename)"
+        )
         currentWriter = writer
+        currentBufferQueue = bufferQueue
         self.inputNode = inputNode
 
         let format = inputNode.inputFormat(forBus: 0)
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
-            try? writer.write(buffer)
+            guard let copiedBuffer = Self.copy(buffer: buffer) else { return }
+            _ = bufferQueue.enqueue(copiedBuffer)
         }
 
         isRecording = true
@@ -45,7 +52,7 @@ public actor RecordingManager {
         guard isRecording, let writer = currentWriter else { return nil }
 
         inputNode?.removeTap(onBus: 0)
-        let sampleCount = writer.close()
+        let sampleCount = currentBufferQueue?.finish() ?? writer.close()
 
         let recording = SourceRecording(
             filename: writer.fileURL.lastPathComponent,
@@ -54,9 +61,26 @@ public actor RecordingManager {
         )
 
         currentWriter = nil
+        currentBufferQueue = nil
         inputNode = nil
         isRecording = false
 
         return recording
+    }
+
+    private nonisolated static func copy(buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let copied = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else {
+            return nil
+        }
+        copied.frameLength = buffer.frameLength
+
+        let channelCount = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+        for channel in 0..<channelCount {
+            guard let src = buffer.floatChannelData?[channel],
+                  let dst = copied.floatChannelData?[channel] else { continue }
+            dst.update(from: src, count: frameCount)
+        }
+        return copied
     }
 }

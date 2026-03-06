@@ -23,6 +23,7 @@ public struct TrackInspectorView: View {
     var onSetInputPort: ((String?) -> Void)?
     var onSetOutputPort: ((String?) -> Void)?
     var onSetMIDIInput: ((String?, UInt8?) -> Void)?
+    var onSetRecordingMonitoringMode: ((RecordingMonitoringMode) -> Void)?
 
     // Mix callbacks — live (during drag, audio-only) and commit (on gesture end, persists to model)
     var onVolumeLive: ((Float) -> Void)?
@@ -48,6 +49,8 @@ public struct TrackInspectorView: View {
     var availableInputPorts: [InputPort] = []
     var availableOutputPorts: [OutputPort] = []
     var availableMIDIDevices: [MIDIInputDevice] = []
+    var isLowLatencyRecordingEnabled: Bool = true
+    var monitorPathDescriptor: MonitorPathDescriptor?
 
     /// Returns the engine's live AVAudioUnit for a track effect at the given index, if available.
     var liveTrackEffectUnit: ((Int) -> AVAudioUnit?)?
@@ -62,6 +65,7 @@ public struct TrackInspectorView: View {
             trackInfoSection
             effectsSection
             routingSection
+            recordingSection
             mixSection
             expressionPedalSection
             midiParameterMappingsSection
@@ -235,6 +239,55 @@ public struct TrackInspectorView: View {
     private var midiChannelDisplayName: String {
         guard let ch = track.midiInputChannel else { return "Omni" }
         return "Ch \(ch)"
+    }
+
+    // MARK: - Recording Section
+
+    @ViewBuilder
+    private var recordingSection: some View {
+        if track.kind == .audio {
+            Section("Recording") {
+                Menu {
+                    ForEach(RecordingMonitoringMode.allCases, id: \.self) { mode in
+                        Button(mode.displayName) {
+                            onSetRecordingMonitoringMode?(mode)
+                        }
+                    }
+                } label: {
+                    LabeledContent("Monitor Mode") {
+                        Text(track.recordingMonitoringMode.displayName)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                LabeledContent("Low-Latency Recording") {
+                    Text(isLowLatencyRecordingEnabled ? "Enabled" : "Disabled")
+                        .foregroundStyle(isLowLatencyRecordingEnabled ? .green : .secondary)
+                }
+
+                if let monitorPathDescriptor {
+                    LabeledContent("Active Monitor Path") {
+                        Text(monitorPathDescriptor.usesFastPath ? "Fast Monitor" : "Exact Plugin Path")
+                            .foregroundStyle(monitorPathDescriptor.usesFastPath ? .orange : .secondary)
+                    }
+                    LabeledContent("Monitor Latency") {
+                        Text(String(format: "%.1f ms", monitorPathDescriptor.estimatedLatencySeconds * 1000.0))
+                            .foregroundStyle(.secondary)
+                    }
+                    if monitorPathDescriptor.insertedEffectCount > 0 {
+                        LabeledContent("Monitor FX") {
+                            Text("\(monitorPathDescriptor.insertedEffectCount)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    LabeledContent("Active Monitor Path") {
+                        Text(track.isMonitoring ? "Reconfiguring..." : "Not Monitoring")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Mix Section

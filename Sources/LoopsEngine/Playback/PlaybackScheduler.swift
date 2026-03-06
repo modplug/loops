@@ -13,19 +13,26 @@ import ObjCHelpers
 /// When a container's effect chain is bypassed (or empty), the player routes
 /// directly to the track mixer.
 public final class PlaybackScheduler: @unchecked Sendable {
-    private static let syncDiagnosticsEnabled = false
-    private static let syncDiagnosticsVerboseEnabled = false
+    private static let syncDiagnosticsEnabled =
+        ProcessInfo.processInfo.environment["LOOPS_PLAYBACK_SYNC_DEBUG"] == "1"
+    private static let syncDiagnosticsVerboseEnabled =
+        ProcessInfo.processInfo.environment["LOOPS_PLAYBACK_SYNC_VERBOSE"] == "1"
 
     private func syncDiag(_ message: @autoclosure () -> String) {
-        _ = message
+        guard Self.syncDiagnosticsEnabled || Self.syncDiagnosticsVerboseEnabled else { return }
+        print("[PLAYBACKSYNC] \(message())")
     }
 
     private func playLog(_ message: @autoclosure () -> String) {
-        _ = message
+        guard Self.syncDiagnosticsVerboseEnabled else { return }
+        print("[PLAYBACKLOG] \(message())")
     }
 
     private let engine: AVAudioEngine
     private let audioUnitHost: AudioUnitHost
+    private let audioImporter = AudioImporter()
+    private let latencyCoordinator = LatencyCoordinator()
+    private let startPlanner = PlaybackStartPlanner()
     private var audioFiles: [ID<SourceRecording>: AVAudioFile] = [:]
     /// File URLs for recordings, used to create per-container file handles.
     private var recordingFileURLs: [ID<SourceRecording>: URL] = [:]
@@ -117,6 +124,43 @@ public final class PlaybackScheduler: @unchecked Sendable {
     private var liveContainersWithAutomation: [Container] = []
     private var liveTracksWithAutomation: [Track] = []
 
+    private func preferredPlaybackSampleRate() -> Double {
+        let engineRate = engine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        if engineRate > 0 {
+            return engineRate
+        }
+        if currentSampleRate > 0 {
+            return currentSampleRate
+        }
+        return 44100.0
+    }
+
+    private func openPlaybackFile(
+        recordingID: ID<SourceRecording>,
+        sourceURL: URL,
+        targetSampleRate: Double
+    ) throws -> (url: URL, file: AVAudioFile) {
+        let sourceFile = try AVAudioFile(forReading: sourceURL)
+        let sourceRate = sourceFile.processingFormat.sampleRate
+        if abs(sourceRate - targetSampleRate) < 0.5 {
+            return (sourceURL, sourceFile)
+        }
+
+        let cacheDirectory = audioDirURL.appendingPathComponent(".playback-conformed", isDirectory: true)
+        let conformedURL = try audioImporter.ensurePlaybackConformedFile(
+            from: sourceURL,
+            cacheDirectory: cacheDirectory,
+            key: recordingID.rawValue.uuidString,
+            targetSampleRate: targetSampleRate
+        )
+        let conformedFile = try AVAudioFile(forReading: conformedURL)
+        syncDiag(
+            "conformed recording id=\(recordingID) fromRate=\(String(format: "%.1f", sourceRate)) "
+                + "toRate=\(String(format: "%.1f", conformedFile.processingFormat.sampleRate)) file=\(sourceURL.lastPathComponent)"
+        )
+        return (conformedURL, conformedFile)
+    }
+
     /// MIDI notes currently sounding (for sending note-off on stop).
     private var activeMIDINotes: [(trackID: ID<Track>, containerID: ID<Container>, note: UInt8, channel: UInt8)] = []
 
@@ -188,6 +232,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
     /// Container IDs whose effect chains failed to connect during the last prepare.
     /// The UI uses this to show a red indicator on broken effects.
     private var _failedContainerIDs: Set<ID<Container>> = []
+    private var _latencySummary = PlaybackLatencySummary()
 
     /// Returns the set of container IDs whose effect chains failed to connect.
     public var failedContainerIDs: Set<ID<Container>> {
@@ -196,10 +241,17 @@ public final class PlaybackScheduler: @unchecked Sendable {
         return _failedContainerIDs
     }
 
+    public var latencySummary: PlaybackLatencySummary {
+        lock.lock()
+        defer { lock.unlock() }
+        return _latencySummary
+    }
+
     /// Callback fired after `prepare`/`prepareIncremental` finishes, delivering
     /// the set of container IDs whose effect chains failed to connect.
     /// Called on the main actor.
     public var onEffectChainStatusChanged: ((Set<ID<Container>>) -> Void)?
+    public var onLatencySummaryChanged: ((PlaybackLatencySummary) -> Void)?
 
     /// Whether playback is active (has been scheduled and not stopped).
     public var isActive: Bool {
@@ -215,6 +267,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         return _playbackStartupCompensationSeconds
     }
 
+    public private(set) var lastPlaybackStartReceipt: PlaybackStartReceipt?
+
     /// Invalidates the prepared graph fingerprints, forcing the next
     /// `needsPrepare()` call to return `true`. Use after operations that
     /// may corrupt the engine topology (e.g. input monitoring toggles).
@@ -222,7 +276,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
         lock.lock()
         preparedTrackFingerprints.removeAll()
         preparedMasterFingerprint = nil
+        _latencySummary = PlaybackLatencySummary()
         lock.unlock()
+        latencyCoordinator.removeAll()
+        onLatencySummaryChanged?(PlaybackLatencySummary())
     }
 
     /// Returns `true` when the audio graph needs rebuilding for this song.
@@ -287,11 +344,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // internal read cursor is not thread-safe across concurrent player nodes.
         var recordingFileURLs: [ID<SourceRecording>: URL] = [:]
         var loadedFiles: [ID<SourceRecording>: AVAudioFile] = [:]
+        let targetPlaybackSampleRate = preferredPlaybackSampleRate()
         for (id, recording) in sourceRecordings {
             let fileURL = audioDirURL.appendingPathComponent(recording.filename)
-            if let file = try? AVAudioFile(forReading: fileURL) {
-                loadedFiles[id] = file
-                recordingFileURLs[id] = fileURL
+            if let opened = try? openPlaybackFile(
+                recordingID: id,
+                sourceURL: fileURL,
+                targetSampleRate: targetPlaybackSampleRate
+            ) {
+                loadedFiles[id] = opened.file
+                recordingFileURLs[id] = opened.url
             }
         }
 
@@ -450,10 +512,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         cleanup()
 
-        lock.lock()
-        audioFiles = loadedFiles
-        self.recordingFileURLs = recordingFileURLs
-        lock.unlock()
+        lock.withLock {
+            audioFiles = loadedFiles
+            self.recordingFileURLs = recordingFileURLs
+        }
 
         var newFailedContainerIDs = Set<ID<Container>>()
 
@@ -469,11 +531,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 engine.attach(unit)
             }
 
-            lock.lock()
-            masterMixerNode = masterMixer
-            masterEffectUnits = preloadedMasterEffects
-            masterEffectIndexMap = preloadedMasterEffectIdxMap
-            lock.unlock()
+            lock.withLock {
+                masterMixerNode = masterMixer
+                masterEffectUnits = preloadedMasterEffects
+                masterEffectIndexMap = preloadedMasterEffectIdxMap
+            }
 
             if preloadedMasterEffects.isEmpty {
                 engine.connect(masterMixer, to: engine.mainMixerNode, format: nil)
@@ -504,11 +566,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 engine.attach(unit)
             }
 
-            lock.lock()
-            trackMixers[preloaded.track.id] = trackMixer
-            trackEffectUnits[preloaded.track.id] = preloaded.effects
-            trackEffectIndexMaps[preloaded.track.id] = preloaded.effectIndexMap
-            lock.unlock()
+            lock.withLock {
+                trackMixers[preloaded.track.id] = trackMixer
+                trackEffectUnits[preloaded.track.id] = preloaded.effects
+                trackEffectIndexMaps[preloaded.track.id] = preloaded.effectIndexMap
+            }
 
             if preloaded.effects.isEmpty {
                 engine.connect(trackMixer, to: outputTarget, format: nil)
@@ -577,22 +639,22 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
                 let actualEffectIdxMap = chainConnected ? pc.effectIndexMap : [:]
 
-                lock.lock()
-                containerSubgraphs[pc.container.id] = ContainerSubgraph(
-                    playerNode: player,
-                    instrumentUnit: actualInstrument,
-                    effectUnits: actualEffects,
-                    fullIndexToCompactIndex: actualEffectIdxMap,
-                    trackMixer: trackMixer,
-                    audioFile: containerAudioFile
-                )
-                lock.unlock()
+                lock.withLock {
+                    containerSubgraphs[pc.container.id] = ContainerSubgraph(
+                        playerNode: player,
+                        instrumentUnit: actualInstrument,
+                        effectUnits: actualEffects,
+                        fullIndexToCompactIndex: actualEffectIdxMap,
+                        trackMixer: trackMixer,
+                        audioFile: containerAudioFile
+                    )
+                }
             }
         }
 
-        lock.lock()
-        _failedContainerIDs = newFailedContainerIDs
-        lock.unlock()
+        lock.withLock {
+            _failedContainerIDs = newFailedContainerIDs
+        }
         onEffectChainStatusChanged?(newFailedContainerIDs)
 
         // Store graph fingerprints for incremental comparison
@@ -601,10 +663,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
             newFingerprints[track.id] = TrackGraphFingerprint.from(track, allContainers: allContainers)
         }
         let masterFP = song.masterTrack.map { TrackGraphFingerprint.from($0, allContainers: allContainers) }
-        lock.lock()
-        preparedTrackFingerprints = newFingerprints
-        preparedMasterFingerprint = masterFP
-        lock.unlock()
+        lock.withLock {
+            preparedTrackFingerprints = newFingerprints
+            preparedMasterFingerprint = masterFP
+        }
+        publishLatencySummary()
 
     }
 
@@ -629,10 +692,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let newMasterFP = song.masterTrack.map { TrackGraphFingerprint.from($0, allContainers: allContainers) }
 
         // Compare against stored fingerprints
-        lock.lock()
-        let oldFingerprints = preparedTrackFingerprints
-        let oldMasterFP = preparedMasterFingerprint
-        lock.unlock()
+        let (oldFingerprints, oldMasterFP) = lock.withLock {
+            (preparedTrackFingerprints, preparedMasterFingerprint)
+        }
 
         // If no previous fingerprints, fall back to full prepare
         guard !oldFingerprints.isEmpty else {
@@ -656,17 +718,22 @@ public final class PlaybackScheduler: @unchecked Sendable {
             // Nothing changed — just update files and recording URLs
             var updatedURLs: [ID<SourceRecording>: URL] = [:]
             var updatedFiles: [ID<SourceRecording>: AVAudioFile] = [:]
+            let targetPlaybackSampleRate = preferredPlaybackSampleRate()
             for (id, recording) in sourceRecordings {
                 let fileURL = audioDirURL.appendingPathComponent(recording.filename)
-                if let file = try? AVAudioFile(forReading: fileURL) {
-                    updatedFiles[id] = file
-                    updatedURLs[id] = fileURL
+                if let opened = try? openPlaybackFile(
+                    recordingID: id,
+                    sourceURL: fileURL,
+                    targetSampleRate: targetPlaybackSampleRate
+                ) {
+                    updatedFiles[id] = opened.file
+                    updatedURLs[id] = opened.url
                 }
             }
-            lock.lock()
-            audioFiles = updatedFiles
-            recordingFileURLs = updatedURLs
-            lock.unlock()
+            lock.withLock {
+                audioFiles = updatedFiles
+                recordingFileURLs = updatedURLs
+            }
             return []
         }
 
@@ -712,11 +779,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Load audio files
         var loadedFiles: [ID<SourceRecording>: AVAudioFile] = [:]
         var newRecordingFileURLs: [ID<SourceRecording>: URL] = [:]
+        let targetPlaybackSampleRate = preferredPlaybackSampleRate()
         for (id, recording) in sourceRecordings {
             let fileURL = audioDirURL.appendingPathComponent(recording.filename)
-            if let file = try? AVAudioFile(forReading: fileURL) {
-                loadedFiles[id] = file
-                newRecordingFileURLs[id] = fileURL
+            if let opened = try? openPlaybackFile(
+                recordingID: id,
+                sourceURL: fileURL,
+                targetSampleRate: targetPlaybackSampleRate
+            ) {
+                loadedFiles[id] = opened.file
+                newRecordingFileURLs[id] = opened.url
             }
         }
 
@@ -824,40 +896,42 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Capture current AU state from containers being rebuilt so preset
         // changes made via the plugin UI are preserved across graph rebuilds.
         // Keyed by component info so reordering matches the right plugin.
-        lock.lock()
-        var capturedAUStates: [ID<Container>: [(AudioComponentInfo, Data)]] = [:]
-        for trackID in changedTrackIDs {
-            for (containerID, subgraph) in containerSubgraphs where containerToTrack[containerID] == trackID {
-                var states: [(AudioComponentInfo, Data)] = []
-                for unit in subgraph.effectUnits {
-                    let d = unit.audioComponentDescription
-                    let info = AudioComponentInfo(
-                        componentType: d.componentType,
-                        componentSubType: d.componentSubType,
-                        componentManufacturer: d.componentManufacturer
-                    )
-                    if let state = unit.auAudioUnit.fullState,
-                       let data = try? PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0) {
-                        states.append((info, data))
+        let capturedAUStates: [ID<Container>: [(AudioComponentInfo, Data)]] = lock.withLock {
+            var capturedAUStates: [ID<Container>: [(AudioComponentInfo, Data)]] = [:]
+            for trackID in changedTrackIDs {
+                for (containerID, subgraph) in containerSubgraphs where containerToTrack[containerID] == trackID {
+                    var states: [(AudioComponentInfo, Data)] = []
+                    for unit in subgraph.effectUnits {
+                        let d = unit.audioComponentDescription
+                        let info = AudioComponentInfo(
+                            componentType: d.componentType,
+                            componentSubType: d.componentSubType,
+                            componentManufacturer: d.componentManufacturer
+                        )
+                        if let state = unit.auAudioUnit.fullState,
+                           let data = try? PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0) {
+                            states.append((info, data))
+                        }
+                    }
+                    if !states.isEmpty {
+                        capturedAUStates[containerID] = states
                     }
                 }
-                if !states.isEmpty {
-                    capturedAUStates[containerID] = states
-                }
             }
+            return capturedAUStates
         }
-        lock.unlock()
 
         // Keep failures from unchanged containers, clear for rebuilt ones
-        lock.lock()
-        var newFailedContainerIDs = _failedContainerIDs
-        let rebuildTrackIDs = changedTrackIDs.union(removedTrackIDs)
-        for (containerID, _) in containerSubgraphs {
-            if let trackID = containerToTrack[containerID], rebuildTrackIDs.contains(trackID) {
-                newFailedContainerIDs.remove(containerID)
+        var newFailedContainerIDs = lock.withLock {
+            var updatedFailedContainerIDs = _failedContainerIDs
+            let rebuildTrackIDs = changedTrackIDs.union(removedTrackIDs)
+            for (containerID, _) in containerSubgraphs {
+                if let trackID = containerToTrack[containerID], rebuildTrackIDs.contains(trackID) {
+                    updatedFailedContainerIDs.remove(containerID)
+                }
             }
+            return updatedFailedContainerIDs
         }
-        lock.unlock()
 
         let wasRunning = engine.isRunning
         if wasRunning { engine.stop() }
@@ -874,10 +948,10 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         // Update files
-        lock.lock()
-        audioFiles = loadedFiles
-        recordingFileURLs = newRecordingFileURLs
-        lock.unlock()
+        lock.withLock {
+            audioFiles = loadedFiles
+            recordingFileURLs = newRecordingFileURLs
+        }
 
         // Determine output target
         let outputTarget: AVAudioNode
@@ -894,11 +968,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     engine.attach(unit)
                 }
 
-                lock.lock()
-                masterMixerNode = masterMixer
-                masterEffectUnits = preloadedMasterEffects
-                masterEffectIndexMap = preloadedMasterEffectIdxMap
-                lock.unlock()
+                lock.withLock {
+                    masterMixerNode = masterMixer
+                    masterEffectUnits = preloadedMasterEffects
+                    masterEffectIndexMap = preloadedMasterEffectIdxMap
+                }
 
                 if preloadedMasterEffects.isEmpty {
                     engine.connect(masterMixer, to: engine.mainMixerNode, format: nil)
@@ -913,10 +987,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 outputTarget = masterMixer
 
                 // Reconnect unchanged track mixers to new master output
-                lock.lock()
-                let unchangedMixers = trackMixers.filter { !changedTrackIDs.contains($0.key) && !removedTrackIDs.contains($0.key) }
-                let unchangedEffects = trackEffectUnits.filter { !changedTrackIDs.contains($0.key) && !removedTrackIDs.contains($0.key) }
-                lock.unlock()
+                let (unchangedMixers, unchangedEffects) = lock.withLock {
+                    (
+                        trackMixers.filter { !changedTrackIDs.contains($0.key) && !removedTrackIDs.contains($0.key) },
+                        trackEffectUnits.filter { !changedTrackIDs.contains($0.key) && !removedTrackIDs.contains($0.key) }
+                    )
+                }
 
                 for (trackID, mixer) in unchangedMixers {
                     if let effects = unchangedEffects[trackID], !effects.isEmpty {
@@ -932,9 +1008,9 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 outputTarget = engine.mainMixerNode
             }
         } else {
-            lock.lock()
-            outputTarget = masterMixerNode ?? engine.mainMixerNode
-            lock.unlock()
+            outputTarget = lock.withLock {
+                masterMixerNode ?? engine.mainMixerNode
+            }
         }
 
         // Build changed track subgraphs
@@ -951,11 +1027,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 engine.attach(unit)
             }
 
-            lock.lock()
-            trackMixers[preloaded.track.id] = trackMixer
-            trackEffectUnits[preloaded.track.id] = preloaded.effects
-            trackEffectIndexMaps[preloaded.track.id] = preloaded.effectIndexMap
-            lock.unlock()
+            lock.withLock {
+                trackMixers[preloaded.track.id] = trackMixer
+                trackEffectUnits[preloaded.track.id] = preloaded.effects
+                trackEffectIndexMaps[preloaded.track.id] = preloaded.effectIndexMap
+            }
 
             if preloaded.effects.isEmpty {
                 engine.connect(trackMixer, to: outputTarget, format: nil)
@@ -1035,30 +1111,31 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
                 let actualEffectIdxMap = chainConnected ? pc.effectIndexMap : [:]
 
-                lock.lock()
-                containerSubgraphs[pc.container.id] = ContainerSubgraph(
-                    playerNode: player,
-                    instrumentUnit: actualInstrument,
-                    effectUnits: actualEffects,
-                    fullIndexToCompactIndex: actualEffectIdxMap,
-                    trackMixer: trackMixer,
-                    audioFile: containerAudioFile
-                )
-                containerToTrack[pc.container.id] = preloaded.track.id
-                lock.unlock()
+                lock.withLock {
+                    containerSubgraphs[pc.container.id] = ContainerSubgraph(
+                        playerNode: player,
+                        instrumentUnit: actualInstrument,
+                        effectUnits: actualEffects,
+                        fullIndexToCompactIndex: actualEffectIdxMap,
+                        trackMixer: trackMixer,
+                        audioFile: containerAudioFile
+                    )
+                    containerToTrack[pc.container.id] = preloaded.track.id
+                }
             }
         }
 
-        lock.lock()
-        _failedContainerIDs = newFailedContainerIDs
-        lock.unlock()
+        lock.withLock {
+            _failedContainerIDs = newFailedContainerIDs
+        }
         onEffectChainStatusChanged?(newFailedContainerIDs)
 
         // Store updated fingerprints
-        lock.lock()
-        preparedTrackFingerprints = newFingerprints
-        preparedMasterFingerprint = newMasterFP
-        lock.unlock()
+        lock.withLock {
+            preparedTrackFingerprints = newFingerprints
+            preparedMasterFingerprint = newMasterFP
+        }
+        publishLatencySummary()
 
         return changedTrackIDs.union(removedTrackIDs)
     }
@@ -1115,7 +1192,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     container: resolved,
                     fromBar: fromBar,
                     samplesPerBar: samplesPerBar,
-                    deferPlay: true
+                    deferPlay: true,
+                    anchoredScheduling: true
                 ) {
                     scheduledEntries.append((player: player, containerID: resolved.id))
                 }
@@ -1186,13 +1264,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
     }
 
     /// Schedules and starts playback from the given bar position.
+    @discardableResult
     public func play(
         song: Song,
         fromBar: Double,
         bpm: Double,
         timeSignature: TimeSignature,
         sampleRate: Double
-    ) {
+    ) -> PlaybackStartReceipt {
         let samplesPerBar = self.samplesPerBar(bpm: bpm, timeSignature: timeSignature, sampleRate: sampleRate)
         let allContainers = song.tracks.flatMap(\.containers)
 
@@ -1205,6 +1284,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         playbackStartTime = CACurrentMediaTime()
         playbackStartBar = fromBar
         _playbackStartupCompensationSeconds = 0
+        lastPlaybackStartReceipt = nil
 
         // Build container → track mapping for monitoring suppression
         for track in song.tracks {
@@ -1250,7 +1330,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     container: resolved,
                     fromBar: fromBar,
                     samplesPerBar: samplesPerBar,
-                    deferPlay: true
+                    deferPlay: true,
+                    anchoredScheduling: true
                 ) {
                     scheduledEntries.append((player: player, containerID: resolved.id))
                 }
@@ -1258,7 +1339,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         // Phase 2: Start players with per-path latency compensation.
-        let startupCompensation = startScheduledPlayersWithLatencyCompensation(
+        let startReceipt = startScheduledPlayersWithLatencyCompensation(
             scheduledEntries,
             sampleRate: sampleRate,
             updateStartupCompensation: true
@@ -1278,8 +1359,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
             fromBar: fromBar,
             bpm: bpm,
             timeSignature: timeSignature,
-            startupCompensationSeconds: startupCompensation
+            startupCompensationSeconds: startReceipt.startupCompensationSeconds
         )
+        lock.lock()
+        lastPlaybackStartReceipt = startReceipt
+        lock.unlock()
+        return startReceipt
     }
 
     /// Stops all playback.
@@ -1301,7 +1386,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
         currentSong = nil
         playbackStartTime = nil
         _playbackStartupCompensationSeconds = 0
+        lastPlaybackStartReceipt = nil
+        _latencySummary = PlaybackLatencySummary()
         lock.unlock()
+        latencyCoordinator.removeAll()
+        onLatencySummaryChanged?(PlaybackLatencySummary())
 
         // Send note-off for all active MIDI notes
         for midiNote in midiNotes {
@@ -1314,6 +1403,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
             _ = skipDeclick
             for (_, subgraph) in subgraphs {
                 subgraph.playerNode.stop()
+                subgraph.playerNode.reset()
             }
         }
 
@@ -1445,13 +1535,18 @@ public final class PlaybackScheduler: @unchecked Sendable {
         currentSong = nil
         playbackStartTime = nil
         _playbackStartupCompensationSeconds = 0
+        lastPlaybackStartReceipt = nil
         preparedTrackFingerprints.removeAll()
         preparedMasterFingerprint = nil
+        _latencySummary = PlaybackLatencySummary()
         lock.unlock()
+        latencyCoordinator.removeAll()
+        onLatencySummaryChanged?(PlaybackLatencySummary())
 
         // Stop all player nodes before tearing down the graph
         for (_, subgraph) in subgraphs {
             subgraph.playerNode.stop()
+            subgraph.playerNode.reset()
         }
 
         // Collect ALL manually-attached nodes so we can disconnect them all
@@ -1559,6 +1654,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
         // Detach nodes from engine
         for subgraph in removedSubgraphs {
             subgraph.playerNode.stop()
+            subgraph.playerNode.reset()
             safeDisconnect(subgraph.playerNode)
             engine.detach(subgraph.playerNode)
             if let inst = subgraph.instrumentUnit {
@@ -1692,7 +1788,8 @@ public final class PlaybackScheduler: @unchecked Sendable {
         container: Container,
         fromBar: Double,
         samplesPerBar: Double,
-        deferPlay: Bool = false
+        deferPlay: Bool = false,
+        anchoredScheduling: Bool = false
     ) -> AVAudioPlayerNode? {
         var audioFile: AVAudioFile?
         var subgraph: ContainerSubgraph?
@@ -1729,6 +1826,12 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
 
         guard let audioFile, let subgraph else { return nil }
+
+        // Reused player nodes must start each schedule from a clean state.
+        // In real-time seek/restart flows, `stop()` alone can leave enough
+        // residual timeline state to produce tiny inter-track offsets.
+        subgraph.playerNode.stop()
+        subgraph.playerNode.reset()
 
         // scheduleSegment interprets startingFrame/frameCount in the audio file's
         // native sample rate.  The caller computed samplesPerBar using the engine's
@@ -1799,12 +1902,42 @@ public final class PlaybackScheduler: @unchecked Sendable {
             scheduleTime = nil
             playLog("  '\(container.name)' scheduling frameCount=\(frameCount) startOffset=\(startOffset)")
         }
+        var anchoredSampleTime = max(0, futureDelayFrames)
+        let shouldApplyInitialDeclick = futureDelayFrames == 0
 
         let hasFades = container.enterFade != nil || container.exitFade != nil
 
         // For fill loop mode: schedule repeating segments
         if container.loopSettings.loopCount == .fill {
-            if hasFades {
+            if anchoredScheduling {
+                if hasFades {
+                    scheduleAnchoredFadingLoopPlayback(
+                        player: subgraph.playerNode,
+                        audioFile: audioFile,
+                        containerStartSample: containerStartSample,
+                        containerEndSample: containerEndSample,
+                        playheadSample: playheadSample,
+                        samplesPerBar: fileSPB,
+                        audioOffsetSamples: audioOffsetSamples,
+                        enterFade: container.enterFade,
+                        exitFade: container.exitFade,
+                        startSampleTime: &anchoredSampleTime,
+                        applyInitialDeclick: shouldApplyInitialDeclick
+                    )
+                } else {
+                    scheduleAnchoredLoopingPlayback(
+                        player: subgraph.playerNode,
+                        audioFile: audioFile,
+                        containerStartSample: containerStartSample,
+                        containerEndSample: containerEndSample,
+                        playheadSample: playheadSample,
+                        samplesPerBar: fileSPB,
+                        audioOffsetSamples: audioOffsetSamples,
+                        startSampleTime: &anchoredSampleTime,
+                        applyInitialDeclick: shouldApplyInitialDeclick
+                    )
+                }
+            } else if hasFades {
                 scheduleFadingLoopPlayback(
                     player: subgraph.playerNode,
                     audioFile: audioFile,
@@ -1828,7 +1961,33 @@ public final class PlaybackScheduler: @unchecked Sendable {
                 )
             }
         } else {
-            if hasFades {
+            if anchoredScheduling {
+                if hasFades {
+                    scheduleAnchoredFadingPlayback(
+                        player: subgraph.playerNode,
+                        audioFile: audioFile,
+                        startOffset: startOffset,
+                        frameCount: frameCount,
+                        containerPosition: playheadSample >= containerStartSample
+                            ? playheadSample - containerStartSample : Int64(0),
+                        containerLengthSamples: containerEndSample - containerStartSample,
+                        samplesPerBar: fileSPB,
+                        enterFade: container.enterFade,
+                        exitFade: container.exitFade,
+                        startSampleTime: &anchoredSampleTime,
+                        applyInitialDeclick: shouldApplyInitialDeclick
+                    )
+                } else {
+                    scheduleAnchoredDeclickedSegment(
+                        player: subgraph.playerNode,
+                        audioFile: audioFile,
+                        startingFrame: startOffset,
+                        frameCount: frameCount,
+                        startSampleTime: &anchoredSampleTime,
+                        applyDeclick: shouldApplyInitialDeclick
+                    )
+                }
+            } else if hasFades {
                 scheduleFadingPlayback(
                     player: subgraph.playerNode,
                     audioFile: audioFile,
@@ -1890,14 +2049,21 @@ public final class PlaybackScheduler: @unchecked Sendable {
         _ scheduledEntries: [(player: AVAudioPlayerNode, containerID: ID<Container>)],
         sampleRate: Double,
         updateStartupCompensation: Bool
-    ) -> Double {
+    ) -> PlaybackStartReceipt {
         guard !scheduledEntries.isEmpty else {
+            let receipt = PlaybackStartReceipt(
+                hostStartTime: nil,
+                startupCompensationSeconds: 0,
+                maxPathLatencySeconds: 0,
+                effectiveHeadroomSeconds: 0
+            )
             if updateStartupCompensation {
                 lock.lock()
                 _playbackStartupCompensationSeconds = 0
+                lastPlaybackStartReceipt = receipt
                 lock.unlock()
             }
-            return 0
+            return receipt
         }
 
         var uniquePlayers: [ObjectIdentifier: AVAudioPlayerNode] = [:]
@@ -1912,27 +2078,26 @@ public final class PlaybackScheduler: @unchecked Sendable {
             playerLatencySeconds[playerID] = max(playerLatencySeconds[playerID] ?? 0, pathLatency)
         }
 
-        let maxPathLatency = playerLatencySeconds.values.max() ?? 0
-        let startHeadroom = startHeadroomSeconds(
+        let initialPlan = startPlanner.makeInitialPlan(
+            items: playerLatencySeconds.map {
+                PlaybackStartPlannerItem(id: $0.key, latencySeconds: $0.value)
+            },
             sampleRate: sampleRate,
-            scheduledPlayerCount: uniquePlayers.count
+            outputMaxFrames: Double(engine.outputNode.auAudioUnit.maximumFramesToRender),
+            recentStartDispatchSeconds: recentStartDispatchSeconds
         )
-        let earliestStartHostTime = Self.hostTime(afterSeconds: startHeadroom)
 
-        let configuredMaxFrames = max(512, Int(engine.outputNode.auAudioUnit.maximumFramesToRender))
-        let prepareFrames = AVAudioFrameCount(max(2048, configuredMaxFrames * 8))
         for player in uniquePlayers.values {
-            player.prepare(withFrameCount: prepareFrames)
+            player.prepare(withFrameCount: initialPlan.prepareFrames)
         }
-        syncDiag("start batch entries=\(scheduledEntries.count) uniquePlayers=\(uniquePlayers.count) prepareFrames=\(prepareFrames) startHeadroom=\(String(format: "%.3f", startHeadroom)) maxPathLatency=\(String(format: "%.3f", maxPathLatency))")
+        syncDiag("start batch entries=\(scheduledEntries.count) uniquePlayers=\(uniquePlayers.count) prepareFrames=\(initialPlan.prepareFrames) startHeadroom=\(String(format: "%.3f", initialPlan.startHeadroomSeconds)) maxPathLatency=\(String(format: "%.3f", initialPlan.maxPathLatencySeconds))")
 
         var starts: [(hostTime: UInt64, player: AVAudioPlayerNode)] = []
         starts.reserveCapacity(uniquePlayers.count)
         for (playerID, player) in uniquePlayers {
-            let pathLatency = playerLatencySeconds[playerID] ?? 0
-            let delaySeconds = max(0, maxPathLatency - pathLatency)
-            let startHostTime = Self.offsetHostTime(base: earliestStartHostTime, bySeconds: delaySeconds)
-            starts.append((hostTime: startHostTime, player: player))
+            if let startHostTime = initialPlan.hostTimes[playerID] {
+                starts.append((hostTime: startHostTime, player: player))
+            }
         }
 
         // Start in host-time order so earliest-starting players are issued first.
@@ -2057,18 +2222,25 @@ public final class PlaybackScheduler: @unchecked Sendable {
         let effectiveHeadroom = earliestScheduledHostTime >= postDispatchNowHostTime
             ? Self.hostTicksToSeconds(earliestScheduledHostTime - postDispatchNowHostTime)
             : 0
-        let startupCompensation = effectiveHeadroom + maxPathLatency
-        playLog("startup compensation: headroom=\(String(format: "%.3f", effectiveHeadroom))s maxPathLatency=\(String(format: "%.3f", maxPathLatency))s players=\(uniquePlayers.count)")
-        syncDiag("startup details plannedHeadroom=\(String(format: "%.3f", startHeadroom))s addedLead=\(String(format: "%.3f", addedLeadSeconds))s effectiveHeadroom=\(String(format: "%.3f", effectiveHeadroom))s dispatch=\(String(format: "%.3f", dispatchDurationSeconds))s missedAnchors=\(missedAnchors)")
+        let startupCompensation = effectiveHeadroom + initialPlan.maxPathLatencySeconds
+        playLog("startup compensation: headroom=\(String(format: "%.3f", effectiveHeadroom))s maxPathLatency=\(String(format: "%.3f", initialPlan.maxPathLatencySeconds))s players=\(uniquePlayers.count)")
+        syncDiag("startup details plannedHeadroom=\(String(format: "%.3f", initialPlan.startHeadroomSeconds))s addedLead=\(String(format: "%.3f", addedLeadSeconds))s effectiveHeadroom=\(String(format: "%.3f", effectiveHeadroom))s dispatch=\(String(format: "%.3f", dispatchDurationSeconds))s missedAnchors=\(missedAnchors)")
+        let receipt = PlaybackStartReceipt(
+            hostStartTime: starts.first?.hostTime,
+            startupCompensationSeconds: startupCompensation,
+            maxPathLatencySeconds: initialPlan.maxPathLatencySeconds,
+            effectiveHeadroomSeconds: effectiveHeadroom
+        )
         if updateStartupCompensation {
             let now = CACurrentMediaTime()
             lock.lock()
             _playbackStartupCompensationSeconds = startupCompensation
             playbackStartTime = now + startupCompensation
+            lastPlaybackStartReceipt = receipt
             lock.unlock()
         }
 
-        return startupCompensation
+        return receipt
     }
 
     /// Estimates path latency from container player output to the final output mix.
@@ -2083,26 +2255,89 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         guard let subgraph else { return 0 }
 
-        var latency: Double = 0
-        if let instrument = subgraph.instrumentUnit {
-            latency += unitLatencySeconds(instrument)
+        let fingerprint = LatencyCoordinator.PlaybackFingerprint(
+            containerID: containerID,
+            instrumentID: subgraph.instrumentUnit.map(ObjectIdentifier.init),
+            containerEffectIDs: subgraph.effectUnits.map(ObjectIdentifier.init),
+            trackEffectIDs: trackUnits.map(ObjectIdentifier.init),
+            masterEffectIDs: masterUnits.map(ObjectIdentifier.init)
+        )
+
+        return latencyCoordinator.playbackLatencySeconds(for: fingerprint) {
+            var latency: Double = 0
+            if let instrument = subgraph.instrumentUnit {
+                latency += unitLatencySeconds(instrument)
+            }
+            for unit in subgraph.effectUnits {
+                latency += unitLatencySeconds(unit)
+            }
+            for unit in trackUnits {
+                latency += unitLatencySeconds(unit)
+            }
+            for unit in masterUnits {
+                latency += unitLatencySeconds(unit)
+            }
+            return latency
         }
-        for unit in subgraph.effectUnits {
-            latency += unitLatencySeconds(unit)
-        }
-        for unit in trackUnits {
-            latency += unitLatencySeconds(unit)
-        }
-        for unit in masterUnits {
-            latency += unitLatencySeconds(unit)
-        }
-        return latency
     }
 
     private func unitLatencySeconds(_ unit: AVAudioUnit) -> Double {
         let latency = max(unit.auAudioUnit.latency, unit.latency)
         guard latency.isFinite, latency > 0 else { return 0 }
         return latency
+    }
+
+    @MainActor
+    private func publishLatencySummary() {
+        let summary = computeLatencySummary()
+        lock.withLock {
+            _latencySummary = summary
+        }
+        onLatencySummaryChanged?(summary)
+    }
+
+    private func computeLatencySummary() -> PlaybackLatencySummary {
+        let snapshot = lock.withLock {
+            (
+                containerIDs: Array(containerSubgraphs.keys),
+                containerMap: containerToTrack,
+                sampleRate: currentSampleRate
+            )
+        }
+        guard !snapshot.containerIDs.isEmpty else { return PlaybackLatencySummary() }
+
+        let epsilon = 1.0 / max(snapshot.sampleRate, 44100.0)
+        var entries: [(containerID: ID<Container>, trackID: ID<Track>, latency: Double)] = []
+        entries.reserveCapacity(snapshot.containerIDs.count)
+
+        for containerID in snapshot.containerIDs {
+            guard let trackID = snapshot.containerMap[containerID] else { continue }
+            entries.append((containerID, trackID, latencySeconds(forContainerID: containerID)))
+        }
+
+        guard !entries.isEmpty else { return PlaybackLatencySummary() }
+        let maxPathLatency = entries.map(\.latency).max() ?? 0
+
+        let highLatencyContainers = Set(entries.filter { $0.latency > epsilon }.map(\.containerID))
+        let compensatedContainers = Set(
+            entries
+                .filter { maxPathLatency > epsilon && ($0.latency + epsilon) < maxPathLatency }
+                .map(\.containerID)
+        )
+        let highLatencyTracks = Set(entries.filter { $0.latency > epsilon }.map(\.trackID))
+        let compensatedTracks = Set(
+            entries
+                .filter { maxPathLatency > epsilon && ($0.latency + epsilon) < maxPathLatency }
+                .map(\.trackID)
+        )
+
+        return PlaybackLatencySummary(
+            maxPathLatencySeconds: maxPathLatency,
+            highLatencyTrackCount: highLatencyTracks.count,
+            compensatedTrackCount: compensatedTracks.count,
+            highLatencyContainerCount: highLatencyContainers.count,
+            compensatedContainerCount: compensatedContainers.count
+        )
     }
 
     /// Headroom before the earliest player start to avoid missing host-time anchors.
@@ -2219,6 +2454,93 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
     }
 
+    /// Schedules a segment on an explicit player sample timeline. This is used
+    /// for batch startup so every player's internal schedule is deterministic
+    /// before the shared host-time `play(at:)` anchor is issued.
+    private func scheduleAnchoredDeclickedSegment(
+        player: AVAudioPlayerNode,
+        audioFile: AVAudioFile,
+        startingFrame: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount,
+        startSampleTime: inout AVAudioFramePosition,
+        applyDeclick: Bool
+    ) {
+        guard frameCount > 0 else { return }
+
+        let fileRate = audioFile.processingFormat.sampleRate
+        let scheduleAt: (AVAudioFramePosition) -> AVAudioTime = {
+            AVAudioTime(sampleTime: $0, atRate: fileRate)
+        }
+
+        guard applyDeclick else {
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: startingFrame,
+                frameCount: frameCount,
+                at: scheduleAt(startSampleTime)
+            )
+            startSampleTime += AVAudioFramePosition(frameCount)
+            return
+        }
+
+        let declickFrames = min(Self.declickFrameCount, frameCount)
+        let format = audioFile.processingFormat
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: declickFrames) else {
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: startingFrame,
+                frameCount: frameCount,
+                at: scheduleAt(startSampleTime)
+            )
+            startSampleTime += AVAudioFramePosition(frameCount)
+            return
+        }
+
+        audioFile.framePosition = startingFrame
+        do {
+            try audioFile.read(into: buffer, frameCount: declickFrames)
+        } catch {
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: startingFrame,
+                frameCount: frameCount,
+                at: scheduleAt(startSampleTime)
+            )
+            startSampleTime += AVAudioFramePosition(frameCount)
+            return
+        }
+
+        Self.applyDeclickFadeIn(to: buffer)
+
+        var scheduleError: NSError?
+        let ok = ObjCTryCatch({
+            player.scheduleBuffer(buffer, at: scheduleAt(startSampleTime))
+        }, &scheduleError)
+        if !ok {
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: startingFrame,
+                frameCount: frameCount,
+                at: scheduleAt(startSampleTime)
+            )
+            startSampleTime += AVAudioFramePosition(frameCount)
+            return
+        }
+
+        startSampleTime += AVAudioFramePosition(declickFrames)
+        let remainingFrames = frameCount - declickFrames
+        if remainingFrames > 0 {
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: startingFrame + AVAudioFramePosition(declickFrames),
+                frameCount: remainingFrames,
+                at: scheduleAt(startSampleTime)
+            )
+            startSampleTime += AVAudioFramePosition(remainingFrames)
+        }
+    }
+
     private func scheduleLoopingPlayback(
         player: AVAudioPlayerNode,
         audioFile: AVAudioFile,
@@ -2260,6 +2582,63 @@ public final class PlaybackScheduler: @unchecked Sendable {
                     frameCount: AVAudioFrameCount(framesToPlay),
                     at: nil
                 )
+            }
+
+            position += framesToPlay
+        }
+    }
+
+    private func scheduleAnchoredLoopingPlayback(
+        player: AVAudioPlayerNode,
+        audioFile: AVAudioFile,
+        containerStartSample: Int64,
+        containerEndSample: Int64,
+        playheadSample: Int64,
+        samplesPerBar: Double,
+        audioOffsetSamples: Int64 = 0,
+        startSampleTime: inout AVAudioFramePosition,
+        applyInitialDeclick: Bool
+    ) {
+        let containerLengthSamples = containerEndSample - containerStartSample
+        let effectiveFileLength = audioFile.length - audioOffsetSamples
+
+        guard effectiveFileLength > 0, containerLengthSamples > 0 else { return }
+
+        let fileRate = audioFile.processingFormat.sampleRate
+        let scheduleAt: (AVAudioFramePosition) -> AVAudioTime = {
+            AVAudioTime(sampleTime: $0, atRate: fileRate)
+        }
+
+        var position = max(playheadSample, containerStartSample) - containerStartSample
+        let endPosition = containerLengthSamples
+        var isFirst = true
+
+        while position < endPosition {
+            let positionInLoop = (position % effectiveFileLength) + audioOffsetSamples
+            let remainingInLoop = effectiveFileLength - (position % effectiveFileLength)
+            let remainingInContainer = endPosition - position
+            let framesToPlay = min(remainingInLoop, remainingInContainer)
+
+            guard framesToPlay > 0 else { break }
+
+            if isFirst {
+                scheduleAnchoredDeclickedSegment(
+                    player: player,
+                    audioFile: audioFile,
+                    startingFrame: AVAudioFramePosition(positionInLoop),
+                    frameCount: AVAudioFrameCount(framesToPlay),
+                    startSampleTime: &startSampleTime,
+                    applyDeclick: applyInitialDeclick
+                )
+                isFirst = false
+            } else {
+                player.scheduleSegment(
+                    audioFile,
+                    startingFrame: AVAudioFramePosition(positionInLoop),
+                    frameCount: AVAudioFrameCount(framesToPlay),
+                    at: scheduleAt(startSampleTime)
+                )
+                startSampleTime += AVAudioFramePosition(framesToPlay)
             }
 
             position += framesToPlay
@@ -2387,6 +2766,131 @@ public final class PlaybackScheduler: @unchecked Sendable {
         }
     }
 
+    private func scheduleAnchoredFadingPlayback(
+        player: AVAudioPlayerNode,
+        audioFile: AVAudioFile,
+        startOffset: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount,
+        containerPosition: Int64,
+        containerLengthSamples: Int64,
+        samplesPerBar: Double,
+        enterFade: FadeSettings?,
+        exitFade: FadeSettings?,
+        startSampleTime: inout AVAudioFramePosition,
+        applyInitialDeclick: Bool
+    ) {
+        let format = audioFile.processingFormat
+        let fileRate = format.sampleRate
+        let scheduleAt: (AVAudioFramePosition) -> AVAudioTime = {
+            AVAudioTime(sampleTime: $0, atRate: fileRate)
+        }
+        let enterFadeSamples = enterFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeSamples = exitFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeStart = containerLengthSamples - exitFadeSamples
+
+        if Int64(frameCount) <= enterFadeSamples + exitFadeSamples || frameCount <= 88200 {
+            scheduleAnchoredFadingPlaybackSimple(
+                player: player,
+                audioFile: audioFile,
+                format: format,
+                startOffset: startOffset,
+                frameCount: frameCount,
+                containerPosition: containerPosition,
+                containerLengthSamples: containerLengthSamples,
+                samplesPerBar: samplesPerBar,
+                enterFade: enterFade,
+                exitFade: exitFade,
+                enterFadeSamples: enterFadeSamples,
+                startSampleTime: &startSampleTime,
+                applyInitialDeclick: applyInitialDeclick
+            )
+            return
+        }
+
+        var pos = containerPosition
+        var fileOffset = startOffset
+        var remaining = Int64(frameCount)
+        var isFirst = true
+        let endPos = containerPosition + Int64(frameCount)
+
+        if pos < enterFadeSamples, enterFade != nil {
+            let fadeEnd = min(enterFadeSamples, endPos)
+            let fadeFrames = AVAudioFrameCount(fadeEnd - pos)
+            if let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: fadeFrames) {
+                audioFile.framePosition = fileOffset
+                do { try audioFile.read(into: buf, frameCount: fadeFrames) } catch { return }
+                applyContainerFades(
+                    to: buf, containerPosition: pos,
+                    containerLengthSamples: containerLengthSamples,
+                    samplesPerBar: samplesPerBar,
+                    enterFade: enterFade,
+                    exitFade: (fadeEnd > exitFadeStart) ? exitFade : nil
+                )
+                player.scheduleBuffer(buf, at: scheduleAt(startSampleTime))
+                startSampleTime += AVAudioFramePosition(fadeFrames)
+                fileOffset += AVAudioFramePosition(fadeFrames)
+                pos += Int64(fadeFrames)
+                remaining -= Int64(fadeFrames)
+                isFirst = false
+            }
+        } else if applyInitialDeclick, pos >= enterFadeSamples {
+            let declickFrames = min(Self.declickFrameCount, AVAudioFrameCount(remaining))
+            if let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: declickFrames) {
+                audioFile.framePosition = fileOffset
+                do { try audioFile.read(into: buf, frameCount: declickFrames) } catch { return }
+                Self.applyDeclickFadeIn(to: buf)
+                player.scheduleBuffer(buf, at: scheduleAt(startSampleTime))
+                startSampleTime += AVAudioFramePosition(declickFrames)
+                fileOffset += AVAudioFramePosition(declickFrames)
+                pos += Int64(declickFrames)
+                remaining -= Int64(declickFrames)
+                isFirst = false
+            }
+        }
+
+        let middleEnd = min(exitFadeStart, endPos)
+        let middleFrames = max(Int64(0), middleEnd - pos)
+        if middleFrames > 0 {
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: fileOffset,
+                frameCount: AVAudioFrameCount(middleFrames),
+                at: scheduleAt(startSampleTime)
+            )
+            startSampleTime += AVAudioFramePosition(middleFrames)
+            fileOffset += AVAudioFramePosition(middleFrames)
+            pos += middleFrames
+            remaining -= middleFrames
+            isFirst = false
+        }
+
+        if remaining > 0, exitFade != nil, pos >= exitFadeStart {
+            let fadeFrames = AVAudioFrameCount(remaining)
+            if let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: fadeFrames) {
+                audioFile.framePosition = fileOffset
+                do { try audioFile.read(into: buf, frameCount: fadeFrames) } catch { return }
+                applyContainerFades(
+                    to: buf,
+                    containerPosition: pos,
+                    containerLengthSamples: containerLengthSamples,
+                    samplesPerBar: samplesPerBar,
+                    enterFade: nil,
+                    exitFade: exitFade
+                )
+                player.scheduleBuffer(buf, at: scheduleAt(startSampleTime))
+                startSampleTime += AVAudioFramePosition(fadeFrames)
+            }
+        } else if remaining > 0 {
+            player.scheduleSegment(
+                audioFile,
+                startingFrame: fileOffset,
+                frameCount: AVAudioFrameCount(remaining),
+                at: scheduleAt(startSampleTime)
+            )
+            startSampleTime += AVAudioFramePosition(remaining)
+        }
+    }
+
     /// Simple single-buffer fading path for short containers.
     private func scheduleFadingPlaybackSimple(
         player: AVAudioPlayerNode,
@@ -2417,6 +2921,39 @@ public final class PlaybackScheduler: @unchecked Sendable {
             Self.applyDeclickFadeIn(to: buffer)
         }
         player.scheduleBuffer(buffer, at: when)
+    }
+
+    private func scheduleAnchoredFadingPlaybackSimple(
+        player: AVAudioPlayerNode,
+        audioFile: AVAudioFile,
+        format: AVAudioFormat,
+        startOffset: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount,
+        containerPosition: Int64,
+        containerLengthSamples: Int64,
+        samplesPerBar: Double,
+        enterFade: FadeSettings?,
+        exitFade: FadeSettings?,
+        enterFadeSamples: Int64,
+        startSampleTime: inout AVAudioFramePosition,
+        applyInitialDeclick: Bool
+    ) {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+        audioFile.framePosition = startOffset
+        do { try audioFile.read(into: buffer, frameCount: frameCount) } catch { return }
+        applyContainerFades(
+            to: buffer,
+            containerPosition: containerPosition,
+            containerLengthSamples: containerLengthSamples,
+            samplesPerBar: samplesPerBar,
+            enterFade: enterFade,
+            exitFade: exitFade
+        )
+        if applyInitialDeclick && containerPosition >= enterFadeSamples {
+            Self.applyDeclickFadeIn(to: buffer)
+        }
+        player.scheduleBuffer(buffer, at: AVAudioTime(sampleTime: startSampleTime, atRate: format.sampleRate))
+        startSampleTime += AVAudioFramePosition(frameCount)
     }
 
     /// Schedules looping playback with enter/exit fades applied at container boundaries.
@@ -2498,6 +3035,97 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         at: nil
                     )
                 }
+            }
+
+            isFirst = false
+            position += framesToPlay
+        }
+    }
+
+    private func scheduleAnchoredFadingLoopPlayback(
+        player: AVAudioPlayerNode,
+        audioFile: AVAudioFile,
+        containerStartSample: Int64,
+        containerEndSample: Int64,
+        playheadSample: Int64,
+        samplesPerBar: Double,
+        audioOffsetSamples: Int64 = 0,
+        enterFade: FadeSettings?,
+        exitFade: FadeSettings?,
+        startSampleTime: inout AVAudioFramePosition,
+        applyInitialDeclick: Bool
+    ) {
+        let containerLengthSamples = containerEndSample - containerStartSample
+        let effectiveFileLength = audioFile.length - audioOffsetSamples
+
+        guard effectiveFileLength > 0, containerLengthSamples > 0 else { return }
+
+        let enterFadeSamples = enterFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeSamples = exitFade.map { Int64($0.duration * samplesPerBar) } ?? 0
+        let exitFadeStart = containerLengthSamples - exitFadeSamples
+        let format = audioFile.processingFormat
+        let scheduleAt: (AVAudioFramePosition) -> AVAudioTime = {
+            AVAudioTime(sampleTime: $0, atRate: format.sampleRate)
+        }
+
+        var position = max(playheadSample, containerStartSample) - containerStartSample
+        let endPosition = containerLengthSamples
+        var isFirst = true
+
+        while position < endPosition {
+            let positionInLoop = (position % effectiveFileLength) + audioOffsetSamples
+            let remainingInLoop = effectiveFileLength - (position % effectiveFileLength)
+            let remainingInContainer = endPosition - position
+            let framesToPlay = min(remainingInLoop, remainingInContainer)
+
+            guard framesToPlay > 0 else { break }
+
+            let needsFade = (enterFade != nil && position < enterFadeSamples) ||
+                            (exitFade != nil && position + framesToPlay > exitFadeStart)
+
+            if needsFade {
+                guard let buffer = AVAudioPCMBuffer(
+                    pcmFormat: format,
+                    frameCapacity: AVAudioFrameCount(framesToPlay)
+                ) else { break }
+
+                audioFile.framePosition = AVAudioFramePosition(positionInLoop)
+                do {
+                    try audioFile.read(into: buffer, frameCount: AVAudioFrameCount(framesToPlay))
+                } catch { break }
+
+                applyContainerFades(
+                    to: buffer,
+                    containerPosition: position,
+                    containerLengthSamples: containerLengthSamples,
+                    samplesPerBar: samplesPerBar,
+                    enterFade: enterFade,
+                    exitFade: exitFade
+                )
+
+                if isFirst && applyInitialDeclick && position >= enterFadeSamples {
+                    Self.applyDeclickFadeIn(to: buffer)
+                }
+
+                player.scheduleBuffer(buffer, at: scheduleAt(startSampleTime))
+                startSampleTime += AVAudioFramePosition(framesToPlay)
+            } else if isFirst {
+                scheduleAnchoredDeclickedSegment(
+                    player: player,
+                    audioFile: audioFile,
+                    startingFrame: AVAudioFramePosition(positionInLoop),
+                    frameCount: AVAudioFrameCount(framesToPlay),
+                    startSampleTime: &startSampleTime,
+                    applyDeclick: applyInitialDeclick
+                )
+            } else {
+                player.scheduleSegment(
+                    audioFile,
+                    startingFrame: AVAudioFramePosition(positionInLoop),
+                    frameCount: AVAudioFrameCount(framesToPlay),
+                    at: scheduleAt(startSampleTime)
+                )
+                startSampleTime += AVAudioFramePosition(framesToPlay)
             }
 
             isFirst = false
@@ -2897,6 +3525,14 @@ public final class PlaybackScheduler: @unchecked Sendable {
 
         stopAutomationTimer()
         startAutomationTimer(song: song, fromBar: currentBar, bpm: bpm, timeSignature: timeSignature)
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }
 

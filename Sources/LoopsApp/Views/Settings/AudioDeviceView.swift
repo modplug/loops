@@ -60,10 +60,40 @@ public struct AudioDeviceView: View {
                     }
                 }
 
+                Toggle("Low-Latency Recording", isOn: $viewModel.lowLatencyRecordingEnabled)
+
                 HStack {
-                    Text("Latency")
+                    Text("Device Buffer")
                     Spacer()
                     Text(String(format: "%.1f ms", viewModel.latencyMs))
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Text("Monitor Latency")
+                    Spacer()
+                    Text(String(format: "%.1f ms", viewModel.estimatedMonitorLatencyMs))
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Text("Playback Latency")
+                    Spacer()
+                    Text(String(format: "%.1f ms", viewModel.compensatedPlaybackLatencyMs))
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Text("Plugin Delay Compensation")
+                    Spacer()
+                    Text(String(format: "%.1f ms", viewModel.playbackPathLatencyMs))
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Text("Compensated Tracks")
+                    Spacer()
+                    Text("\(viewModel.compensatedTrackCount)")
                         .foregroundStyle(.secondary)
                 }
 

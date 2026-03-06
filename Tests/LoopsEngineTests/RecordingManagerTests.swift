@@ -5,6 +5,21 @@ import AVFoundation
 @testable import LoopsCore
 @testable import LoopsApp
 
+private final class LockedValue<Value> {
+    private let lock = NSLock()
+    private var value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
+
+    func withValue<T>(_ body: (inout Value) -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
+    }
+}
+
 @Suite("RecordingManager Tests")
 struct RecordingManagerTests {
 
@@ -320,6 +335,220 @@ struct RecordingManagerTests {
         let samplesPerBar = secondsPerBar * sampleRate
 
         #expect(samplesPerBar == 88200.0)
+    }
+
+    @Test("RecordController fans out one input stream to multiple armed containers")
+    func recordControllerFansOutToMultipleContainers() async throws {
+        let dir = temporaryAudioDir()
+        defer { cleanup(dir) }
+
+        let engine = AVAudioEngine()
+        let controller = RecordController(engine: engine, audioDirURL: dir)
+        let trackA = ID<Track>()
+        let trackB = ID<Track>()
+        let containerA = ID<Container>()
+        let containerB = ID<Container>()
+        let completions = LockedValue<[ID<Container>]>([])
+
+        controller.onRecordingComplete = { _, containerID, _ in
+            completions.withValue { $0.append(containerID) }
+        }
+
+        controller.startMonitoring(
+            armedContainers: [
+                (containerID: containerA, trackID: trackA, startBar: 1, endBar: 5),
+                (containerID: containerB, trackID: trackB, startBar: 1, endBar: 5)
+            ],
+            fromBar: 1,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44_100
+        )
+
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2048)!
+        buffer.frameLength = 2048
+        controller.processInputBuffer(buffer)
+
+        let sessions = controller.activeSessions()
+        #expect(sessions.count == 2)
+        #expect(Set(sessions.map(\.containerID)) == [containerA, containerB])
+        #expect(Set(sessions.map(\.startSampleOffset)).count == 1)
+        #expect(Set(sessions.map(\.sampleCount)) == [2048])
+        #expect(Set(sessions.map(\.droppedSampleCount)) == [0])
+
+        controller.stopMonitoring()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let completed = completions.withValue { $0 }
+        #expect(Set(completed) == [containerA, containerB])
+    }
+
+    @Test("RecordController records overlapping sessions with the same start sample anchor")
+    func recordControllerAlignsOverlappingSessions() throws {
+        let dir = temporaryAudioDir()
+        defer { cleanup(dir) }
+
+        let engine = AVAudioEngine()
+        let controller = RecordController(engine: engine, audioDirURL: dir)
+        let trackA = ID<Track>()
+        let trackB = ID<Track>()
+        let containerA = ID<Container>()
+        let containerB = ID<Container>()
+
+        controller.startMonitoring(
+            armedContainers: [
+                (containerID: containerA, trackID: trackA, startBar: 1, endBar: 3),
+                (containerID: containerB, trackID: trackB, startBar: 1, endBar: 3)
+            ],
+            fromBar: 1,
+            bpm: 100,
+            timeSignature: TimeSignature(),
+            sampleRate: 48_000
+        )
+
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
+        buffer.frameLength = 1024
+        controller.processInputBuffer(buffer)
+
+        let sessions = controller.activeSessions()
+        #expect(sessions.count == 2)
+        #expect(sessions[0].startSampleOffset == sessions[1].startSampleOffset)
+        #expect(Set(sessions.map(\.sampleCount)) == [1024])
+
+        controller.stopMonitoring()
+    }
+
+    @Test("RecordController scales to many simultaneously armed audio tracks")
+    func recordControllerScalesToManyArmedTracks() async throws {
+        let dir = temporaryAudioDir()
+        defer { cleanup(dir) }
+
+        let engine = AVAudioEngine()
+        let controller = RecordController(engine: engine, audioDirURL: dir)
+        let armedTrackCount = 32
+        var armed: [(containerID: ID<Container>, trackID: ID<Track>, startBar: Double, endBar: Double)] = []
+        for _ in 0..<armedTrackCount {
+            armed.append((
+                containerID: ID<Container>(),
+                trackID: ID<Track>(),
+                startBar: 1,
+                endBar: 9
+            ))
+        }
+
+        controller.startMonitoring(
+            armedContainers: armed,
+            fromBar: 1,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44_100
+        )
+
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096)!
+        buffer.frameLength = 4096
+        controller.processInputBuffer(buffer)
+
+        let sessions = controller.activeSessions()
+        #expect(sessions.count == armedTrackCount)
+        #expect(Set(sessions.map(\.startSampleOffset)).count == 1)
+        #expect(Set(sessions.map(\.sampleCount)) == [4096])
+
+        controller.stopMonitoring()
+        try await Task.sleep(for: .milliseconds(50))
+    }
+
+    @Test("RecordController scales to 128 simultaneously armed audio tracks")
+    func recordControllerScalesToOneHundredTwentyEightArmedTracks() async throws {
+        let dir = temporaryAudioDir()
+        defer { cleanup(dir) }
+
+        let engine = AVAudioEngine()
+        let controller = RecordController(engine: engine, audioDirURL: dir)
+        let armedTrackCount = 128
+        var armed: [(containerID: ID<Container>, trackID: ID<Track>, startBar: Double, endBar: Double)] = []
+        armed.reserveCapacity(armedTrackCount)
+        for _ in 0..<armedTrackCount {
+            armed.append((
+                containerID: ID<Container>(),
+                trackID: ID<Track>(),
+                startBar: 1,
+                endBar: 9
+            ))
+        }
+
+        controller.startMonitoring(
+            armedContainers: armed,
+            fromBar: 1,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44_100
+        )
+
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2048)!
+        buffer.frameLength = 2048
+        controller.processInputBuffer(buffer)
+
+        let sessions = controller.activeSessions()
+        #expect(sessions.count == armedTrackCount)
+        #expect(Set(sessions.map(\.startSampleOffset)).count == 1)
+        #expect(Set(sessions.map(\.sampleCount)) == [2048])
+
+        controller.stopMonitoring()
+        try await Task.sleep(for: .milliseconds(50))
+    }
+
+    @Test("RecordController reports dropped buffer diagnostics under backpressure")
+    func recordControllerReportsDroppedBuffers() async throws {
+        let dir = temporaryAudioDir()
+        defer { cleanup(dir) }
+
+        let engine = AVAudioEngine()
+        let controller = RecordController(
+            engine: engine,
+            audioDirURL: dir,
+            maxPendingBuffersPerSession: 1,
+            recordWriteDelayNanoseconds: 25_000_000
+        )
+        let trackID = ID<Track>()
+        let containerID = ID<Container>()
+
+        controller.startMonitoring(
+            armedContainers: [
+                (containerID: containerID, trackID: trackID, startBar: 1, endBar: 9)
+            ],
+            fromBar: 1,
+            bpm: 120,
+            timeSignature: TimeSignature(),
+            sampleRate: 44_100
+        )
+
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096)!
+        buffer.frameLength = 4096
+
+        for _ in 0..<24 {
+            controller.processInputBuffer(buffer)
+        }
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        let sessions = controller.activeSessions()
+        #expect(sessions.count == 1)
+        #expect((sessions.first?.droppedBufferCount ?? 0) > 0)
+        #expect((sessions.first?.droppedSampleCount ?? 0) > 0)
+
+        let diagnostics = controller.diagnostics()
+        #expect(diagnostics.activeSessionCount == 1)
+        #expect(diagnostics.totalDroppedBufferCount > 0)
+        #expect(diagnostics.totalDroppedSampleCount > 0)
+        #expect(diagnostics.overloadedSessionCount == 1)
+
+        controller.stopMonitoring()
+        try await Task.sleep(for: .milliseconds(50))
     }
 
     @Test("Armed container visual state persists through encode/decode")

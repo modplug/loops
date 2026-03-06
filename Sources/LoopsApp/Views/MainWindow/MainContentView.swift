@@ -2120,6 +2120,13 @@ struct SelectionBasedInspectorView: View {
             onSetMIDIInput: { deviceID, channel in
                 projectViewModel.setTrackMIDIInput(trackID: track.id, deviceID: deviceID, channel: channel)
             },
+            onSetRecordingMonitoringMode: { mode in
+                projectViewModel.setTrackRecordingMonitoringMode(trackID: track.id, mode: mode)
+                if let updatedTrack = projectViewModel.currentSong?.tracks.first(where: { $0.id == track.id }),
+                   updatedTrack.isMonitoring {
+                    transportViewModel?.setInputMonitoring(track: updatedTrack, enabled: true)
+                }
+            },
             onVolumeLive: { volume in
                 let pan = track.pan
                 transportViewModel?.updateTrackMixLive(trackID: track.id, volume: volume, pan: pan)
@@ -2152,6 +2159,8 @@ struct SelectionBasedInspectorView: View {
             availableInputPorts: settingsViewModel?.inputPorts ?? [],
             availableOutputPorts: settingsViewModel?.outputPorts ?? [],
             availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? [],
+            isLowLatencyRecordingEnabled: settingsViewModel?.lowLatencyRecordingEnabled ?? true,
+            monitorPathDescriptor: transportViewModel?.monitorPathDescriptor(trackID: track.id),
             liveTrackEffectUnit: { index in
                 transportViewModel?.liveTrackEffectUnit(trackID: track.id, effectIndex: index)
             }
