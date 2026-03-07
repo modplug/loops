@@ -52,10 +52,14 @@ struct MIDISequenceTests {
             MIDINoteEvent(pitch: 60, velocity: 100, startBeat: 0.0, duration: 1.0),
             MIDINoteEvent(pitch: 64, velocity: 80, startBeat: 1.0, duration: 0.5),
             MIDINoteEvent(pitch: 67, velocity: 90, startBeat: 2.0, duration: 1.0),
+        ], controllerEvents: [
+            MIDIControllerEvent(controller: 64, value: 127, beat: 0.0),
+            MIDIControllerEvent(controller: 11, value: 96, beat: 1.75),
         ])
         let decoded = try roundTrip(seq)
         #expect(decoded == seq)
         #expect(decoded.notes.count == 3)
+        #expect(decoded.controllerEvents.count == 2)
     }
 
     @Test("MIDISequence empty round-trip")
@@ -110,8 +114,46 @@ struct MIDISequenceTests {
         let seq = MIDISequence(notes: [
             MIDINoteEvent(pitch: 60, startBeat: 0.0, duration: 1.0),
             MIDINoteEvent(pitch: 64, startBeat: 3.0, duration: 2.0),
+        ], controllerEvents: [
+            MIDIControllerEvent(controller: 64, value: 127, beat: 6.0),
         ])
-        #expect(seq.durationBeats == 5.0)
+        #expect(seq.durationBeats == 6.0)
+    }
+
+    @Test("MIDISequence controllerEvents(inRange:) filters by beat and controller")
+    func controllerEventsInRange() {
+        let seq = MIDISequence(controllerEvents: [
+            MIDIControllerEvent(controller: 64, value: 127, beat: 0.0),
+            MIDIControllerEvent(controller: 64, value: 0, beat: 2.0),
+            MIDIControllerEvent(controller: 11, value: 96, beat: 2.5),
+        ])
+        let sustain = seq.controllerEvents(inRange: 0.5, endBeat: 2.5, controller: 64)
+        #expect(sustain.count == 1)
+        #expect(sustain[0].value == 0)
+    }
+
+    @Test("MIDISequence backward-compatible decode without controllerEvents")
+    func sequenceLegacyDecode() throws {
+        let sequenceID = ID<MIDISequence>()
+        let noteID = ID<MIDINoteEvent>()
+        let legacyJSON = """
+        {
+          "id": "\(sequenceID.rawValue.uuidString)",
+          "notes": [
+            {
+              "id": "\(noteID.rawValue.uuidString)",
+              "pitch": 60,
+              "velocity": 100,
+              "startBeat": 0,
+              "duration": 1,
+              "channel": 0
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+        let decoded = try decoder.decode(MIDISequence.self, from: legacyJSON)
+        #expect(decoded.notes.count == 1)
+        #expect(decoded.controllerEvents.isEmpty)
     }
 
     @Test("Empty MIDISequence helpers return nil/0")

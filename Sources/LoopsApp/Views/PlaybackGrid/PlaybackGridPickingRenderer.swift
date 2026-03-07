@@ -111,9 +111,37 @@ public final class PlaybackGridPickingRenderer {
                     for: containerLayout,
                     snapshot: snapshot
                 )
+                let midiTotalRect = midiTotalRect(
+                    trackLayout: trackLayout,
+                    for: containerLayout,
+                    snapshot: snapshot
+                )
                 let isInContainer = containerLayout.rect.contains(point)
-                let isInMidiRect = midiRect.contains(point)
-                if isInContainer || isInMidiRect {
+                let isInMidiLane = midiTotalRect.contains(point)
+                if isInContainer || isInMidiLane {
+                    if let velocityHit = detectMIDIVelocityHit(
+                        point: point,
+                        containerLayout: containerLayout,
+                        trackID: trackLayout.track.id,
+                        midiRect: midiRect,
+                        snapshot: snapshot,
+                        resolved: midiLayoutsByTrack[trackLayout.track.id]
+                    ) {
+                        return GridPickObject(
+                            id: makeID(
+                                kind: .midiNote,
+                                containerID: containerLayout.container.id,
+                                trackID: trackLayout.track.id,
+                                midiNoteID: velocityHit.id,
+                                zone: .move
+                            ),
+                            kind: .midiNote,
+                            containerID: containerLayout.container.id,
+                            trackID: trackLayout.track.id,
+                            midiNoteID: velocityHit.id,
+                            zone: .move
+                        )
+                    }
                     if let midiHit = detectMIDINoteHit(
                         point: point,
                         containerLayout: containerLayout,
@@ -134,6 +162,14 @@ public final class PlaybackGridPickingRenderer {
                             trackID: trackLayout.track.id,
                             midiNoteID: midiHit.note.id,
                             zone: midiHit.zone
+                        )
+                    }
+
+                    if isInMidiLane && !isInContainer {
+                        return GridPickObject(
+                            id: makeID(kind: .trackBackground, trackID: trackLayout.track.id),
+                            kind: .trackBackground,
+                            trackID: trackLayout.track.id
                         )
                     }
 
@@ -299,6 +335,48 @@ public final class PlaybackGridPickingRenderer {
         return nil
     }
 
+    private func detectMIDIVelocityHit(
+        point: CGPoint,
+        containerLayout: PlaybackGridContainerLayout,
+        trackID: ID<Track>,
+        midiRect: CGRect,
+        snapshot: PlaybackGridSnapshot,
+        resolved: PlaybackGridMIDIResolvedLayout?
+    ) -> MIDINoteEvent? {
+        guard let resolved,
+              let config = snapshot.inlineMIDIConfigs[trackID],
+              let velocityLane = config.detailLanes.first(where: { $0.lane == .velocity }),
+              let notes = containerLayout.resolvedMIDINotes,
+              !notes.isEmpty else {
+            return nil
+        }
+        let laneRect = CGRect(
+            x: midiRect.minX,
+            y: midiRect.maxY,
+            width: midiRect.width,
+            height: velocityLane.height
+        )
+        guard laneRect.contains(point) else { return nil }
+
+        for note in notes.reversed() {
+            guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+                note: note,
+                containerLengthBars: containerLayout.container.lengthBars,
+                laneRect: midiRect,
+                timeSignature: snapshot.timeSignature,
+                resolved: resolved
+            ) else { continue }
+            let x = min(max(noteRect.minX + min(noteRect.width * 0.25, 10), laneRect.minX + 3), laneRect.maxX - 3)
+            let normalized = max(0.0, min(1.0, CGFloat(note.velocity) / 127.0))
+            let y = laneRect.maxY - max(5, normalized * max(laneRect.height - 8, 1))
+            let handleRect = CGRect(x: x - 6, y: y - 6, width: 12, height: 12)
+            if handleRect.contains(point) {
+                return note
+            }
+        }
+        return nil
+    }
+
     private func detectExpandedAutomationBreakpointHit(
         point: CGPoint,
         trackLayout: PlaybackGridTrackLayout,
@@ -412,6 +490,24 @@ public final class PlaybackGridPickingRenderer {
     }
 
     private func midiEditorRect(
+        trackLayout: PlaybackGridTrackLayout,
+        for containerLayout: PlaybackGridContainerLayout,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect {
+        let inlineHeight = snapshot.inlineMIDILaneHeights[trackLayout.track.id] ?? 0
+        guard inlineHeight > 0 else { return containerLayout.rect }
+        let noteAreaHeight = snapshot.inlineMIDIConfigs[trackLayout.track.id]?.noteAreaHeight(totalInlineHeight: inlineHeight) ?? inlineHeight
+        let automationHeight = trackLayout.automationToolbarHeight
+            + (CGFloat(trackLayout.automationLaneLayouts.count) * snapshot.automationSubLaneHeight)
+        return CGRect(
+            x: containerLayout.rect.minX,
+            y: trackLayout.yOrigin + trackLayout.clipHeight + automationHeight,
+            width: containerLayout.rect.width,
+            height: noteAreaHeight
+        )
+    }
+
+    private func midiTotalRect(
         trackLayout: PlaybackGridTrackLayout,
         for containerLayout: PlaybackGridContainerLayout,
         snapshot: PlaybackGridSnapshot

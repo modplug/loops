@@ -124,6 +124,9 @@ public final class ProjectViewModel {
     private var activeCoalescedAction: String?
     /// Timer that auto-closes the coalesced undo group after the gesture ends.
     private var coalescedUndoTimer: Timer?
+    private var isMIDIRecordingSessionActive = false
+    private var isAutomationWriteSessionActive = false
+    public private(set) var lastTouchedAutomationPath: EffectPath?
 
     public init(project: Project = Project()) {
         self.project = project
@@ -1804,6 +1807,138 @@ public final class ProjectViewModel {
         project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].overriddenFields.insert(field)
     }
 
+    private func containerLocation(containerID: ID<Container>) -> (trackIndex: Int, containerIndex: Int)? {
+        guard !project.songs.isEmpty else { return nil }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                return (trackIndex, containerIndex)
+            }
+        }
+        return nil
+    }
+
+    private func linkedWriteTargetContainerID(for containerID: ID<Container>, field: ContainerField) -> ID<Container> {
+        guard let location = containerLocation(containerID: containerID) else { return containerID }
+        let container = project.songs[currentSongIndex].tracks[location.trackIndex].containers[location.containerIndex]
+        guard let parentID = container.parentContainerID,
+              !container.overriddenFields.contains(field),
+              findContainer(id: parentID) != nil else {
+            return containerID
+        }
+        return parentID
+    }
+
+    public func beginMIDIRecordingSession() {
+        guard !isMIDIRecordingSessionActive else { return }
+        registerUndo(actionName: "Record MIDI")
+        isMIDIRecordingSessionActive = true
+    }
+
+    public func beginMIDIRecording() {
+        beginMIDIRecordingSession()
+    }
+
+    public func endMIDIRecordingSession() {
+        isMIDIRecordingSessionActive = false
+    }
+
+    public func endMIDIRecording() {
+        endMIDIRecordingSession()
+    }
+
+    public func recordMIDINotes(containerID: ID<Container>, notes: [MIDINoteEvent]) {
+        guard !notes.isEmpty else { return }
+        guard !project.songs.isEmpty else { return }
+        if !isMIDIRecordingSessionActive {
+            beginMIDIRecordingSession()
+        }
+
+        let targetContainerID = linkedWriteTargetContainerID(for: containerID, field: .midiSequence)
+        guard let location = containerLocation(containerID: targetContainerID) else { return }
+        if project.songs[currentSongIndex].tracks[location.trackIndex].containers[location.containerIndex].midiSequence == nil {
+            project.songs[currentSongIndex].tracks[location.trackIndex].containers[location.containerIndex].midiSequence = MIDISequence()
+        }
+        project.songs[currentSongIndex].tracks[location.trackIndex].containers[location.containerIndex].midiSequence?.notes.append(contentsOf: notes)
+        markFieldOverridden(trackIndex: location.trackIndex, containerIndex: location.containerIndex, field: .midiSequence)
+        hasUnsavedChanges = true
+    }
+
+    public func beginAutomationWriteSession() {
+        guard !isAutomationWriteSessionActive else { return }
+        registerUndo(actionName: "Write Automation")
+        isAutomationWriteSessionActive = true
+    }
+
+    public func endAutomationWriteSession() {
+        isAutomationWriteSessionActive = false
+    }
+
+    public func clearAutomationFocus() {
+        lastTouchedAutomationPath = nil
+    }
+
+    public func recordAutomationValue(path: EffectPath, playbackBar: Double, value: Float) {
+        guard !project.songs.isEmpty else { return }
+        if !isAutomationWriteSessionActive {
+            beginAutomationWriteSession()
+        }
+
+        if let containerID = path.containerID {
+            guard let sourceLocation = containerLocation(containerID: containerID) else { return }
+            let sourceContainer = project.songs[currentSongIndex].tracks[sourceLocation.trackIndex].containers[sourceLocation.containerIndex]
+            let targetContainerID = linkedWriteTargetContainerID(for: containerID, field: .automation)
+            guard let targetLocation = containerLocation(containerID: targetContainerID) else { return }
+
+            let position = max(0, playbackBar - sourceContainer.startBar)
+            var targetPath = path
+            targetPath.trackID = project.songs[currentSongIndex].tracks[targetLocation.trackIndex].id
+            targetPath.containerID = targetContainerID
+            var lanes = project.songs[currentSongIndex].tracks[targetLocation.trackIndex].containers[targetLocation.containerIndex].automationLanes
+            upsertAutomationBreakpoint(
+                lanes: &lanes,
+                targetPath: targetPath,
+                breakpoint: AutomationBreakpoint(position: position, value: value)
+            )
+            project.songs[currentSongIndex].tracks[targetLocation.trackIndex].containers[targetLocation.containerIndex].automationLanes = lanes
+            markFieldOverridden(trackIndex: targetLocation.trackIndex, containerIndex: targetLocation.containerIndex, field: .automation)
+            lastTouchedAutomationPath = targetPath
+        } else {
+            guard let trackIndex = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == path.trackID }) else { return }
+            var lanes = project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes
+            upsertAutomationBreakpoint(
+                lanes: &lanes,
+                targetPath: path,
+                breakpoint: AutomationBreakpoint(position: max(1.0, playbackBar), value: value)
+            )
+            project.songs[currentSongIndex].tracks[trackIndex].trackAutomationLanes = lanes
+            lastTouchedAutomationPath = path
+        }
+
+        hasUnsavedChanges = true
+        onAutomationDataChanged?()
+    }
+
+    private func upsertAutomationBreakpoint(
+        lanes: inout [AutomationLane],
+        targetPath: EffectPath,
+        breakpoint: AutomationBreakpoint
+    ) {
+        let epsilon = 0.001
+        if let laneIndex = lanes.firstIndex(where: { $0.targetPath == targetPath }) {
+            if let breakpointIndex = lanes[laneIndex].breakpoints.firstIndex(where: { abs($0.position - breakpoint.position) < epsilon }) {
+                lanes[laneIndex].breakpoints[breakpointIndex].value = breakpoint.value
+            } else if let last = lanes[laneIndex].breakpoints.last,
+                      abs(last.position - breakpoint.position) < epsilon {
+                lanes[laneIndex].breakpoints[lanes[laneIndex].breakpoints.count - 1].value = breakpoint.value
+            } else {
+                lanes[laneIndex].breakpoints.append(breakpoint)
+                lanes[laneIndex].breakpoints.sort { $0.position < $1.position }
+            }
+        } else {
+            lanes.append(AutomationLane(targetPath: targetPath, breakpoints: [breakpoint]))
+        }
+    }
+
     // MARK: - Clipboard & Context Menu Operations
 
     /// Copies a container to the clipboard.
@@ -2834,6 +2969,56 @@ public final class ProjectViewModel {
         }
     }
 
+    /// Adds a MIDI controller event to a container's sequence. Creates the sequence if needed.
+    public func addMIDIControllerEvent(containerID: ID<Container>, event: MIDIControllerEvent) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                registerUndo(actionName: "Add MIDI CC Event")
+                if project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence == nil {
+                    project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence = MIDISequence()
+                }
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence?.controllerEvents.append(event)
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .midiSequence)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Removes a MIDI controller event from a container's sequence.
+    public func removeMIDIControllerEvent(containerID: ID<Container>, eventID: ID<MIDIControllerEvent>) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                guard project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence != nil else { return }
+                registerUndo(actionName: "Delete MIDI CC Event")
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence?.controllerEvents.removeAll { $0.id == eventID }
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .midiSequence)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
+    /// Updates a MIDI controller event in a container's sequence.
+    public func updateMIDIControllerEvent(containerID: ID<Container>, event: MIDIControllerEvent) {
+        guard !project.songs.isEmpty else { return }
+        for trackIndex in project.songs[currentSongIndex].tracks.indices {
+            if let containerIndex = project.songs[currentSongIndex].tracks[trackIndex].containers.firstIndex(where: { $0.id == containerID }) {
+                guard var sequence = project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence else { return }
+                guard let eventIndex = sequence.controllerEvents.firstIndex(where: { $0.id == event.id }) else { return }
+                if sequence.controllerEvents[eventIndex] == event { return }
+                registerUndoCoalesced(actionName: "Edit MIDI CC Event")
+                sequence.controllerEvents[eventIndex] = event
+                project.songs[currentSongIndex].tracks[trackIndex].containers[containerIndex].midiSequence = sequence
+                markFieldOverridden(trackIndex: trackIndex, containerIndex: containerIndex, field: .midiSequence)
+                hasUnsavedChanges = true
+                return
+            }
+        }
+    }
+
     /// Updates a MIDI note in a container's sequence (move, resize, velocity change).
     public func updateMIDINote(containerID: ID<Container>, note: MIDINoteEvent) {
         PlaybackGridPerfLogger.bump("model.updateMIDINote.calls")
@@ -3150,6 +3335,8 @@ public final class ProjectViewModel {
     private func splitMIDISequence(_ sequence: MIDISequence, atBeat splitBeat: Double) -> (MIDISequence, MIDISequence) {
         var leftNotes: [MIDINoteEvent] = []
         var rightNotes: [MIDINoteEvent] = []
+        var leftControllerEvents: [MIDIControllerEvent] = []
+        var rightControllerEvents: [MIDIControllerEvent] = []
 
         for note in sequence.notes {
             let noteEnd = note.startBeat + note.duration
@@ -3176,7 +3363,21 @@ public final class ProjectViewModel {
             }
         }
 
-        return (MIDISequence(notes: leftNotes), MIDISequence(notes: rightNotes))
+        for event in sequence.controllerEvents {
+            if event.beat < splitBeat {
+                leftControllerEvents.append(event)
+            } else {
+                var shifted = event
+                shifted.id = ID()
+                shifted.beat -= splitBeat
+                rightControllerEvents.append(shifted)
+            }
+        }
+
+        return (
+            MIDISequence(notes: leftNotes, controllerEvents: leftControllerEvents),
+            MIDISequence(notes: rightNotes, controllerEvents: rightControllerEvents)
+        )
     }
 
     /// Splits a container at two bar boundaries, creating up to three containers:
@@ -3436,6 +3637,7 @@ public final class ProjectViewModel {
         if isMIDI {
             // MIDI merge: combine note sequences with beat offsets
             var mergedNotes: [MIDINoteEvent] = []
+            var mergedControllerEvents: [MIDIControllerEvent] = []
             for container in selected {
                 guard let sequence = container.midiSequence else { continue }
                 let barOffset = container.startBar - mergedStart
@@ -3449,8 +3651,16 @@ public final class ProjectViewModel {
                         channel: note.channel
                     ))
                 }
+                for event in sequence.controllerEvents {
+                    mergedControllerEvents.append(MIDIControllerEvent(
+                        controller: event.controller,
+                        value: event.value,
+                        beat: event.beat + beatOffset,
+                        channel: event.channel
+                    ))
+                }
             }
-            mergedContainer.midiSequence = MIDISequence(notes: mergedNotes)
+            mergedContainer.midiSequence = MIDISequence(notes: mergedNotes, controllerEvents: mergedControllerEvents)
         } else {
             // Audio merge: create a buffer spanning the full range, overlay each container's audio
             let sampleRate = 44100.0

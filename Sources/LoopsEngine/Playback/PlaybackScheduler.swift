@@ -3241,17 +3241,20 @@ public final class PlaybackScheduler: @unchecked Sendable {
             let container: Container
             let trackID: ID<Track>
             let notes: [MIDINoteEvent]
+            let controllerEvents: [MIDIControllerEvent]
         }
         var midiContainers: [MIDIContainerInfo] = []
         for track in song.tracks {
             guard track.kind == .midi else { continue }
             for container in track.containers {
                 let resolved = container.resolved { id in allContainers.first(where: { $0.id == id }) }
-                if let sequence = resolved.midiSequence, !sequence.notes.isEmpty {
+                if let sequence = resolved.midiSequence,
+                   !sequence.notes.isEmpty || !sequence.controllerEvents.isEmpty {
                     midiContainers.append(MIDIContainerInfo(
                         container: resolved,
                         trackID: track.id,
-                        notes: sequence.notes
+                        notes: sequence.notes,
+                        controllerEvents: sequence.sortedControllerEvents
                     ))
                 }
             }
@@ -3303,6 +3306,11 @@ public final class PlaybackScheduler: @unchecked Sendable {
             let noteID: ID<MIDINoteEvent>
         }
         var activeNotes = Set<ActiveMIDINote>()
+        struct SentMIDIController: Hashable {
+            let containerID: ID<Container>
+            let eventID: ID<MIDIControllerEvent>
+        }
+        var sentControllerEvents = Set<SentMIDIController>()
         // Weak reference to self for MIDI note sending
         weak var weakSelf = self
 
@@ -3331,6 +3339,7 @@ public final class PlaybackScheduler: @unchecked Sendable {
                         }
                     }
                     activeNotes = activeNotes.filter { $0.containerID != midiInfo.container.id }
+                    sentControllerEvents = sentControllerEvents.filter { $0.containerID != midiInfo.container.id }
                     continue
                 }
 
@@ -3360,6 +3369,16 @@ public final class PlaybackScheduler: @unchecked Sendable {
                             weakSelf?.lock.unlock()
                         }
                     }
+                }
+
+                for event in midiInfo.controllerEvents {
+                    let key = SentMIDIController(containerID: midiInfo.container.id, eventID: event.id)
+                    guard !sentControllerEvents.contains(key), beatOffset >= event.beat else { continue }
+                    sentControllerEvents.insert(key)
+                    weakSelf?.sendMIDINoteToContainer(
+                        midiInfo.container.id,
+                        message: .controlChange(channel: event.channel, controller: event.controller, value: event.value)
+                    )
                 }
             }
 

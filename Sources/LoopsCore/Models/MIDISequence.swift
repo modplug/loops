@@ -101,18 +101,71 @@ public struct MIDINoteEvent: Codable, Equatable, Sendable, Identifiable {
     public var endBeat: Double { startBeat + duration }
 }
 
+/// A MIDI controller event within a sequence.
+public struct MIDIControllerEvent: Codable, Equatable, Sendable, Identifiable {
+    public var id: ID<MIDIControllerEvent>
+    /// MIDI controller number 0-127.
+    public var controller: UInt8
+    /// MIDI value 0-127.
+    public var value: UInt8
+    /// Beat position relative to the container start (0-based).
+    public var beat: Double
+    /// MIDI channel 0-15.
+    public var channel: UInt8
+
+    public init(
+        id: ID<MIDIControllerEvent> = ID(),
+        controller: UInt8,
+        value: UInt8,
+        beat: Double,
+        channel: UInt8 = 0
+    ) {
+        self.id = id
+        self.controller = controller
+        self.value = value
+        self.beat = beat
+        self.channel = channel
+    }
+}
+
 /// A collection of MIDI note events stored on a container.
 public struct MIDISequence: Codable, Equatable, Sendable, Identifiable {
     public var id: ID<MIDISequence>
     /// Ordered note events.
     public var notes: [MIDINoteEvent]
+    /// Ordered MIDI controller events.
+    public var controllerEvents: [MIDIControllerEvent]
 
     public init(
         id: ID<MIDISequence> = ID(),
-        notes: [MIDINoteEvent] = []
+        notes: [MIDINoteEvent] = [],
+        controllerEvents: [MIDIControllerEvent] = []
     ) {
         self.id = id
         self.notes = notes
+        self.controllerEvents = controllerEvents
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case notes
+        case controllerEvents
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(ID.self, forKey: .id) ?? ID()
+        notes = try container.decodeIfPresent([MIDINoteEvent].self, forKey: .notes) ?? []
+        controllerEvents = try container.decodeIfPresent([MIDIControllerEvent].self, forKey: .controllerEvents) ?? []
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(notes, forKey: .notes)
+        if !controllerEvents.isEmpty {
+            try container.encode(controllerEvents, forKey: .controllerEvents)
+        }
     }
 
     /// Returns notes sorted by start beat.
@@ -120,10 +173,38 @@ public struct MIDISequence: Codable, Equatable, Sendable, Identifiable {
         notes.sorted { $0.startBeat < $1.startBeat }
     }
 
+    /// Returns controller events sorted by beat.
+    public var sortedControllerEvents: [MIDIControllerEvent] {
+        controllerEvents.sorted { lhs, rhs in
+            if lhs.beat == rhs.beat {
+                if lhs.controller == rhs.controller {
+                    return lhs.channel < rhs.channel
+                }
+                return lhs.controller < rhs.controller
+            }
+            return lhs.beat < rhs.beat
+        }
+    }
+
     /// Returns notes that overlap the given beat range.
     public func notes(inRange startBeat: Double, endBeat: Double) -> [MIDINoteEvent] {
         notes.filter { note in
             note.endBeat > startBeat && note.startBeat < endBeat
+        }
+    }
+
+    /// Returns controller events that fall inside the given beat range.
+    public func controllerEvents(
+        inRange startBeat: Double,
+        endBeat: Double,
+        controller: UInt8? = nil
+    ) -> [MIDIControllerEvent] {
+        controllerEvents.filter { event in
+            guard event.beat >= startBeat && event.beat < endBeat else { return false }
+            if let controller {
+                return event.controller == controller
+            }
+            return true
         }
     }
 
@@ -139,6 +220,9 @@ public struct MIDISequence: Codable, Equatable, Sendable, Identifiable {
 
     /// Total duration in beats (from 0 to the end of the last note).
     public var durationBeats: Double {
-        notes.map(\.endBeat).max() ?? 0
+        max(
+            notes.map(\.endBeat).max() ?? 0,
+            controllerEvents.map(\.beat).max() ?? 0
+        )
     }
 }

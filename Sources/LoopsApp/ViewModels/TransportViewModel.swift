@@ -7,6 +7,27 @@ import LoopsEngine
 @Observable
 @MainActor
 public final class TransportViewModel {
+    private struct MIDIRecordingTarget {
+        let trackID: ID<Track>
+        let containerID: ID<Container>
+        let startBar: Double
+        let endBar: Double
+        let deviceID: String?
+        let channel: UInt8?
+    }
+
+    private struct ActiveMIDINoteKey: Hashable {
+        let containerID: ID<Container>
+        let pitch: UInt8
+        let channel: UInt8
+    }
+
+    private struct ActiveMIDINoteCapture {
+        let target: MIDIRecordingTarget
+        let startBar: Double
+        let velocity: UInt8
+    }
+
     private static let transportSyncDebugEnabled =
         ProcessInfo.processInfo.environment["LOOPS_TRANSPORT_SYNC_DEBUG"] == "1"
 
@@ -22,6 +43,7 @@ public final class TransportViewModel {
     public var metronomeVolume: Float = 0.8
     public var metronomeSubdivision: MetronomeSubdivision = .quarter
     public var metronomeOutputPortID: String?
+    public var isAutomationWriteEnabled: Bool = false
 
     /// Container IDs whose effect chains failed to connect during the last graph build.
     /// Updated after each `prepare`/`prepareIncremental` cycle.
@@ -50,6 +72,10 @@ public final class TransportViewModel {
     private var playbackTaskSequence = 0
     private var audioDeviceSettings = AudioDeviceSettings()
     private(set) var lastPlaybackStartReceipt: PlaybackStartReceipt?
+    private var midiRecordingTargets: [MIDIRecordingTarget] = []
+    private var activeMIDINotes: [ActiveMIDINoteKey: ActiveMIDINoteCapture] = [:]
+    private var isMIDIRecordingSessionOpen = false
+    private var isAutomationWriteSessionOpen = false
 
     /// Estimated monitoring latency for the currently selected live monitor path.
     public private(set) var monitorLatencySeconds: Double = 0
@@ -96,6 +122,10 @@ public final class TransportViewModel {
     /// Called when recording completes for a container.
     /// Parameters: trackID, containerID, SourceRecording.
     public var onRecordingComplete: ((ID<Track>, ID<Container>, SourceRecording) -> Void)?
+    public var onMIDINotesRecorded: ((ID<Container>, [MIDINoteEvent]) -> Void)?
+    public var onMIDIRecordingSessionChanged: ((Bool) -> Void)?
+    public var onAutomationWriteSessionChanged: ((Bool) -> Void)?
+    public var onAutomationWriteValue: ((EffectPath, Double, Float) -> Void)?
 
     /// Called when a per-track level update is available.
     /// Dispatched from the audio render thread — callers should dispatch to main.
@@ -256,6 +286,8 @@ public final class TransportViewModel {
     public func pause() {
         playbackGeneration += 1
         transportDebug("pause requested gen=\(playbackGeneration) bar=\(String(format: "%.6f", playheadBar))")
+        stopAutomationWriteSession()
+        stopMIDIRecording()
         stopContainerRecording()
         enqueueStopBarrier(skipDeclick: true)
         lastPlaybackStartReceipt = nil
@@ -269,6 +301,8 @@ public final class TransportViewModel {
     public func stop() {
         playbackGeneration += 1
         transportDebug("stop requested gen=\(playbackGeneration) bar=\(String(format: "%.6f", playheadBar))")
+        stopAutomationWriteSession()
+        stopMIDIRecording()
         stopContainerRecording()
         enqueueStopBarrier(skipDeclick: true)
         lastPlaybackStartReceipt = nil
@@ -297,6 +331,8 @@ public final class TransportViewModel {
             // Stop current playback and scheduler synchronously
             playbackGeneration += 1
             transportDebug("handleSongChanged stop requested gen=\(playbackGeneration) bar=\(String(format: "%.6f", playheadBar))")
+            stopAutomationWriteSession()
+            stopMIDIRecording()
             stopContainerRecording()
             enqueueStopBarrier(skipDeclick: true)
             lastPlaybackStartReceipt = nil
@@ -330,6 +366,13 @@ public final class TransportViewModel {
     public func toggleRecordArm() {
         transport.toggleRecordArm()
         syncFromTransport()
+    }
+
+    public func toggleAutomationWriteEnabled() {
+        isAutomationWriteEnabled.toggle()
+        if !isAutomationWriteEnabled {
+            stopAutomationWriteSession()
+        }
     }
 
     public func toggleMetronome() {
@@ -370,6 +413,42 @@ public final class TransportViewModel {
     public func setPlayheadPosition(_ bar: Double) {
         transport.setPlayheadPosition(bar)
         syncFromTransport()
+    }
+
+    public func recordAutomationWrite(path: EffectPath, normalizedValue: Float) {
+        guard isPlaying, isAutomationWriteEnabled else { return }
+        if !isAutomationWriteSessionOpen {
+            isAutomationWriteSessionOpen = true
+            onAutomationWriteSessionChanged?(true)
+        }
+        onAutomationWriteValue?(path, currentRecordingBar(), min(max(normalizedValue, 0), 1))
+    }
+
+    public func handleIncomingRecordedMIDI(word: UInt32, deviceID: String?) {
+        guard isPlaying, isRecordArmed, !midiRecordingTargets.isEmpty else { return }
+
+        let status = UInt8((word >> 16) & 0xF0)
+        let channel = UInt8((word >> 16) & 0x0F)
+        let note = UInt8((word >> 8) & 0xFF)
+        let velocity = UInt8(word & 0xFF)
+        let currentBar = currentRecordingBar()
+
+        switch status {
+        case 0x90 where velocity > 0:
+            guard let target = matchingMIDIRecordingTarget(deviceID: deviceID, channel: channel, bar: currentBar) else { return }
+            let key = ActiveMIDINoteKey(containerID: target.containerID, pitch: note, channel: channel)
+            if let existing = activeMIDINotes.removeValue(forKey: key) {
+                emitRecordedMIDINote(existing, endingAt: currentBar, pitch: note, channel: channel)
+            }
+            activeMIDINotes[key] = ActiveMIDINoteCapture(target: target, startBar: currentBar, velocity: velocity)
+        case 0x80, 0x90:
+            if let (key, capture) = activeMIDINotes.first(where: { $0.key.pitch == note && $0.key.channel == channel }) {
+                activeMIDINotes.removeValue(forKey: key)
+                emitRecordedMIDINote(capture, endingAt: currentBar, pitch: note, channel: channel)
+            }
+        default:
+            break
+        }
     }
 
     /// Updates a single track's volume/pan in the live audio graph without
@@ -762,6 +841,7 @@ public final class TransportViewModel {
                     sampleRate: sampleRate,
                     audioDir: context.audioDir
                 )
+                self.startMIDIRecordingIfNeeded(song: context.song)
             }
 
             // Audio player nodes are now started — calibrate the playhead
@@ -871,6 +951,86 @@ public final class TransportViewModel {
         activeRecordingSessionCount = 0
         recordingDroppedBufferCount = 0
         recordingDroppedSampleCount = 0
+    }
+
+    private func startMIDIRecordingIfNeeded(song: Song) {
+        guard isRecordArmed else {
+            stopMIDIRecording()
+            return
+        }
+
+        var targets: [MIDIRecordingTarget] = []
+        for track in song.tracks where track.kind == .midi {
+            let candidateContainers = track.containers.filter { $0.isRecordArmed || track.isRecordArmed }
+            for container in candidateContainers {
+                targets.append(MIDIRecordingTarget(
+                    trackID: track.id,
+                    containerID: container.id,
+                    startBar: container.startBar,
+                    endBar: container.endBar,
+                    deviceID: track.midiInputDeviceID,
+                    channel: track.midiInputChannel.map { max(0, $0 - 1) }
+                ))
+            }
+        }
+
+        midiRecordingTargets = targets
+        if !targets.isEmpty && !isMIDIRecordingSessionOpen {
+            isMIDIRecordingSessionOpen = true
+            onMIDIRecordingSessionChanged?(true)
+        }
+    }
+
+    private func stopMIDIRecording() {
+        guard isMIDIRecordingSessionOpen || !activeMIDINotes.isEmpty || !midiRecordingTargets.isEmpty else { return }
+        let endBar = currentRecordingBar()
+        for (key, capture) in activeMIDINotes {
+            emitRecordedMIDINote(capture, endingAt: endBar, pitch: key.pitch, channel: key.channel)
+        }
+        activeMIDINotes.removeAll()
+        midiRecordingTargets.removeAll()
+        if isMIDIRecordingSessionOpen {
+            isMIDIRecordingSessionOpen = false
+            onMIDIRecordingSessionChanged?(false)
+        }
+    }
+
+    private func stopAutomationWriteSession() {
+        guard isAutomationWriteSessionOpen else { return }
+        isAutomationWriteSessionOpen = false
+        onAutomationWriteSessionChanged?(false)
+    }
+
+    private func currentRecordingBar() -> Double {
+        playbackScheduler?.currentPlaybackBar() ?? playheadBar
+    }
+
+    private func matchingMIDIRecordingTarget(deviceID: String?, channel: UInt8, bar: Double) -> MIDIRecordingTarget? {
+        midiRecordingTargets.first { target in
+            bar >= target.startBar
+                && bar < target.endBar
+                && (target.deviceID == nil || target.deviceID == deviceID)
+                && (target.channel == nil || target.channel == channel)
+        }
+    }
+
+    private func emitRecordedMIDINote(
+        _ capture: ActiveMIDINoteCapture,
+        endingAt endBar: Double,
+        pitch: UInt8,
+        channel: UInt8
+    ) {
+        let beatsPerBar = Double(timeSignature.beatsPerBar)
+        let startBeat = max(0, (capture.startBar - capture.target.startBar) * beatsPerBar)
+        let duration = max(0.125, (endBar - capture.startBar) * beatsPerBar)
+        let note = MIDINoteEvent(
+            pitch: pitch,
+            velocity: max(capture.velocity, 1),
+            startBeat: startBeat,
+            duration: duration,
+            channel: channel
+        )
+        onMIDINotesRecorded?(capture.target.containerID, [note])
     }
 
     private func syncFromTransport() {

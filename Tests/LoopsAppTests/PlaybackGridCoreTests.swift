@@ -230,6 +230,112 @@ struct PlaybackGridCoreTests {
         #expect(pick.midiNoteID == midiNote.id)
     }
 
+    @Test("Picking empty inline MIDI lane resolves to track background")
+    func pickingEmptyInlineMIDILaneAsTrackBackground() {
+        let container = Container(
+            name: "Clip",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence()
+        )
+        let track = Track(name: "MIDI 1", kind: .midi, containers: [container])
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            inlineMIDILaneHeights: [track.id: 220],
+            defaultTrackHeight: 80,
+            gridMode: .adaptive,
+            selectedContainerIDs: [container.id],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let builder = PlaybackGridSceneBuilder()
+        builder.resolvedMIDISequenceProvider = { $0.midiSequence }
+        let scene = builder.build(snapshot: snapshot)
+        let picker = PlaybackGridPickingRenderer()
+
+        let pick = picker.pick(
+            at: CGPoint(x: 180, y: PlaybackGridLayout.trackAreaTop + 180),
+            scene: scene,
+            snapshot: snapshot,
+            visibleRect: CGRect(x: 0, y: 0, width: 1000, height: 700),
+            canvasWidth: 1000
+        )
+
+        #expect(pick.kind == .trackBackground)
+        #expect(pick.trackID == track.id)
+    }
+
+    @Test("Scene builder keeps row layout parity across automation and inline MIDI lanes")
+    func sceneBuilderMaintainsSharedRowGeometry() {
+        let volumePath = EffectPath.trackVolume(trackID: ID())
+        let panPath = EffectPath.trackPan(trackID: volumePath.trackID)
+        let fxPath = EffectPath(trackID: volumePath.trackID, containerID: nil, effectIndex: 0, parameterAddress: 99)
+        let clip = Container(
+            name: "Clip",
+            startBar: 1,
+            lengthBars: 4,
+            automationLanes: [
+                AutomationLane(targetPath: fxPath)
+            ],
+            midiSequence: MIDISequence(notes: [
+                MIDINoteEvent(pitch: 60, startBeat: 0, duration: 1)
+            ])
+        )
+        var track = Track(name: "Track 1", kind: .midi, containers: [clip])
+        track.id = volumePath.trackID
+        track.trackAutomationLanes = [
+            AutomationLane(targetPath: volumePath),
+            AutomationLane(targetPath: panPath),
+        ]
+
+        let secondTrack = Track(name: "Track 2", kind: .audio)
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track, secondTrack],
+            sections: [],
+            timeSignature: TimeSignature(),
+            pixelsPerBar: 100,
+            totalBars: 32,
+            trackHeights: [track.id: 92],
+            inlineMIDILaneHeights: [track.id: 140],
+            automationExpandedTrackIDs: [track.id],
+            automationSubLaneHeight: 40,
+            automationToolbarHeight: 26,
+            defaultTrackHeight: 80,
+            gridMode: .adaptive,
+            selectedContainerIDs: [],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let scene = PlaybackGridSceneBuilder().build(snapshot: snapshot)
+
+        #expect(scene.trackLayouts.count == 2)
+
+        let first = scene.trackLayouts[0]
+        let expectedFirstHeight: CGFloat = 92 + 26 + (3 * 40) + 140
+        #expect(first.clipHeight == 92)
+        #expect(first.automationToolbarHeight == 26)
+        #expect(first.automationLaneLayouts.map(\.targetPath) == [volumePath, panPath, fxPath])
+        #expect(first.height == expectedFirstHeight)
+
+        let second = scene.trackLayouts[1]
+        #expect(abs(second.yOrigin - (first.yOrigin + first.height + PlaybackGridLayout.trackGap)) < 0.001)
+    }
+
     @Test("Picking MIDI note edge zones for resize")
     func pickingMIDINoteResizeZones() {
         let midiNote = MIDINoteEvent(pitch: 64, startBeat: 0, duration: 2)
@@ -728,6 +834,11 @@ struct PlaybackGridCoreTests {
             ),
             snapshot: snapshot
         )
+        controller.handleMouseUp(
+            point: CGPoint(x: 10, y: PlaybackGridLayout.trackAreaTop + 70),
+            snapshot: snapshot,
+            modifiers: [.option]
+        )
 
         #expect(sink.lastRemovedMIDINote?.containerID == container.id)
         #expect(sink.lastRemovedMIDINote?.noteID == note.id)
@@ -834,8 +945,8 @@ struct PlaybackGridCoreTests {
         #expect(abs((sink.lastCreatedContainer?.lengthBars ?? 0) - 2.0) < 0.0001)
     }
 
-    @Test("MIDI container drag in note-draw region creates snapped note")
-    func midiContainerDragCreatesNote() {
+    @Test("MIDI container drag moves container instead of creating note")
+    func midiContainerDragMovesContainer() {
         let container = Container(name: "MIDI", startBar: 1.0, lengthBars: 4.0, midiSequence: MIDISequence())
         let track = Track(name: "MIDI 1", kind: .midi, containers: [container])
         let snapshot = PlaybackGridSnapshot(
@@ -845,6 +956,7 @@ struct PlaybackGridCoreTests {
             pixelsPerBar: 120,
             totalBars: 64,
             trackHeights: [:],
+            inlineMIDILaneHeights: [track.id: 220],
             defaultTrackHeight: 80,
             gridMode: .fixed(.quarter),
             selectedContainerIDs: [container.id],
@@ -872,15 +984,19 @@ struct PlaybackGridCoreTests {
             ),
             snapshot: snapshot
         )
+        _ = controller.handleMouseDragged(
+            point: CGPoint(x: 240, y: PlaybackGridLayout.trackAreaTop + 60),
+            snapshot: snapshot
+        )
         controller.handleMouseUp(
             point: CGPoint(x: 240, y: PlaybackGridLayout.trackAreaTop + 60),
             snapshot: snapshot
         )
 
-        #expect(sink.lastAddedMIDINote != nil)
-        #expect(sink.lastAddedMIDINote?.containerID == container.id)
-        #expect(abs((sink.lastAddedMIDINote?.note.startBeat ?? 0) - 4.0) < 0.0001)
-        #expect(abs((sink.lastAddedMIDINote?.note.duration ?? 0) - 4.0) < 0.0001)
+        #expect(sink.lastAddedMIDINote == nil)
+        #expect(sink.lastMove != nil)
+        #expect(sink.lastMove?.containerID == container.id)
+        #expect(abs((sink.lastMove?.newStartBar ?? 0) - 2.0) < 0.0001)
     }
 
     @Test("MIDI create emits preview note on/off")
@@ -894,6 +1010,7 @@ struct PlaybackGridCoreTests {
             pixelsPerBar: 120,
             totalBars: 64,
             trackHeights: [:],
+            inlineMIDILaneHeights: [track.id: 220],
             defaultTrackHeight: 80,
             gridMode: .fixed(.quarter),
             selectedContainerIDs: [container.id],
@@ -908,17 +1025,19 @@ struct PlaybackGridCoreTests {
 
         let sink = CommandSinkSpy()
         let controller = PlaybackGridInteractionController(sink: sink)
-        let startPoint = CGPoint(x: 120, y: PlaybackGridLayout.trackAreaTop + 60)
+        let startPoint = CGPoint(x: 120, y: PlaybackGridLayout.trackAreaTop + 180)
         controller.handleMouseDown(
             event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
             point: startPoint,
             pick: GridPickObject(
                 id: 301,
-                kind: .containerZone,
-                containerID: container.id,
+                kind: .trackBackground,
                 trackID: track.id,
-                zone: .move
             ),
+            snapshot: snapshot
+        )
+        _ = controller.handleMouseDragged(
+            point: CGPoint(x: 240, y: startPoint.y),
             snapshot: snapshot
         )
         controller.handleMouseUp(point: CGPoint(x: 240, y: startPoint.y), snapshot: snapshot)
@@ -927,6 +1046,176 @@ struct PlaybackGridCoreTests {
         #expect(sink.midiPreviewEvents.first?.isNoteOn == true)
         #expect(sink.midiPreviewEvents.last?.isNoteOn == false)
         #expect(sink.midiPreviewEvents.first?.pitch == sink.midiPreviewEvents.last?.pitch)
+    }
+
+    @Test("MIDI container click without drag does not create note")
+    func midiContainerClickDoesNotCreateNote() {
+        let container = Container(name: "MIDI", startBar: 1.0, lengthBars: 4.0, midiSequence: MIDISequence())
+        let track = Track(name: "MIDI 1", kind: .midi, containers: [container])
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(beatsPerBar: 4, beatUnit: 4),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            inlineMIDILaneHeights: [track.id: 220],
+            defaultTrackHeight: 80,
+            gridMode: .fixed(.quarter),
+            selectedContainerIDs: [container.id],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            isSnapEnabled: true,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let sink = CommandSinkSpy()
+        let controller = PlaybackGridInteractionController(sink: sink)
+        let point = CGPoint(x: 120, y: PlaybackGridLayout.trackAreaTop + 60)
+
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
+            point: point,
+            pick: GridPickObject(
+                id: 302,
+                kind: .containerZone,
+                containerID: container.id,
+                trackID: track.id,
+                zone: .move
+            ),
+            snapshot: snapshot
+        )
+        controller.handleMouseUp(point: point, snapshot: snapshot)
+
+        #expect(sink.lastAddedMIDINote == nil)
+    }
+
+    @Test("MIDI note click in pointer mode selects without moving")
+    func midiNoteClickSelectsWithoutMoving() {
+        let midiNote = MIDINoteEvent(pitch: 64, startBeat: 1, duration: 1)
+        let container = Container(
+            name: "MIDI",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence(notes: [midiNote])
+        )
+        let track = Track(name: "MIDI 1", kind: .midi, containers: [container])
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(beatsPerBar: 4, beatUnit: 4),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            inlineMIDILaneHeights: [track.id: 220],
+            inlineMIDIConfigs: [track.id: PlaybackGridMIDIConfig(lowPitch: 48, highPitch: 72, rowHeight: 12, tool: .pointer)],
+            defaultTrackHeight: 80,
+            gridMode: .fixed(.quarter),
+            selectedContainerIDs: [container.id],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            isSnapEnabled: true,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let sink = CommandSinkSpy()
+        let controller = PlaybackGridInteractionController(sink: sink)
+        let noteRect = midiNoteRect(note: midiNote, container: container, trackID: track.id, snapshot: snapshot)
+        let point = noteRect.center
+
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
+            point: point,
+            pick: GridPickObject(
+                id: 362,
+                kind: .midiNote,
+                containerID: container.id,
+                trackID: track.id,
+                midiNoteID: midiNote.id,
+                zone: .move
+            ),
+            snapshot: snapshot
+        )
+        _ = controller.handleMouseDragged(
+            point: CGPoint(x: point.x + 1, y: point.y + 1),
+            snapshot: snapshot
+        )
+        controller.handleMouseUp(
+            point: CGPoint(x: point.x + 1, y: point.y + 1),
+            snapshot: snapshot
+        )
+
+        #expect(sink.lastSelectedMIDINotes?.noteIDs == [midiNote.id])
+        #expect(sink.lastUpdatedMIDINote == nil)
+    }
+
+    @Test("MIDI note click in pencil mode selects without moving")
+    func midiNoteClickSelectsWithoutMovingInPencilMode() {
+        let midiNote = MIDINoteEvent(pitch: 64, startBeat: 1, duration: 1)
+        let container = Container(
+            name: "MIDI",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence(notes: [midiNote])
+        )
+        let track = Track(name: "MIDI 1", kind: .midi, containers: [container])
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(beatsPerBar: 4, beatUnit: 4),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            inlineMIDILaneHeights: [track.id: 220],
+            inlineMIDIConfigs: [track.id: PlaybackGridMIDIConfig(lowPitch: 48, highPitch: 72, rowHeight: 12, tool: .pencil)],
+            defaultTrackHeight: 80,
+            gridMode: .fixed(.quarter),
+            selectedContainerIDs: [container.id],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            isSnapEnabled: true,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let sink = CommandSinkSpy()
+        let controller = PlaybackGridInteractionController(sink: sink)
+        let noteRect = midiNoteRect(note: midiNote, container: container, trackID: track.id, snapshot: snapshot)
+        let point = noteRect.center
+
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
+            point: point,
+            pick: GridPickObject(
+                id: 463,
+                kind: .midiNote,
+                containerID: container.id,
+                trackID: track.id,
+                midiNoteID: midiNote.id,
+                zone: .move
+            ),
+            snapshot: snapshot
+        )
+        _ = controller.handleMouseDragged(
+            point: CGPoint(x: point.x + 4, y: point.y + 3),
+            snapshot: snapshot
+        )
+        controller.handleMouseUp(
+            point: CGPoint(x: point.x + 4, y: point.y + 3),
+            snapshot: snapshot
+        )
+
+        #expect(sink.lastSelectedMIDINotes?.noteIDs == [midiNote.id])
+        #expect(sink.lastUpdatedMIDINote == nil)
+        #expect(sink.lastAddedMIDINote == nil)
     }
 
     @Test("MIDI note create anchors to clicked snap cell at mouse-down")
@@ -940,6 +1229,7 @@ struct PlaybackGridCoreTests {
             pixelsPerBar: 120,
             totalBars: 64,
             trackHeights: [:],
+            inlineMIDILaneHeights: [track.id: 220],
             defaultTrackHeight: 80,
             gridMode: .fixed(.quarter),
             selectedContainerIDs: [container.id],
@@ -957,24 +1247,117 @@ struct PlaybackGridCoreTests {
 
         controller.handleMouseDown(
             event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
-            point: CGPoint(x: 135, y: PlaybackGridLayout.trackAreaTop + 60),
+            point: CGPoint(x: 135, y: PlaybackGridLayout.trackAreaTop + 180),
             pick: GridPickObject(
                 id: 350,
-                kind: .containerZone,
-                containerID: container.id,
+                kind: .trackBackground,
                 trackID: track.id,
-                zone: .move
             ),
             snapshot: snapshot
         )
+        _ = controller.handleMouseDragged(
+            point: CGPoint(x: 240, y: PlaybackGridLayout.trackAreaTop + 180),
+            snapshot: snapshot
+        )
         controller.handleMouseUp(
-            point: CGPoint(x: 240, y: PlaybackGridLayout.trackAreaTop + 60),
+            point: CGPoint(x: 240, y: PlaybackGridLayout.trackAreaTop + 180),
             snapshot: snapshot
         )
 
         #expect(sink.lastAddedMIDINote != nil)
         #expect(abs((sink.lastAddedMIDINote?.note.startBeat ?? 0) - 5.0) < 0.0001)
         #expect(abs((sink.lastAddedMIDINote?.note.duration ?? 0) - 3.0) < 0.0001)
+    }
+
+    @Test("Pointer drag in inline MIDI lane shows marquee and selects notes")
+    func midiPointerMarqueeSelectsNotes() {
+        let note = MIDINoteEvent(pitch: 60, startBeat: 1, duration: 1)
+        let container = Container(name: "MIDI", startBar: 1.0, lengthBars: 4.0, midiSequence: MIDISequence(notes: [note]))
+        let track = Track(name: "MIDI 1", kind: .midi, containers: [container])
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(beatsPerBar: 4, beatUnit: 4),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            inlineMIDILaneHeights: [track.id: 220],
+            inlineMIDIConfigs: [track.id: PlaybackGridMIDIConfig(lowPitch: 48, highPitch: 72, rowHeight: 12, tool: .pointer)],
+            defaultTrackHeight: 80,
+            gridMode: .fixed(.quarter),
+            selectedContainerIDs: [container.id],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            isSnapEnabled: true,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let sink = CommandSinkSpy()
+        let controller = PlaybackGridInteractionController(sink: sink)
+        let noteRect = midiNoteRect(note: note, container: container, trackID: track.id, snapshot: snapshot)
+        let startPoint = CGPoint(x: noteRect.minX - 10, y: noteRect.minY - 8)
+        let endPoint = CGPoint(x: noteRect.maxX + 10, y: noteRect.maxY + 8)
+
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
+            point: startPoint,
+            pick: GridPickObject(id: 360, kind: .trackBackground, trackID: track.id),
+            snapshot: snapshot
+        )
+        _ = controller.handleMouseDragged(point: endPoint, snapshot: snapshot)
+
+        #expect(controller.activeMIDIMarqueeRect != nil)
+
+        controller.handleMouseUp(point: endPoint, snapshot: snapshot)
+
+        #expect(sink.lastSelectedMIDINotes?.containerID == container.id)
+        #expect(sink.lastSelectedMIDINotes?.trackID == track.id)
+        #expect(sink.lastSelectedMIDINotes?.noteIDs == [note.id])
+    }
+
+    @Test("Pencil click in inline MIDI lane inserts a snapped note")
+    func midiPencilClickCreatesMinimumNote() {
+        let container = Container(name: "MIDI", startBar: 1.0, lengthBars: 4.0, midiSequence: MIDISequence())
+        let track = Track(name: "MIDI 1", kind: .midi, containers: [container])
+        let snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(beatsPerBar: 4, beatUnit: 4),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            inlineMIDILaneHeights: [track.id: 220],
+            inlineMIDIConfigs: [track.id: PlaybackGridMIDIConfig(lowPitch: 48, highPitch: 72, rowHeight: 12, tool: .pencil)],
+            defaultTrackHeight: 80,
+            gridMode: .fixed(.quarter),
+            selectedContainerIDs: [container.id],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            isSnapEnabled: true,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        let sink = CommandSinkSpy()
+        let controller = PlaybackGridInteractionController(sink: sink)
+        let point = CGPoint(x: 135, y: PlaybackGridLayout.trackAreaTop + 180)
+
+        controller.handleMouseDown(
+            event: makeMouseEvent(type: .leftMouseDown, modifiers: []),
+            point: point,
+            pick: GridPickObject(id: 361, kind: .trackBackground, trackID: track.id),
+            snapshot: snapshot
+        )
+        controller.handleMouseUp(point: point, snapshot: snapshot)
+
+        #expect(sink.lastAddedMIDINote?.containerID == container.id)
+        #expect(abs((sink.lastAddedMIDINote?.note.startBeat ?? 0) - 5.0) < 0.0001)
+        #expect(abs((sink.lastAddedMIDINote?.note.duration ?? 0) - 1.0) < 0.0001)
     }
 
     @MainActor
@@ -1234,6 +1617,10 @@ struct PlaybackGridCoreTests {
             pick: GridPickObject(id: 301, kind: .trackBackground, trackID: track.id),
             snapshot: snapshot
         )
+        _ = controller.handleMouseDragged(
+            point: CGPoint(x: 180, y: PlaybackGridLayout.trackAreaTop + 180),
+            snapshot: snapshot
+        )
         controller.handleMouseUp(
             point: CGPoint(x: 180, y: PlaybackGridLayout.trackAreaTop + 180),
             snapshot: snapshot
@@ -1303,6 +1690,12 @@ struct PlaybackGridCoreTests {
             totalBars: 64,
             trackHeights: [:],
             inlineMIDILaneHeights: [track.id: 220],
+            inlineMIDIConfigs: [track.id: PlaybackGridMIDIConfig(
+                lowPitch: 48,
+                highPitch: 72,
+                rowHeight: 12,
+                tool: .pointer
+            )],
             defaultTrackHeight: 80,
             gridMode: .fixed(.quarter),
             selectedContainerIDs: [container.id],
@@ -1585,6 +1978,7 @@ private final class CommandSinkSpy: PlaybackGridCommandSink {
     var lastRemovedAutomationBreakpoint: (containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>)?
     var lastCreatedContainer: (trackID: ID<Track>, startBar: Double, lengthBars: Double)?
     var lastAddedMIDINote: (containerID: ID<Container>, note: MIDINoteEvent)?
+    var lastSelectedMIDINotes: (containerID: ID<Container>, trackID: ID<Track>, noteIDs: Set<ID<MIDINoteEvent>>, additive: Bool)?
     var lastInlineMIDILaneHeight: (trackID: ID<Track>, height: CGFloat)?
     var lastUpdatedAutomationBreakpoint: (containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint)?
     var lastAddedTrackAutomationBreakpoint: (trackID: ID<Track>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint)?
@@ -1650,6 +2044,15 @@ private final class CommandSinkSpy: PlaybackGridCommandSink {
 
     func removeMIDINote(_ containerID: ID<Container>, noteID: ID<MIDINoteEvent>) {
         lastRemovedMIDINote = (containerID, noteID)
+    }
+
+    func setSelectedMIDINotes(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        noteIDs: Set<ID<MIDINoteEvent>>,
+        additive: Bool
+    ) {
+        lastSelectedMIDINotes = (containerID, trackID, noteIDs, additive)
     }
 
     func previewMIDINote(pitch: UInt8, isNoteOn: Bool) {

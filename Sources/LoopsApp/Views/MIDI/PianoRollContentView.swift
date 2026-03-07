@@ -7,7 +7,8 @@ enum PianoRollDragState: Equatable {
     case resizing(noteID: ID<MIDINoteEvent>, originalEnd: Double)
     case resizingLeft(noteID: ID<MIDINoteEvent>, originalStart: Double, originalDuration: Double)
     case creating(pitch: UInt8, startBeat: Double, currentBeat: Double)
-    case selecting(origin: CGPoint, current: CGPoint)
+    case selecting(origin: CGPoint, current: CGPoint, additive: Bool)
+    case adjustingVelocity(noteIDs: [ID<MIDINoteEvent>], originalNotes: [MIDINoteEvent], startY: CGFloat)
 }
 
 /// Which zone of a note the cursor/click is in.
@@ -21,6 +22,25 @@ enum NoteHitZone {
 struct PianoRollGhostLayer {
     let notes: [MIDINoteEvent]   // Pre-offset to track-absolute beats
     let opacity: Double          // 0.25 normal ghost, 0.15 linked/inherited
+}
+
+private struct PianoRollNoteExpressionLaneDragState {
+    let noteIDs: [ID<MIDINoteEvent>]
+    let originalNotes: [MIDINoteEvent]
+    let startY: CGFloat
+}
+
+private struct PianoRollControllerLaneDragState {
+    let lane: MIDINoteExpressionLane
+    let eventIDs: [ID<MIDIControllerEvent>]
+    let originalEvents: [MIDIControllerEvent]
+    let startBeat: Double
+    let startY: CGFloat
+}
+
+private struct PianoRollLaneResizeState {
+    let lane: MIDINoteExpressionLane
+    let startHeight: CGFloat
 }
 
 /// Observes the vertical scroll offset of the enclosing NSScrollView that directly
@@ -115,6 +135,10 @@ struct PianoRollContentView: View {
     @Binding var lowPitch: UInt8
     @Binding var highPitch: UInt8
     @Binding var rowHeight: CGFloat
+    @Binding var selectedTool: MIDITool
+    @Binding var selectedExpressionLane: MIDINoteExpressionLane
+    @Binding var visibleExpressionLanes: [MIDINoteExpressionLane]
+    @Binding var noteExpressionLaneHeights: [MIDINoteExpressionLane: CGFloat]
     @Binding var selectedNoteIDs: Set<ID<MIDINoteEvent>>
 
     /// Container-relative playhead beat (nil = not visible).
@@ -149,6 +173,9 @@ struct PianoRollContentView: View {
     var onAddNote: ((MIDINoteEvent) -> Void)?
     var onUpdateNote: ((MIDINoteEvent) -> Void)?
     var onRemoveNote: ((ID<MIDINoteEvent>) -> Void)?
+    var onAddControllerEvent: ((MIDIControllerEvent) -> Void)?
+    var onUpdateControllerEvent: ((MIDIControllerEvent) -> Void)?
+    var onRemoveControllerEvent: ((ID<MIDIControllerEvent>) -> Void)?
     var onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)?
 
     @State private var dragState: PianoRollDragState?
@@ -161,6 +188,12 @@ struct PianoRollContentView: View {
     @State private var dragPreviews: [ID<MIDINoteEvent>: MIDINoteEvent] = [:]
     /// True when Option is held during a move drag (copy instead of move).
     @State private var isCopying = false
+    @State private var noteExpressionLaneDragState: PianoRollNoteExpressionLaneDragState?
+    @State private var controllerLaneDragState: PianoRollControllerLaneDragState?
+    @State private var laneResizeState: PianoRollLaneResizeState?
+    @State private var laneResizePreviewHeights: [MIDINoteExpressionLane: CGFloat] = [:]
+    @State private var selectedControllerEventIDs: Set<ID<MIDIControllerEvent>> = []
+    @State private var controllerEventDragPreviews: [ID<MIDIControllerEvent>: MIDIControllerEvent] = [:]
 
     private var effectiveNoteOpacity: Double {
         isReadOnly ? noteOpacity * 0.5 : noteOpacity
@@ -176,6 +209,79 @@ struct PianoRollContentView: View {
 
     private var totalHeight: CGFloat {
         PianoRollLayout.totalHeight(lowPitch: lowPitch, highPitch: highPitch, rowHeight: rowHeight)
+    }
+
+    private func noteExpressionLaneHeight(for lane: MIDINoteExpressionLane) -> CGFloat {
+        laneResizePreviewHeights[lane] ?? noteExpressionLaneHeights[lane] ?? defaultNoteExpressionLaneHeight(for: lane)
+    }
+
+    private var selectedNotesInSequence: [MIDINoteEvent] {
+        sequence.notes.filter { selectedNoteIDs.contains($0.id) }
+    }
+
+    private func defaultNoteExpressionLaneHeight(for lane: MIDINoteExpressionLane) -> CGFloat {
+        switch lane {
+        case .velocity:
+            return 96
+        case .channel:
+            return 84
+        case .sustain:
+            return 72
+        case .expression:
+            return 96
+        }
+    }
+
+    private func noteExpressionUpperLabel(for lane: MIDINoteExpressionLane) -> String {
+        switch lane {
+        case .velocity:
+            return "127"
+        case .channel:
+            return "16"
+        case .sustain:
+            return "On"
+        case .expression:
+            return "127"
+        }
+    }
+
+    private func noteExpressionLowerLabel(for lane: MIDINoteExpressionLane) -> String {
+        switch lane {
+        case .velocity, .expression:
+            return "0"
+        case .channel:
+            return "1"
+        case .sustain:
+            return "Off"
+        }
+    }
+
+    private func noteExpressionSummaryLabel(for lane: MIDINoteExpressionLane) -> String {
+        switch lane {
+        case .velocity:
+            let notes = selectedNotesInSequence
+            guard !notes.isEmpty else { return lane.label }
+            let average = Int((notes.map { Int($0.velocity) }.reduce(0, +) / max(notes.count, 1)))
+            return notes.count == 1 ? "Vel \(average)" : "\(notes.count) notes · avg \(average)"
+        case .channel:
+            let notes = selectedNotesInSequence
+            guard !notes.isEmpty else { return lane.label }
+            let uniqueChannels = Set(notes.map { Int($0.channel) + 1 }).sorted()
+            if uniqueChannels.count == 1, let channel = uniqueChannels.first {
+                return "Ch \(channel)"
+            }
+            return "\(uniqueChannels.count) ch"
+        case .sustain, .expression:
+            let events = selectedControllerEvents(in: lane)
+            if let event = events.first, events.count == 1 {
+                return "\(lane.shortLabel) \(event.value)"
+            }
+            if !events.isEmpty {
+                let average = Int(events.map { Int($0.value) }.reduce(0, +) / max(events.count, 1))
+                return "\(events.count) pts · avg \(average)"
+            }
+            return "\(controllerEvents(for: lane).count) pts"
+        }
     }
 
     /// Converts a container-relative beat to a display beat (track-absolute).
@@ -219,6 +325,13 @@ struct PianoRollContentView: View {
             .onTapGesture { location in
                 if !isReadOnly { handleSingleClick(at: location) }
             }
+
+            if !visibleExpressionLanes.isEmpty {
+                ForEach(visibleExpressionLanes, id: \.self) { lane in
+                    Divider()
+                    noteExpressionLane(lane)
+                }
+            }
         }
     }
 
@@ -226,7 +339,14 @@ struct PianoRollContentView: View {
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
                 if showKeyboard {
-                    pianoKeyboard
+                    VStack(spacing: 0) {
+                        pianoKeyboard
+                        if !visibleExpressionLanes.isEmpty {
+                            ForEach(visibleExpressionLanes, id: \.self) { lane in
+                                noteExpressionSidebar(for: lane)
+                            }
+                        }
+                    }
                 }
                 if useOwnHorizontalScroll {
                     ScrollView(.horizontal) {
@@ -246,11 +366,18 @@ struct PianoRollContentView: View {
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.delete) {
-            guard !isReadOnly, !selectedNoteIDs.isEmpty else { return .ignored }
+            guard !isReadOnly else { return .ignored }
+            let hasSelectedNotes = !selectedNoteIDs.isEmpty
+            let hasSelectedControllerEvents = !selectedControllerEventIDs.isEmpty
+            guard hasSelectedNotes || hasSelectedControllerEvents else { return .ignored }
             for noteID in selectedNoteIDs {
                 onRemoveNote?(noteID)
             }
             selectedNoteIDs.removeAll()
+            for eventID in selectedControllerEventIDs {
+                onRemoveControllerEvent?(eventID)
+            }
+            selectedControllerEventIDs.removeAll()
             return .handled
         }
         .onKeyPress(.leftArrow) {
@@ -319,17 +446,83 @@ struct PianoRollContentView: View {
                 let note = UInt8(pitch)
                 let isBlack = PianoLayout.isBlackKey(note: note)
                 let isC = note % 12 == 0
-                ZStack {
-                    Rectangle()
-                        .fill(isBlack ? Color.gray.opacity(0.3) : Color(nsColor: .controlBackgroundColor))
-                    if isC || !isBlack {
-                        Text(PianoLayout.noteName(note))
-                            .font(.system(size: 8, design: .monospaced))
-                            .foregroundStyle(isC ? .primary : .secondary)
-                    }
-                }
-                .frame(width: PianoRollLayout.keyboardWidth, height: rowHeight)
+                PianoRollKeyboardRow(
+                    note: note,
+                    rowHeight: rowHeight,
+                    isBlack: isBlack,
+                    isC: isC
+                )
             }
+        }
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.16, green: 0.17, blue: 0.19),
+                    Color(red: 0.08, green: 0.09, blue: 0.11)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 1)
+        }
+    }
+
+    private func noteExpressionSidebar(for lane: MIDINoteExpressionLane) -> some View {
+        VStack(spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.12, green: 0.13, blue: 0.16),
+                                Color(red: 0.07, green: 0.08, blue: 0.10)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(lane.shortLabel, systemImage: lane.iconName)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.84))
+
+                    Text(noteExpressionUpperLabel(for: lane))
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.38))
+
+                    Spacer()
+
+                    Text(noteExpressionSummaryLabel(for: lane))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle((selectedExpressionLane == lane ? laneColor(for: lane) : Color.white).opacity(0.85))
+                        .lineLimit(2)
+
+                    Text(noteExpressionLowerLabel(for: lane))
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.32))
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 8)
+            }
+            .frame(width: PianoRollLayout.keyboardWidth, height: noteExpressionLaneHeight(for: lane))
+
+            Rectangle()
+                .fill(Color.white.opacity(0.10))
+                .frame(width: PianoRollLayout.keyboardWidth, height: 4)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedExpressionLane = lane
+        }
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 1)
         }
     }
 
@@ -337,23 +530,52 @@ struct PianoRollContentView: View {
 
     private var gridBackground: some View {
         Canvas { context, size in
+            let backgroundRect = CGRect(origin: .zero, size: size)
+            context.fill(
+                Path(backgroundRect),
+                with: .linearGradient(
+                    Gradient(colors: [
+                        Color(red: 0.15, green: 0.17, blue: 0.21),
+                        Color(red: 0.10, green: 0.11, blue: 0.14)
+                    ]),
+                    startPoint: CGPoint(x: 0, y: 0),
+                    endPoint: CGPoint(x: size.width, y: size.height)
+                )
+            )
+
             let beatsPerBar = timeSignature.beatsPerBar
 
             for pitch in Int(lowPitch)...Int(highPitch) {
                 let y = PianoRollLayout.yPosition(forPitch: UInt8(pitch), lowPitch: lowPitch, highPitch: highPitch, rowHeight: rowHeight)
                 let isBlack = PianoLayout.isBlackKey(note: UInt8(pitch))
                 let isC = UInt8(pitch) % 12 == 0
+                let rowRect = CGRect(x: 0, y: y, width: size.width, height: rowHeight)
 
-                if isBlack {
+                context.fill(
+                    Path(rowRect),
+                    with: .color(
+                        isBlack
+                        ? Color.black.opacity(0.22)
+                        : Color.white.opacity(((pitch - Int(lowPitch)) % 2 == 0) ? 0.02 : 0.012)
+                    )
+                )
+
+                if rowHeight >= 10 {
                     context.fill(
-                        Path(CGRect(x: 0, y: y, width: size.width, height: rowHeight)),
-                        with: .color(.gray.opacity(0.08))
+                        Path(CGRect(x: 0, y: y + max(1, rowHeight * 0.12), width: size.width, height: max(1, rowHeight * 0.08))),
+                        with: .color(isBlack ? Color.white.opacity(0.02) : Color.black.opacity(0.05))
                     )
                 }
+
                 if isC {
                     context.stroke(
                         Path { p in p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: size.width, y: y)) },
-                        with: .color(.gray.opacity(0.4)),
+                        with: .color(Color(red: 0.28, green: 0.56, blue: 0.86).opacity(0.28)),
+                        lineWidth: 0.8
+                    )
+                    context.stroke(
+                        Path { p in p.move(to: CGPoint(x: 0, y: y + rowHeight - 1)); p.addLine(to: CGPoint(x: size.width, y: y + rowHeight - 1)) },
+                        with: .color(Color.white.opacity(0.04)),
                         lineWidth: 0.5
                     )
                 }
@@ -363,11 +585,21 @@ struct PianoRollContentView: View {
             for beat in 0...totalB {
                 let x = PianoRollLayout.xPosition(forBeat: Double(beat), pixelsPerBeat: pixelsPerBeat)
                 let isBarLine = beat % beatsPerBar == 0
+                let isHalfBeat = pixelsPerBeat >= 42 && beat < totalB
                 context.stroke(
                     Path { p in p.move(to: CGPoint(x: x, y: 0)); p.addLine(to: CGPoint(x: x, y: size.height)) },
-                    with: .color(.gray.opacity(isBarLine ? 0.4 : 0.15)),
-                    lineWidth: isBarLine ? 1 : 0.5
+                    with: .color(isBarLine ? Color.white.opacity(0.20) : Color.white.opacity(0.055)),
+                    lineWidth: isBarLine ? 1.0 : 0.6
                 )
+
+                if isHalfBeat {
+                    let halfBeatX = x + (pixelsPerBeat * 0.5)
+                    context.stroke(
+                        Path { p in p.move(to: CGPoint(x: halfBeatX, y: 0)); p.addLine(to: CGPoint(x: halfBeatX, y: size.height)) },
+                        with: .color(Color.white.opacity(0.022)),
+                        lineWidth: 0.5
+                    )
+                }
             }
         }
         .frame(width: totalWidth, height: totalHeight)
@@ -403,19 +635,47 @@ struct PianoRollContentView: View {
                 let isHovered = hoveredNoteID == note.id && selectedNoteIDs.isEmpty
 
                 let noteRect = CGRect(x: x, y: y, width: w, height: rowHeight - 1)
-                let path = Path(roundedRect: noteRect, cornerRadius: 2)
+                let noteBodyRect = noteRect.insetBy(dx: 1, dy: 1)
+                let outerPath = Path(roundedRect: noteRect, cornerRadius: max(1.2, min(rowHeight * 0.16, 3.5)))
+                let bodyPath = Path(roundedRect: noteBodyRect, cornerRadius: max(1.0, min(rowHeight * 0.12, 3.0)))
+                let velocityFactor = Double(displayNote.velocity) / 127.0
+                let baseColor = Color.accentColor
+                let bodyOpacity = (0.58 + velocityFactor * 0.28) * effectiveNoteOpacity
 
-                let velocityOpacity = 0.4 + Double(displayNote.velocity) / 127.0 * 0.6
-                context.fill(path, with: .color(.accentColor.opacity(velocityOpacity * effectiveNoteOpacity)))
+                context.fill(
+                    outerPath,
+                    with: .color(Color.black.opacity(isSelected ? 0.48 : 0.30))
+                )
+                context.fill(
+                    bodyPath,
+                    with: .linearGradient(
+                        Gradient(colors: [
+                            baseColor.opacity(bodyOpacity + 0.10),
+                            baseColor.opacity(bodyOpacity)
+                        ]),
+                        startPoint: CGPoint(x: noteBodyRect.minX, y: noteBodyRect.minY),
+                        endPoint: CGPoint(x: noteBodyRect.maxX, y: noteBodyRect.maxY)
+                    )
+                )
+                context.fill(
+                    Path(roundedRect: CGRect(
+                        x: noteBodyRect.minX,
+                        y: noteBodyRect.minY,
+                        width: noteBodyRect.width,
+                        height: max(1, min(noteBodyRect.height * 0.22, 4))
+                    ), cornerRadius: 1.4),
+                    with: .color(Color.white.opacity(isSelected ? 0.32 : 0.20))
+                )
 
-                let strokeColor: Color = isSelected ? .white : (isHovered ? .white.opacity(0.6) : .accentColor.opacity(0.8))
-                let strokeWidth: CGFloat = isSelected ? 1.5 : (isHovered ? 1.0 : 0.5)
-                context.stroke(path, with: .color(strokeColor), lineWidth: strokeWidth)
+                let strokeColor: Color = isSelected
+                    ? .white.opacity(0.92)
+                    : (isHovered ? .white.opacity(0.52) : baseColor.opacity(0.56))
+                context.stroke(outerPath, with: .color(strokeColor), lineWidth: isSelected ? 1.3 : 0.75)
 
                 if w > 28 && rowHeight >= 12 {
                     let text = Text(PianoLayout.noteName(displayNote.pitch))
-                        .font(.system(size: min(rowHeight - 4, 10), design: .monospaced))
-                        .foregroundColor(.white.opacity(0.7))
+                        .font(.system(size: min(rowHeight - 4, 10), weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white.opacity(isSelected ? 0.95 : 0.78))
                     context.draw(text, at: CGPoint(x: x + 4, y: y + rowHeight / 2), anchor: .leading)
                 }
             }
@@ -428,22 +688,303 @@ struct PianoRollContentView: View {
                     let pw = max(4, CGFloat(preview.duration) * pixelsPerBeat)
 
                     let previewRect = CGRect(x: px, y: py, width: pw, height: rowHeight - 1)
-                    let previewPath = Path(roundedRect: previewRect, cornerRadius: 2)
+                    let previewOuter = Path(roundedRect: previewRect, cornerRadius: max(1.2, min(rowHeight * 0.16, 3.5)))
+                    let previewInnerRect = previewRect.insetBy(dx: 1, dy: 1)
+                    let previewInner = Path(roundedRect: previewInnerRect, cornerRadius: max(1.0, min(rowHeight * 0.12, 3.0)))
 
-                    let velocityOpacity = 0.4 + Double(preview.velocity) / 127.0 * 0.6
-                    context.fill(previewPath, with: .color(.accentColor.opacity(velocityOpacity * effectiveNoteOpacity)))
-                    context.stroke(previewPath, with: .color(.white), lineWidth: 1.5)
+                    context.fill(previewOuter, with: .color(Color.black.opacity(0.34)))
+                    context.fill(previewInner, with: .color(Color.accentColor.opacity(0.74 * effectiveNoteOpacity)))
+                    context.fill(
+                        Path(roundedRect: CGRect(
+                            x: previewInnerRect.minX,
+                            y: previewInnerRect.minY,
+                            width: previewInnerRect.width,
+                            height: max(1, min(previewInnerRect.height * 0.22, 4))
+                        ), cornerRadius: 1.4),
+                        with: .color(Color.white.opacity(0.26))
+                    )
+                    context.stroke(previewOuter, with: .color(.white.opacity(0.94)), lineWidth: 1.4)
 
                     if pw > 28 && rowHeight >= 12 {
                         let text = Text(PianoLayout.noteName(preview.pitch))
-                            .font(.system(size: min(rowHeight - 4, 10), design: .monospaced))
-                            .foregroundColor(.white.opacity(0.7))
+                            .font(.system(size: min(rowHeight - 4, 10), weight: .semibold, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.84))
                         context.draw(text, at: CGPoint(x: px + 4, y: py + rowHeight / 2), anchor: .leading)
                     }
                 }
             }
         }
         .frame(width: totalWidth, height: totalHeight)
+    }
+
+    private func noteExpressionLane(_ lane: MIDINoteExpressionLane) -> some View {
+        VStack(spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                noteExpressionLaneBackground(for: lane)
+                noteExpressionLaneCanvas(for: lane)
+            }
+            .frame(width: totalWidth, height: noteExpressionLaneHeight(for: lane))
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { location in
+                guard !isReadOnly else { return }
+                handleNoteExpressionLaneDoubleClick(at: location, lane: lane)
+            }
+            .onTapGesture { location in
+                guard !isReadOnly else { return }
+                handleNoteExpressionLaneClick(at: location, lane: lane)
+            }
+            .gesture(isReadOnly ? nil : noteExpressionLaneDragGesture(for: lane))
+
+            Rectangle()
+                .fill(Color.white.opacity(0.10))
+                .frame(height: 4)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    if hovering {
+                        NSCursor.resizeUpDown.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { value in
+                            if laneResizeState?.lane != lane {
+                                laneResizeState = PianoRollLaneResizeState(lane: lane, startHeight: noteExpressionLaneHeight(for: lane))
+                            }
+                            let startHeight = laneResizeState?.startHeight ?? noteExpressionLaneHeight(for: lane)
+                            laneResizePreviewHeights[lane] = min(
+                                max(startHeight + value.translation.height, PianoRollLayout.minDetailLaneHeight),
+                                PianoRollLayout.maxDetailLaneHeight
+                            )
+                        }
+                        .onEnded { _ in
+                            let height = laneResizePreviewHeights[lane] ?? noteExpressionLaneHeight(for: lane)
+                            noteExpressionLaneHeights[lane] = min(
+                                max(height, PianoRollLayout.minDetailLaneHeight),
+                                PianoRollLayout.maxDetailLaneHeight
+                            )
+                            laneResizePreviewHeights.removeValue(forKey: lane)
+                            laneResizeState = nil
+                        }
+                )
+        }
+    }
+
+    private func noteExpressionLaneBackground(for lane: MIDINoteExpressionLane) -> some View {
+        Canvas { context, size in
+            context.fill(
+                Path(CGRect(origin: .zero, size: size)),
+                with: .linearGradient(
+                    Gradient(colors: [
+                        Color(red: 0.11, green: 0.12, blue: 0.15),
+                        Color(red: 0.08, green: 0.09, blue: 0.11)
+                    ]),
+                    startPoint: CGPoint(x: 0, y: 0),
+                    endPoint: CGPoint(x: size.width, y: size.height)
+                )
+            )
+
+            let beatsPerBar = timeSignature.beatsPerBar
+            let totalB = Int(totalBeats)
+            for beat in 0...totalB {
+                let x = PianoRollLayout.xPosition(forBeat: Double(beat), pixelsPerBeat: pixelsPerBeat)
+                let isBarLine = beat % beatsPerBar == 0
+                context.stroke(
+                    Path { p in
+                        p.move(to: CGPoint(x: x, y: 0))
+                        p.addLine(to: CGPoint(x: x, y: size.height))
+                    },
+                    with: .color(isBarLine ? Color.white.opacity(0.12) : Color.white.opacity(0.035)),
+                    lineWidth: isBarLine ? 1 : 0.5
+                )
+            }
+
+            for fraction: CGFloat in [0.25, 0.5, 0.75] {
+                let y = size.height - 8 - ((size.height - 16) * fraction)
+                context.stroke(
+                    Path { p in
+                        p.move(to: CGPoint(x: 0, y: y))
+                        p.addLine(to: CGPoint(x: size.width, y: y))
+                    },
+                    with: .color(Color.white.opacity(fraction == 0.5 ? 0.10 : 0.05)),
+                    lineWidth: 0.5
+                )
+            }
+
+            if lane == .channel {
+                let bands = 16
+                let usableHeight = size.height - 16
+                let bandHeight = usableHeight / CGFloat(bands)
+                for channel in 0..<bands {
+                    let y = size.height - 8 - (CGFloat(channel + 1) * bandHeight)
+                    context.stroke(
+                        Path { p in
+                            p.move(to: CGPoint(x: 0, y: y))
+                            p.addLine(to: CGPoint(x: size.width, y: y))
+                        },
+                        with: .color(Color.white.opacity(channel % 4 == 0 ? 0.08 : 0.035)),
+                        lineWidth: 0.5
+                    )
+                }
+            } else if lane == .sustain {
+                let midpoint = noteExpressionCenterY(forNormalizedValue: 0.5, laneHeight: size.height)
+                context.stroke(
+                    Path { p in
+                        p.move(to: CGPoint(x: 0, y: midpoint))
+                        p.addLine(to: CGPoint(x: size.width, y: midpoint))
+                    },
+                    with: .color(Color.white.opacity(0.08)),
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                )
+            }
+        }
+    }
+
+    private func noteExpressionLaneCanvas(for lane: MIDINoteExpressionLane) -> some View {
+        if lane.isControllerLane {
+            return AnyView(controllerLaneCanvas(for: lane))
+        }
+        return AnyView(noteAttributeLaneCanvas(for: lane))
+    }
+
+    private func noteAttributeLaneCanvas(for lane: MIDINoteExpressionLane) -> some View {
+        Canvas { context, size in
+            let laneBottom = size.height - 7
+            for note in sequence.notes {
+                let displayNote = displayNoteForRendering(note)
+                let handleRect = noteExpressionHandleRect(for: displayNote, lane: lane)
+                let barX = handleRect.midX
+                let isSelected = selectedNoteIDs.contains(note.id)
+                let isHovered = hoveredNoteID == note.id && selectedNoteIDs.isEmpty
+                let laneColor = laneColor(for: lane)
+                let stemColor = laneColor.opacity(isSelected ? 0.92 : 0.64)
+                let handleColor = isSelected
+                    ? Color.white.opacity(0.96)
+                    : (isHovered ? Color.white.opacity(0.72) : laneColor.opacity(0.92))
+
+                context.stroke(
+                    Path { p in
+                        p.move(to: CGPoint(x: barX, y: laneBottom))
+                        p.addLine(to: CGPoint(x: barX, y: handleRect.midY))
+                    },
+                    with: .color(stemColor),
+                    lineWidth: isSelected ? 2.2 : 1.4
+                )
+
+                context.fill(
+                    Path(ellipseIn: handleRect),
+                    with: .color(handleColor)
+                )
+                context.stroke(
+                    Path(ellipseIn: handleRect.insetBy(dx: -0.5, dy: -0.5)),
+                    with: .color(Color.black.opacity(0.34)),
+                    lineWidth: 1
+                )
+            }
+
+            if !selectedNotesInSequence.isEmpty {
+                let normalized = averageSelectedExpressionNormalizedValue(for: lane)
+                let y = noteExpressionCenterY(forNormalizedValue: normalized, laneHeight: noteExpressionLaneHeight(for: lane))
+                context.stroke(
+                    Path { p in
+                        p.move(to: CGPoint(x: 0, y: y))
+                        p.addLine(to: CGPoint(x: size.width, y: y))
+                    },
+                    with: .color(laneColor(for: lane).opacity(0.18)),
+                    style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+                )
+            }
+        }
+    }
+
+    private func controllerLaneCanvas(for lane: MIDINoteExpressionLane) -> some View {
+        Canvas { context, size in
+            let events = controllerEvents(for: lane)
+            let laneBottom = size.height - 7
+            let color = laneColor(for: lane)
+
+            if events.count >= 2 {
+                var path = Path()
+                let first = displayControllerEventForRendering(events[0])
+                var previousPoint = CGPoint(
+                    x: controllerEventX(for: first),
+                    y: noteExpressionCenterY(
+                        forNormalizedValue: controllerEventNormalizedValue(for: first, lane: lane),
+                        laneHeight: noteExpressionLaneHeight(for: lane)
+                    )
+                )
+                path.move(to: previousPoint)
+                for event in events.dropFirst() {
+                    let displayEvent = displayControllerEventForRendering(event)
+                    let nextPoint = CGPoint(
+                        x: controllerEventX(for: displayEvent),
+                        y: noteExpressionCenterY(
+                            forNormalizedValue: controllerEventNormalizedValue(for: displayEvent, lane: lane),
+                            laneHeight: noteExpressionLaneHeight(for: lane)
+                        )
+                    )
+                    if lane == .sustain {
+                        path.addLine(to: CGPoint(x: nextPoint.x, y: previousPoint.y))
+                    }
+                    path.addLine(to: nextPoint)
+                    previousPoint = nextPoint
+                }
+                context.stroke(path, with: .color(color.opacity(0.36)), lineWidth: lane == .sustain ? 2.2 : 1.6)
+            }
+
+            for event in events {
+                let displayEvent = displayControllerEventForRendering(event)
+                let handleRect = controllerEventHandleRect(for: displayEvent, lane: lane)
+                let barX = handleRect.midX
+                let isSelected = selectedControllerEventIDs.contains(event.id)
+                let stemColor = color.opacity(isSelected ? 0.94 : 0.66)
+                let handleColor = isSelected ? Color.white.opacity(0.96) : color.opacity(0.92)
+
+                context.stroke(
+                    Path { p in
+                        p.move(to: CGPoint(x: barX, y: laneBottom))
+                        p.addLine(to: CGPoint(x: barX, y: handleRect.midY))
+                    },
+                    with: .color(stemColor),
+                    lineWidth: isSelected ? 2.2 : 1.4
+                )
+
+                if lane == .sustain {
+                    let width = max(8, pixelsPerBeat * 0.35)
+                    let blockRect = CGRect(
+                        x: handleRect.midX - (width * 0.5),
+                        y: handleRect.midY - 4,
+                        width: width,
+                        height: 8
+                    )
+                    context.fill(
+                        Path(roundedRect: blockRect, cornerRadius: 2),
+                        with: .color(handleColor.opacity(displayEvent.value >= 64 ? 0.95 : 0.55))
+                    )
+                }
+
+                context.fill(Path(ellipseIn: handleRect), with: .color(handleColor))
+                context.stroke(
+                    Path(ellipseIn: handleRect.insetBy(dx: -0.5, dy: -0.5)),
+                    with: .color(Color.black.opacity(0.34)),
+                    lineWidth: 1
+                )
+            }
+
+            if !selectedControllerEvents(in: lane).isEmpty {
+                let normalized = averageSelectedExpressionNormalizedValue(for: lane)
+                let y = noteExpressionCenterY(forNormalizedValue: normalized, laneHeight: noteExpressionLaneHeight(for: lane))
+                context.stroke(
+                    Path { p in
+                        p.move(to: CGPoint(x: 0, y: y))
+                        p.addLine(to: CGPoint(x: size.width, y: y))
+                    },
+                    with: .color(color.opacity(0.18)),
+                    style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+                )
+            }
+        }
     }
 
     // MARK: - Creation Preview
@@ -472,7 +1013,7 @@ struct PianoRollContentView: View {
 
     @ViewBuilder
     private var marqueeOverlay: some View {
-        if case .selecting(let origin, let current) = dragState {
+        if case .selecting(let origin, let current, _) = dragState {
             let rect = CGRect(
                 x: min(origin.x, current.x),
                 y: min(origin.y, current.y),
@@ -570,6 +1111,172 @@ struct PianoRollContentView: View {
         return nil
     }
 
+    private func displayNoteForRendering(_ note: MIDINoteEvent) -> MIDINoteEvent {
+        if let preview = dragPreviews[note.id], !isCopying {
+            return preview
+        }
+        return note
+    }
+
+    private func velocityAnchorX(for note: MIDINoteEvent) -> CGFloat {
+        let x = PianoRollLayout.xPosition(forBeat: note.startBeat + editableBeatOffset, pixelsPerBeat: pixelsPerBeat)
+        let width = max(4, CGFloat(note.duration) * pixelsPerBeat)
+        let leadingAnchor = min(max(6, width * 0.18), max(width - 4, 2))
+        return x + leadingAnchor
+    }
+
+    private func controllerEvents(for lane: MIDINoteExpressionLane) -> [MIDIControllerEvent] {
+        guard let controller = lane.controllerNumber else { return [] }
+        return sequence.sortedControllerEvents.filter { $0.controller == controller }
+    }
+
+    private func displayControllerEventForRendering(_ event: MIDIControllerEvent) -> MIDIControllerEvent {
+        controllerEventDragPreviews[event.id] ?? event
+    }
+
+    private func selectedControllerEvents(in lane: MIDINoteExpressionLane) -> [MIDIControllerEvent] {
+        controllerEvents(for: lane).filter { selectedControllerEventIDs.contains($0.id) }
+    }
+
+    private func controllerEventX(for event: MIDIControllerEvent) -> CGFloat {
+        PianoRollLayout.xPosition(forBeat: event.beat + editableBeatOffset, pixelsPerBeat: pixelsPerBeat)
+    }
+
+    private func laneColor(for lane: MIDINoteExpressionLane) -> Color {
+        switch lane {
+        case .velocity:
+            return .accentColor
+        case .channel:
+            return Color(red: 0.48, green: 0.80, blue: 0.94)
+        case .sustain:
+            return Color(red: 0.53, green: 0.86, blue: 0.58)
+        case .expression:
+            return Color(red: 0.94, green: 0.72, blue: 0.38)
+        }
+    }
+
+    private func averageSelectedExpressionNormalizedValue(for lane: MIDINoteExpressionLane) -> CGFloat {
+        let values: [CGFloat]
+        if lane.isControllerLane {
+            let events = selectedControllerEvents(in: lane)
+            guard !events.isEmpty else { return 0 }
+            values = events.map { controllerEventNormalizedValue(for: $0, lane: lane) }
+        } else {
+            let notes = selectedNotesInSequence
+            guard !notes.isEmpty else { return 0 }
+            values = notes.map { noteExpressionNormalizedValue(for: $0, lane: lane) }
+        }
+        return values.reduce(0, +) / CGFloat(values.count)
+    }
+
+    private func noteExpressionNormalizedValue(for note: MIDINoteEvent, lane: MIDINoteExpressionLane) -> CGFloat {
+        switch lane {
+        case .velocity:
+            return CGFloat(max(1, Int(note.velocity))) / 127.0
+        case .channel:
+            return CGFloat(max(0, Int(note.channel))) / 15.0
+        case .sustain, .expression:
+            return 0
+        }
+    }
+
+    private func controllerEventNormalizedValue(for event: MIDIControllerEvent, lane: MIDINoteExpressionLane) -> CGFloat {
+        switch lane {
+        case .sustain:
+            return event.value >= 64 ? 1.0 : 0.0
+        case .expression:
+            return CGFloat(event.value) / 127.0
+        case .velocity, .channel:
+            return 0
+        }
+    }
+
+    private func controllerEventValue(for lane: MIDINoteExpressionLane, normalized: CGFloat) -> UInt8 {
+        switch lane {
+        case .sustain:
+            return normalized >= 0.5 ? 127 : 0
+        case .expression:
+            return UInt8(clamping: Int((max(0, min(normalized, 1)) * 127.0).rounded()))
+        case .velocity, .channel:
+            return 0
+        }
+    }
+
+    private func noteExpressionCenterY(forNormalizedValue normalized: CGFloat, laneHeight: CGFloat) -> CGFloat {
+        let topPadding: CGFloat = 10
+        let bottomPadding: CGFloat = 8
+        let usableHeight = max(12, laneHeight - topPadding - bottomPadding)
+        return (laneHeight - bottomPadding) - (usableHeight * max(0, min(normalized, 1)))
+    }
+
+    private func noteExpressionHandleRect(for note: MIDINoteEvent, lane: MIDINoteExpressionLane) -> CGRect {
+        let centerY = noteExpressionCenterY(
+            forNormalizedValue: noteExpressionNormalizedValue(for: note, lane: lane),
+            laneHeight: noteExpressionLaneHeight(for: lane)
+        )
+        let diameter: CGFloat = selectedNoteIDs.contains(note.id) ? 8.5 : 7
+        return CGRect(
+            x: velocityAnchorX(for: note) - (diameter * 0.5),
+            y: centerY - (diameter * 0.5),
+            width: diameter,
+            height: diameter
+        )
+    }
+
+    private func controllerEventHandleRect(for event: MIDIControllerEvent, lane: MIDINoteExpressionLane) -> CGRect {
+        let displayEvent = displayControllerEventForRendering(event)
+        let centerY = noteExpressionCenterY(
+            forNormalizedValue: controllerEventNormalizedValue(for: displayEvent, lane: lane),
+            laneHeight: noteExpressionLaneHeight(for: lane)
+        )
+        let diameter: CGFloat = selectedControllerEventIDs.contains(event.id) ? 8.5 : 7
+        return CGRect(
+            x: controllerEventX(for: displayEvent) - (diameter * 0.5),
+            y: centerY - (diameter * 0.5),
+            width: diameter,
+            height: diameter
+        )
+    }
+
+    private func hitTestNoteExpressionLane(at point: CGPoint, lane: MIDINoteExpressionLane) -> MIDINoteEvent? {
+        let sorted = sequence.notes.sorted { lhs, rhs in
+            velocityAnchorX(for: displayNoteForRendering(lhs)) > velocityAnchorX(for: displayNoteForRendering(rhs))
+        }
+        for note in sorted {
+            let displayNote = displayNoteForRendering(note)
+            let handleRect = noteExpressionHandleRect(for: displayNote, lane: lane)
+            let stemRect = CGRect(
+                x: handleRect.midX - 4,
+                y: handleRect.minY,
+                width: 8,
+                height: noteExpressionLaneHeight(for: lane) - handleRect.minY
+            )
+            if handleRect.insetBy(dx: -6, dy: -6).contains(point) || stemRect.contains(point) {
+                return note
+            }
+        }
+        return nil
+    }
+
+    private func hitTestControllerEvent(at point: CGPoint, lane: MIDINoteExpressionLane) -> MIDIControllerEvent? {
+        let sorted = controllerEvents(for: lane).sorted { lhs, rhs in
+            controllerEventX(for: displayControllerEventForRendering(lhs)) > controllerEventX(for: displayControllerEventForRendering(rhs))
+        }
+        for event in sorted {
+            let handleRect = controllerEventHandleRect(for: event, lane: lane)
+            let stemRect = CGRect(
+                x: handleRect.midX - 4,
+                y: handleRect.minY,
+                width: 8,
+                height: noteExpressionLaneHeight(for: lane) - handleRect.minY
+            )
+            if handleRect.insetBy(dx: -6, dy: -6).contains(point) || stemRect.contains(point) {
+                return event
+            }
+        }
+        return nil
+    }
+
     // MARK: - Hover
 
     private func handleHover(_ phase: HoverPhase) {
@@ -585,7 +1292,11 @@ struct PianoRollContentView: View {
                 }
             } else {
                 hoveredNoteID = nil
-                NSCursor.arrow.set()
+                if selectedTool == .pencil {
+                    NSCursor.crosshair.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
             }
         case .ended:
             hoveredNoteID = nil
@@ -598,7 +1309,8 @@ struct PianoRollContentView: View {
     private func handleSingleClick(at location: CGPoint) {
         if let (note, _) = hitTestNote(at: location) {
             onFocusChanged?(true)
-            if NSEvent.modifierFlags.contains(.shift) {
+            selectedControllerEventIDs.removeAll()
+            if NSEvent.modifierFlags.contains(.command) {
                 if selectedNoteIDs.contains(note.id) {
                     selectedNoteIDs.remove(note.id)
                 } else {
@@ -622,8 +1334,117 @@ struct PianoRollContentView: View {
                 }
             }
             selectedNoteIDs.removeAll()
+            selectedControllerEventIDs.removeAll()
             onFocusChanged?(false)
         }
+    }
+
+    private func handleNoteExpressionLaneClick(at location: CGPoint, lane: MIDINoteExpressionLane) {
+        selectedExpressionLane = lane
+        if lane.isControllerLane {
+            guard let event = hitTestControllerEvent(at: location, lane: lane) else {
+                selectedControllerEventIDs.removeAll()
+                return
+            }
+            if NSEvent.modifierFlags.contains(.option) {
+                onRemoveControllerEvent?(event.id)
+                selectedControllerEventIDs.remove(event.id)
+                return
+            }
+            selectedNoteIDs.removeAll()
+            onFocusChanged?(true)
+            if NSEvent.modifierFlags.contains(.command) {
+                if selectedControllerEventIDs.contains(event.id) {
+                    selectedControllerEventIDs.remove(event.id)
+                } else {
+                    selectedControllerEventIDs.insert(event.id)
+                }
+            } else {
+                selectedControllerEventIDs = [event.id]
+            }
+            return
+        }
+        selectedControllerEventIDs.removeAll()
+        guard let note = hitTestNoteExpressionLane(at: location, lane: lane) else { return }
+        onFocusChanged?(true)
+        if NSEvent.modifierFlags.contains(.command) {
+            if selectedNoteIDs.contains(note.id) {
+                selectedNoteIDs.remove(note.id)
+            } else {
+                selectedNoteIDs.insert(note.id)
+            }
+        } else {
+            selectedNoteIDs = [note.id]
+        }
+    }
+
+    private func handleNoteExpressionLaneDoubleClick(at location: CGPoint, lane: MIDINoteExpressionLane) {
+        guard lane.isControllerLane, let controller = lane.controllerNumber else { return }
+        if hitTestControllerEvent(at: location, lane: lane) != nil { return }
+
+        let snappedDisplayBeat = snapResolution.snap(PianoRollLayout.beat(forX: location.x, pixelsPerBeat: pixelsPerBeat))
+        if let region = editableRegion, !region.contains(snappedDisplayBeat) { return }
+        let beat = containerRelativeBeat(snappedDisplayBeat)
+        let normalized = noteExpressionNormalizedValue(at: location.y, lane: lane)
+        let newEvent = MIDIControllerEvent(
+            controller: controller,
+            value: controllerEventValue(for: lane, normalized: normalized),
+            beat: max(0, beat)
+        )
+        selectedNoteIDs.removeAll()
+        selectedControllerEventIDs = [newEvent.id]
+        onAddControllerEvent?(newEvent)
+    }
+
+    private func updatedNoteExpressionValue(
+        note: MIDINoteEvent,
+        lane: MIDINoteExpressionLane,
+        deltaFromStartY startY: CGFloat,
+        currentY: CGFloat
+    ) -> MIDINoteEvent {
+        var updated = note
+        switch lane {
+        case .velocity:
+            let deltaVelocity = Int(((startY - currentY) * 0.85).rounded())
+            updated.velocity = UInt8(clamping: max(1, min(127, Int(note.velocity) + deltaVelocity)))
+        case .channel:
+            let laneHeight = noteExpressionLaneHeight(for: lane)
+            let topPadding: CGFloat = 10
+            let bottomPadding: CGFloat = 8
+            let usableHeight = max(12, laneHeight - topPadding - bottomPadding)
+            let normalized = 1.0 - ((max(topPadding, min(laneHeight - bottomPadding, currentY)) - topPadding) / usableHeight)
+            let channel = Int((normalized * 15.0).rounded())
+            updated.channel = UInt8(clamping: max(0, min(15, channel)))
+        case .sustain, .expression:
+            break
+        }
+        return updated
+    }
+
+    private func noteExpressionNormalizedValue(at y: CGFloat, lane: MIDINoteExpressionLane) -> CGFloat {
+        let laneHeight = noteExpressionLaneHeight(for: lane)
+        let topPadding: CGFloat = 10
+        let bottomPadding: CGFloat = 8
+        let usableHeight = max(12, laneHeight - topPadding - bottomPadding)
+        return 1.0 - ((max(topPadding, min(laneHeight - bottomPadding, y)) - topPadding) / usableHeight)
+    }
+
+    private func updatedControllerEvent(
+        _ event: MIDIControllerEvent,
+        lane: MIDINoteExpressionLane,
+        beatDelta: Double,
+        currentY: CGFloat
+    ) -> MIDIControllerEvent {
+        var updated = event
+        var nextBeat = max(0, event.beat + beatDelta)
+        if let region = editableRegion {
+            let lower = containerRelativeBeat(region.lowerBound)
+            let upper = containerRelativeBeat(region.upperBound)
+            nextBeat = min(max(lower, nextBeat), upper)
+        }
+        updated.beat = nextBeat
+        updated.value = controllerEventValue(for: lane, normalized: noteExpressionNormalizedValue(at: currentY, lane: lane))
+        return updated
     }
 
     private func handleDoubleClick(at location: CGPoint) {
@@ -639,11 +1460,108 @@ struct PianoRollContentView: View {
             startBeat: beat,
             duration: snapResolution.beatsPerUnit
         )
+        selectedControllerEventIDs.removeAll()
         onAddNote?(newNote)
         onNotePreview?(pitch, true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [onNotePreview] in
             onNotePreview?(pitch, false)
         }
+    }
+
+    private func noteExpressionLaneDragGesture(for lane: MIDINoteExpressionLane) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                selectedExpressionLane = lane
+                if lane.isControllerLane {
+                    if controllerLaneDragState == nil {
+                        guard let event = hitTestControllerEvent(at: value.startLocation, lane: lane) else { return }
+                        let targetIDs: Set<ID<MIDIControllerEvent>>
+                        if selectedControllerEventIDs.contains(event.id) {
+                            targetIDs = selectedControllerEventIDs
+                        } else {
+                            targetIDs = [event.id]
+                            selectedControllerEventIDs = [event.id]
+                        }
+                        selectedNoteIDs.removeAll()
+                        let originals = controllerEvents(for: lane).filter { targetIDs.contains($0.id) }
+                        controllerLaneDragState = PianoRollControllerLaneDragState(
+                            lane: lane,
+                            eventIDs: Array(targetIDs),
+                            originalEvents: originals,
+                            startBeat: snapResolution.snap(PianoRollLayout.beat(forX: value.startLocation.x, pixelsPerBeat: pixelsPerBeat)),
+                            startY: value.startLocation.y
+                        )
+                        onFocusChanged?(true)
+                    }
+
+                    guard let drag = controllerLaneDragState else { return }
+                    let currentBeat = snapResolution.snap(PianoRollLayout.beat(forX: value.location.x, pixelsPerBeat: pixelsPerBeat))
+                    let beatDelta = currentBeat - drag.startBeat
+                    var previews: [ID<MIDIControllerEvent>: MIDIControllerEvent] = [:]
+                    for event in drag.originalEvents {
+                        let updated = updatedControllerEvent(
+                            event,
+                            lane: lane,
+                            beatDelta: beatDelta,
+                            currentY: value.location.y
+                        )
+                        previews[updated.id] = updated
+                    }
+                    controllerEventDragPreviews.merge(previews) { _, new in new }
+                    return
+                }
+                if noteExpressionLaneDragState == nil {
+                    guard let note = hitTestNoteExpressionLane(at: value.startLocation, lane: lane) else { return }
+                    let targetIDs: Set<ID<MIDINoteEvent>>
+                    if selectedNoteIDs.contains(note.id) {
+                        targetIDs = selectedNoteIDs
+                    } else {
+                        targetIDs = [note.id]
+                        selectedNoteIDs = [note.id]
+                    }
+                    let originals = sequence.notes.filter { targetIDs.contains($0.id) }
+                    noteExpressionLaneDragState = PianoRollNoteExpressionLaneDragState(
+                        noteIDs: Array(targetIDs),
+                        originalNotes: originals,
+                        startY: value.startLocation.y
+                    )
+                    onFocusChanged?(true)
+                }
+
+                guard let drag = noteExpressionLaneDragState else { return }
+                var previews: [ID<MIDINoteEvent>: MIDINoteEvent] = [:]
+                for note in drag.originalNotes {
+                    let updated = updatedNoteExpressionValue(
+                        note: note,
+                        lane: lane,
+                        deltaFromStartY: drag.startY,
+                        currentY: value.location.y
+                    )
+                    previews[updated.id] = updated
+                }
+                dragPreviews.merge(previews) { _, new in new }
+            }
+            .onEnded { _ in
+                if lane.isControllerLane {
+                    guard let drag = controllerLaneDragState else { return }
+                    for eventID in drag.eventIDs {
+                        if let preview = controllerEventDragPreviews[eventID] {
+                            onUpdateControllerEvent?(preview)
+                        }
+                        controllerEventDragPreviews.removeValue(forKey: eventID)
+                    }
+                    controllerLaneDragState = nil
+                    return
+                }
+                guard let drag = noteExpressionLaneDragState else { return }
+                for noteID in drag.noteIDs {
+                    if let preview = dragPreviews[noteID] {
+                        onUpdateNote?(preview)
+                    }
+                    dragPreviews.removeValue(forKey: noteID)
+                }
+                noteExpressionLaneDragState = nil
+            }
     }
 
     // MARK: - Unified Drag Gesture
@@ -660,31 +1578,47 @@ struct PianoRollContentView: View {
                         case .leftEdge:
                             dragState = .resizingLeft(noteID: note.id, originalStart: note.startBeat, originalDuration: note.duration)
                         case .body:
-                            dragState = .moving(
-                                noteID: note.id,
-                                startPitch: note.pitch,
-                                startBeat: note.startBeat,
-                                offsetBeat: 0,
-                                offsetPitch: 0
-                            )
-                            lastPreviewPitch = note.pitch
-                            onNotePreview?(note.pitch, true)
+                            if NSEvent.modifierFlags.contains(.control) {
+                                let targetIDs = selectedNoteIDs.contains(note.id) ? selectedNoteIDs : [note.id]
+                                let originals = sequence.notes.filter { targetIDs.contains($0.id) }
+                                dragState = .adjustingVelocity(
+                                    noteIDs: Array(targetIDs),
+                                    originalNotes: originals,
+                                    startY: value.startLocation.y
+                                )
+                            } else {
+                                dragState = .moving(
+                                    noteID: note.id,
+                                    startPitch: note.pitch,
+                                    startBeat: note.startBeat,
+                                    offsetBeat: 0,
+                                    offsetPitch: 0
+                                )
+                                lastPreviewPitch = note.pitch
+                                onNotePreview?(note.pitch, true)
+                            }
                         }
                         // Select the note if not already selected
                         if !selectedNoteIDs.contains(note.id) {
                             selectedNoteIDs = [note.id]
                         }
                         onFocusChanged?(true)
-                    } else if NSEvent.modifierFlags.contains(.command) {
-                        dragState = .selecting(origin: value.startLocation, current: value.location)
                     } else {
-                        let startDisplayBeat = snapResolution.snap(PianoRollLayout.beat(forX: value.startLocation.x, pixelsPerBeat: pixelsPerBeat))
-                        if editableRegion == nil || editableRegion!.contains(startDisplayBeat) {
-                            let beat = containerRelativeBeat(startDisplayBeat)
-                            let pitch = PianoRollLayout.pitch(forY: value.startLocation.y, lowPitch: lowPitch, highPitch: highPitch, rowHeight: rowHeight)
-                            let currentBeat = containerRelativeBeat(snapResolution.snap(PianoRollLayout.beat(forX: value.location.x, pixelsPerBeat: pixelsPerBeat)))
-                            dragState = .creating(pitch: pitch, startBeat: beat, currentBeat: currentBeat)
-                            onNotePreview?(pitch, true)
+                        if selectedTool == .pointer {
+                            dragState = .selecting(
+                                origin: value.startLocation,
+                                current: value.location,
+                                additive: NSEvent.modifierFlags.contains(.shift)
+                            )
+                        } else {
+                            let startDisplayBeat = snapResolution.snap(PianoRollLayout.beat(forX: value.startLocation.x, pixelsPerBeat: pixelsPerBeat))
+                            if editableRegion == nil || editableRegion!.contains(startDisplayBeat) {
+                                let beat = containerRelativeBeat(startDisplayBeat)
+                                let pitch = PianoRollLayout.pitch(forY: value.startLocation.y, lowPitch: lowPitch, highPitch: highPitch, rowHeight: rowHeight)
+                                let currentBeat = containerRelativeBeat(snapResolution.snap(PianoRollLayout.beat(forX: value.location.x, pixelsPerBeat: pixelsPerBeat)))
+                                dragState = .creating(pitch: pitch, startBeat: beat, currentBeat: currentBeat)
+                                onNotePreview?(pitch, true)
+                            }
                         }
                     }
                 }
@@ -753,8 +1687,18 @@ struct PianoRollContentView: View {
                     let currentBeat = containerRelativeBeat(snapResolution.snap(PianoRollLayout.beat(forX: value.location.x, pixelsPerBeat: pixelsPerBeat)))
                     dragState = .creating(pitch: pitch, startBeat: startBeat, currentBeat: currentBeat)
 
-                case .selecting:
-                    dragState = .selecting(origin: value.startLocation, current: value.location)
+                case let .selecting(origin, _, additive):
+                    dragState = .selecting(origin: origin, current: value.location, additive: additive)
+
+                case let .adjustingVelocity(_, originalNotes, startY):
+                    let deltaVelocity = Int(((startY - value.location.y) * 0.6).rounded())
+                    var previews: [ID<MIDINoteEvent>: MIDINoteEvent] = [:]
+                    for note in originalNotes {
+                        var updated = note
+                        updated.velocity = UInt8(clamping: max(1, min(127, Int(note.velocity) + deltaVelocity)))
+                        previews[updated.id] = updated
+                    }
+                    dragPreviews = previews
 
                 case .none:
                     break
@@ -800,7 +1744,7 @@ struct PianoRollContentView: View {
                     onAddNote?(newNote)
                     onNotePreview?(pitch, false)
 
-                case .selecting(let origin, _):
+                case let .selecting(origin, _, additive):
                     let endPoint = value.location
                     let rect = CGRect(
                         x: min(origin.x, endPoint.x),
@@ -818,7 +1762,7 @@ struct PianoRollContentView: View {
                             ids.insert(note.id)
                         }
                     }
-                    selectedNoteIDs = ids
+                    selectedNoteIDs = additive ? selectedNoteIDs.union(ids) : ids
                     if !ids.isEmpty {
                         onFocusChanged?(true)
                         // Preview the selection as a chord, capped to avoid blowing speakers.
@@ -883,5 +1827,113 @@ struct PianoRollRulerView: View {
             }
         }
         .frame(width: CGFloat(totalBeats) * pixelsPerBeat, height: 20)
+    }
+}
+
+private struct PianoRollKeyboardRow: View {
+    let note: UInt8
+    let rowHeight: CGFloat
+    let isBlack: Bool
+    let isC: Bool
+
+    private var labelFontSize: CGFloat {
+        max(7, min(rowHeight - 2, 10))
+    }
+
+    private var blackKeyWidth: CGFloat {
+        max(22, PianoRollLayout.keyboardWidth - 10)
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            whiteKeyBody
+
+            if isBlack {
+                blackKeyBody
+            }
+
+            labelOverlay
+        }
+        .frame(width: PianoRollLayout.keyboardWidth, height: rowHeight)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(isBlack ? Color.black.opacity(0.58) : Color.black.opacity(0.14))
+                .frame(height: 0.5)
+        }
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(isC ? Color(red: 0.27, green: 0.63, blue: 0.94).opacity(0.92) : Color.clear)
+                .frame(width: isC ? 2 : 0)
+        }
+    }
+
+    private var whiteKeyBody: some View {
+        Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(isBlack ? 0.18 : 0.96),
+                        Color.white.opacity(isBlack ? 0.11 : 0.86),
+                        Color.black.opacity(isBlack ? 0.16 : 0.09)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.white.opacity(isBlack ? 0.06 : 0.36))
+                    .frame(width: 1)
+            }
+    }
+
+    private var blackKeyBody: some View {
+        RoundedRectangle(cornerRadius: max(2, min(rowHeight * 0.18, 4)), style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.23, green: 0.24, blue: 0.28),
+                        Color(red: 0.08, green: 0.09, blue: 0.12)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(width: blackKeyWidth, height: max(rowHeight - 1, 4))
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.08))
+                    .frame(width: 1)
+                    .padding(.vertical, 2)
+            }
+            .shadow(color: Color.black.opacity(0.28), radius: 1.2, x: 0, y: 0.8)
+    }
+
+    private var labelOverlay: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+
+            if isC {
+                Text(PianoLayout.noteName(note))
+                    .font(.system(size: labelFontSize, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(isBlack ? Color.white.opacity(0.92) : Color.black.opacity(0.82))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, max(1, rowHeight * 0.08))
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(isBlack ? Color.white.opacity(0.10) : Color.black.opacity(0.08))
+                    )
+            } else if !isBlack, rowHeight >= 11 {
+                Text(PianoLayout.noteName(note))
+                    .font(.system(size: labelFontSize, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.black.opacity(0.50))
+            } else if isBlack, rowHeight >= 11 {
+                Text(PianoLayout.noteName(note))
+                    .font(.system(size: labelFontSize, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.56))
+            }
+        }
+        .padding(.leading, 2)
+        .padding(.trailing, isBlack ? 4 : 3)
     }
 }

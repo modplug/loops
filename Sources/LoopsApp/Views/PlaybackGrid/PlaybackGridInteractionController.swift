@@ -64,6 +64,16 @@ public final class PlaybackGridInteractionController {
         return overlays
     }
 
+    public var activeMIDIMarqueeRect: CGRect? {
+        guard case let .selectingMIDINotes(context) = state else { return nil }
+        return CGRect(
+            x: min(context.startPoint.x, context.currentPoint.x),
+            y: min(context.startPoint.y, context.currentPoint.y),
+            width: abs(context.currentPoint.x - context.startPoint.x),
+            height: abs(context.currentPoint.y - context.startPoint.y)
+        )
+    }
+
     public var activeAutomationBreakpointOverlays: [PlaybackGridAutomationBreakpointOverlay] {
         var overlays: [PlaybackGridAutomationBreakpointOverlay] = []
         if let ghost = automationGhostOverlay { overlays.append(ghost) }
@@ -223,9 +233,9 @@ public final class PlaybackGridInteractionController {
                     startPoint: point,
                     startBeat: startBeat,
                     pitch: pitch,
+                    didDrag: false,
                     provisionalNoteID: nil
                 ))
-                previewMIDIPitchIfNeeded(pitch)
                 log("midi create armed container=\(containerID.rawValue) startBeat=\(format(startBeat)) pitch=\(pitch)")
                 return
             }
@@ -255,6 +265,15 @@ public final class PlaybackGridInteractionController {
 
         case .trackBackground:
             if beginInlineMIDILaneResizeIfNeeded(
+                event: event,
+                point: point,
+                snapshot: snapshot,
+                preferredTrackID: pick.trackID
+            ) {
+                return
+            }
+
+            if beginMIDINoteMarqueeSelectionIfNeeded(
                 event: event,
                 point: point,
                 snapshot: snapshot,
@@ -319,14 +338,6 @@ public final class PlaybackGridInteractionController {
                 return
             }
 
-            if event.modifierFlags.contains(.option) {
-                sink?.removeMIDINote(containerID, noteID: noteID)
-                pendingMIDINoteUpdates.removeValue(forKey: noteID)
-                log("midi remove note container=\(containerID.rawValue) note=\(noteID.rawValue)")
-                state = .idle
-                return
-            }
-
             guard let (_, container) = containerAndTrack(containerID: containerID, trackID: trackID, in: snapshot.tracks),
                   let note = container.midiSequence?.notes.first(where: { $0.id == noteID }) ?? container.resolved(using: { id in
                       snapshot.tracks
@@ -338,21 +349,50 @@ public final class PlaybackGridInteractionController {
             }
 
             sink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
+            sink?.setSelectedMIDINotes(
+                containerID: containerID,
+                trackID: trackID,
+                noteIDs: [noteID],
+                additive: event.modifierFlags.contains(.shift)
+            )
             if event.clickCount >= 2 {
                 sink?.openContainerEditor(containerID, trackID: trackID)
                 state = .idle
                 return
             }
 
+            let selectedTool = selectedMIDITool(trackID: trackID, snapshot: snapshot)
+            let isVelocityEdit = pointInMIDIVelocityLane(
+                point,
+                containerID: containerID,
+                trackID: trackID,
+                snapshot: snapshot
+            ) || event.modifierFlags.contains(.control)
+            let dragKind = event.modifierFlags.contains(.option)
+                ? PlaybackGridMIDINoteDragKind.move
+                : (isVelocityEdit ? .velocity : midiDragKind(for: pick.zone))
+
+            // Pencil mode should stay note-aware: clicking an existing note selects it,
+            // while empty-space interactions remain note creation. Edge resize and
+            // velocity editing still work because they are explicit edit handles.
+            if selectedTool == .pencil,
+               dragKind == .move,
+               !event.modifierFlags.contains(.option) {
+                state = .idle
+                return
+            }
+
             state = .draggingMIDINote(context: PlaybackGridMIDINoteDragContext(
-                kind: midiDragKind(for: pick.zone),
+                kind: dragKind,
                 containerID: containerID,
                 trackID: trackID,
                 noteID: noteID,
                 startPoint: point,
                 originalNote: note,
                 containerStartBar: container.startBar,
-                containerLengthBars: container.lengthBars
+                containerLengthBars: container.lengthBars,
+                isCopying: event.modifierFlags.contains(.option),
+                didDrag: false
             ))
             midiGhostOverlay = PlaybackGridMIDINoteOverlay(
                 containerID: containerID,
@@ -366,9 +406,11 @@ public final class PlaybackGridInteractionController {
                 note: note,
                 isGhost: false
             )
-            pendingMIDINoteUpdates[note.id] = (containerID: containerID, note: note)
+            if !event.modifierFlags.contains(.option) {
+                pendingMIDINoteUpdates[note.id] = (containerID: containerID, note: note)
+            }
             previewMIDIPitchIfNeeded(note.pitch)
-            log("midi drag begin container=\(containerID.rawValue) note=\(noteID.rawValue)")
+            log("midi drag begin container=\(containerID.rawValue) note=\(noteID.rawValue) copying=\(event.modifierFlags.contains(.option))")
 
         case .automationBreakpoint:
             guard let trackID = pick.trackID,
@@ -706,6 +748,14 @@ public final class PlaybackGridInteractionController {
                 ) {
                     return
                 }
+                if beginMIDINoteMarqueeSelectionIfNeeded(
+                    event: event,
+                    point: point,
+                    snapshot: snapshot,
+                    preferredTrackID: nil
+                ) {
+                    return
+                }
                 sink?.setPlayhead(bar: snappedBarForX(point.x, snapshot: snapshot))
                 if beginMIDINoteCreateFromTrackBackground(
                     event: event,
@@ -760,10 +810,32 @@ public final class PlaybackGridInteractionController {
             return false
 
         case let .creatingMIDINote(context):
-            previewMIDINoteCreation(context: context, point: point, snapshot: snapshot)
+            var updated = context
+            if !updated.didDrag {
+                let distance = hypot(point.x - updated.startPoint.x, point.y - updated.startPoint.y)
+                guard distance >= 4 else { return false }
+                updated.didDrag = true
+                state = .creatingMIDINote(context: updated)
+                previewMIDIPitchIfNeeded(updated.pitch)
+            }
+            previewMIDINoteCreation(context: updated, point: point, snapshot: snapshot)
+            return true
+
+        case let .selectingMIDINotes(context):
+            state = .selectingMIDINotes(context: PlaybackGridMIDIMarqueeContext(
+                containerID: context.containerID,
+                trackID: context.trackID,
+                startPoint: context.startPoint,
+                currentPoint: point,
+                additive: context.additive
+            ))
             return true
 
         case let .draggingMIDINote(context):
+            if !context.didDrag {
+                let distance = hypot(point.x - context.startPoint.x, point.y - context.startPoint.y)
+                guard distance >= 3 else { return false }
+            }
             return handleMIDINoteDrag(
                 context: context,
                 point: point,
@@ -861,13 +933,28 @@ public final class PlaybackGridInteractionController {
             }
 
         case let .draggingMIDINote(context):
-            handleMIDINoteDrag(
+            let dragDistanceX = abs(point.x - context.startPoint.x)
+            let dragDistanceY = abs(point.y - context.startPoint.y)
+            let isClickLikeCopyGesture = context.isCopying && dragDistanceX < 2 && dragDistanceY < 2
+            if isClickLikeCopyGesture {
+                sink?.removeMIDINote(context.containerID, noteID: context.noteID)
+                pendingMIDINoteUpdates.removeValue(forKey: context.noteID)
+                log("midi remove note container=\(context.containerID.rawValue) note=\(context.noteID.rawValue)")
+                stopMIDIPreviewIfNeeded()
+                break
+            }
+            let didChange = handleMIDINoteDrag(
                 context: context,
                 point: point,
                 snapshot: snapshot,
                 modifiers: modifiers,
                 forceEmit: true
             )
+            if context.isCopying, !context.didDrag, !didChange {
+                sink?.removeMIDINote(context.containerID, noteID: context.noteID)
+                pendingMIDINoteUpdates.removeValue(forKey: context.noteID)
+                log("midi remove note container=\(context.containerID.rawValue) note=\(context.noteID.rawValue)")
+            }
             log("midi drag end")
             stopMIDIPreviewIfNeeded()
             break
@@ -908,6 +995,36 @@ public final class PlaybackGridInteractionController {
         case let .creatingMIDINote(context):
             commitMIDINoteCreation(context: context, point: point, snapshot: snapshot)
             stopMIDIPreviewIfNeeded()
+
+        case let .selectingMIDINotes(context):
+            let dragDistance = hypot(point.x - context.startPoint.x, point.y - context.startPoint.y)
+            if dragDistance < 3 {
+                sink?.setPlayhead(bar: snappedBarForX(point.x, snapshot: snapshot))
+                sink?.setSelectedMIDINotes(
+                    containerID: context.containerID,
+                    trackID: context.trackID,
+                    noteIDs: context.additive ? snapshot.selectedMIDINoteIDs : [],
+                    additive: false
+                )
+            } else {
+                let selectedIDs = midiNoteIDs(
+                    intersecting: CGRect(
+                        x: min(context.startPoint.x, point.x),
+                        y: min(context.startPoint.y, point.y),
+                        width: abs(point.x - context.startPoint.x),
+                        height: abs(point.y - context.startPoint.y)
+                    ),
+                    containerID: context.containerID,
+                    trackID: context.trackID,
+                    snapshot: snapshot
+                )
+                sink?.setSelectedMIDINotes(
+                    containerID: context.containerID,
+                    trackID: context.trackID,
+                    noteIDs: selectedIDs,
+                    additive: context.additive
+                )
+            }
 
         case let .drawingAutomationShape(context):
             applyAutomationShape(context: context, endPoint: point, snapshot: snapshot)
@@ -1045,23 +1162,16 @@ public final class PlaybackGridInteractionController {
         point: CGPoint,
         snapshot: PlaybackGridSnapshot
     ) -> Bool {
-        guard track.kind == .midi else { return false }
-        guard event.clickCount == 1 else { return false }
-        guard zone == .move else { return false }
-        let blockedMods: NSEvent.ModifierFlags = [.option, .command, .control]
-        guard event.modifierFlags.intersection(blockedMods).isEmpty else { return false }
-        guard let baseRect = containerRect(containerID: containerID, trackID: trackID, snapshot: snapshot) else {
-            return false
-        }
-        let pitchRect = midiPitchRect(baseRect: baseRect, trackID: trackID, snapshot: snapshot)
-        if pitchRect.maxY > baseRect.maxY {
-            // Inline MIDI lane enabled: use the dedicated lane below the clip.
-            return point.y >= baseRect.maxY && point.y <= pitchRect.maxY
-        }
-
-        // No inline lane: keep top portion available for container-level gestures.
-        let drawThresholdY = baseRect.minY + baseRect.height * 0.45
-        return point.y >= drawThresholdY && point.y <= baseRect.maxY
+        let _ = event
+        let _ = zone
+        let _ = track
+        let _ = containerID
+        let _ = trackID
+        let _ = point
+        let _ = snapshot
+        // Dragging the clip body should always remain an arranger/container gesture.
+        // MIDI note creation belongs to the inline lane/editor surfaces, not the clip rectangle.
+        return false
     }
 
     private func beginInlineMIDILaneResizeIfNeeded(
@@ -1145,6 +1255,7 @@ public final class PlaybackGridInteractionController {
             snapshot: snapshot,
             preferredTrackID: preferredTrackID
         ),
+        selectedMIDITool(trackID: target.track.id, snapshot: snapshot) == .pencil,
         let baseRect = containerRect(
             containerID: target.container.id,
             trackID: target.track.id,
@@ -1178,10 +1289,39 @@ public final class PlaybackGridInteractionController {
             startPoint: point,
             startBeat: startBeat,
             pitch: pitch,
+            didDrag: false,
             provisionalNoteID: nil
         ))
-        previewMIDIPitchIfNeeded(pitch)
         log("midi create armed container=\(target.container.id.rawValue) startBeat=\(format(startBeat)) pitch=\(pitch) source=track-bg")
+        return true
+    }
+
+    private func beginMIDINoteMarqueeSelectionIfNeeded(
+        event: NSEvent,
+        point: CGPoint,
+        snapshot: PlaybackGridSnapshot,
+        preferredTrackID: ID<Track>?
+    ) -> Bool {
+        guard event.clickCount == 1 else { return false }
+        let blockedMods: NSEvent.ModifierFlags = [.option, .command, .control]
+        guard event.modifierFlags.intersection(blockedMods).isEmpty else { return false }
+        guard let target = resolveMIDINoteCreateTarget(
+            point: point,
+            snapshot: snapshot,
+            preferredTrackID: preferredTrackID
+        ),
+        selectedMIDITool(trackID: target.track.id, snapshot: snapshot) == .pointer else {
+            return false
+        }
+
+        sink?.selectContainer(target.container.id, trackID: target.track.id, modifiers: event.modifierFlags)
+        state = .selectingMIDINotes(context: PlaybackGridMIDIMarqueeContext(
+            containerID: target.container.id,
+            trackID: target.track.id,
+            startPoint: point,
+            currentPoint: point,
+            additive: event.modifierFlags.contains(.shift)
+        ))
         return true
     }
 
@@ -1235,12 +1375,41 @@ public final class PlaybackGridInteractionController {
         let inlineHeight = snapshot.inlineMIDILaneHeights[trackID] ?? 0
         guard inlineHeight > 0 else { return baseRect }
         let automationExtra = automationTrackExtraHeight(trackID: trackID, snapshot: snapshot)
+        let noteAreaHeight = snapshot.inlineMIDIConfigs[trackID]?.noteAreaHeight(totalInlineHeight: inlineHeight) ?? inlineHeight
         return CGRect(
             x: baseRect.minX,
             y: baseRect.maxY + automationExtra,
             width: baseRect.width,
-            height: inlineHeight
+            height: noteAreaHeight
         )
+    }
+
+    private func midiVelocityLaneRect(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect? {
+        guard let config = snapshot.inlineMIDIConfigs[trackID],
+              let velocityLane = config.detailLanes.first(where: { $0.lane == .velocity }),
+              let baseRect = containerRect(containerID: containerID, trackID: trackID, snapshot: snapshot) else {
+            return nil
+        }
+        let noteRect = midiPitchRect(baseRect: baseRect, trackID: trackID, snapshot: snapshot)
+        return CGRect(
+            x: noteRect.minX,
+            y: noteRect.maxY,
+            width: noteRect.width,
+            height: velocityLane.height
+        )
+    }
+
+    private func pointInMIDIVelocityLane(
+        _ point: CGPoint,
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> Bool {
+        midiVelocityLaneRect(containerID: containerID, trackID: trackID, snapshot: snapshot)?.contains(point) == true
     }
 
     private func isPointInInlineMIDILane(
@@ -1274,6 +1443,45 @@ public final class PlaybackGridInteractionController {
             )
         }
         return nil
+    }
+
+    private func midiNoteIDs(
+        intersecting rect: CGRect,
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> Set<ID<MIDINoteEvent>> {
+        guard let (_, container) = containerAndTrack(
+            containerID: containerID,
+            trackID: trackID,
+            in: snapshot.tracks
+        ),
+        let baseRect = containerRect(containerID: containerID, trackID: trackID, snapshot: snapshot),
+        let notes = container.midiSequence?.notes,
+        !notes.isEmpty else {
+            return []
+        }
+
+        let laneRect = midiPitchRect(baseRect: baseRect, trackID: trackID, snapshot: snapshot)
+        let resolved = resolvedMIDILayout(
+            trackID: trackID,
+            laneHeight: laneRect.height,
+            snapshot: snapshot
+        )
+        var selected: Set<ID<MIDINoteEvent>> = []
+        for note in notes {
+            guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+                note: note,
+                containerLengthBars: container.lengthBars,
+                laneRect: laneRect,
+                timeSignature: snapshot.timeSignature,
+                resolved: resolved
+            ) else { continue }
+            if rect.intersects(noteRect) {
+                selected.insert(note.id)
+            }
+        }
+        return selected
     }
 
     private func automationTrackExtraHeight(trackID: ID<Track>, snapshot: PlaybackGridSnapshot) -> CGFloat {
@@ -1558,6 +1766,7 @@ public final class PlaybackGridInteractionController {
         forceEmit: Bool = false
     ) -> Bool {
         let previousLive = midiLiveOverlay
+        var updatedContext = context
         let beatsPerBar = Double(snapshot.timeSignature.beatsPerBar)
         let deltaX = point.x - context.startPoint.x
         let deltaBars = Double(deltaX / snapshot.pixelsPerBar)
@@ -1614,19 +1823,35 @@ public final class PlaybackGridInteractionController {
             newStart = max(0, newStart)
             updated.startBeat = newStart
             updated.duration = max(minimumDuration, originalEnd - newStart)
+
+        case .velocity:
+            let deltaVelocity = Int(((context.startPoint.y - point.y) * 0.6).rounded())
+            let newVelocity = max(1, min(127, Int(context.originalNote.velocity) + deltaVelocity))
+            updated.velocity = UInt8(clamping: newVelocity)
         }
 
-        pendingMIDINoteUpdates[context.noteID] = (
-            containerID: context.containerID,
-            note: updated
-        )
-        if forceEmit {
-            flushPendingMIDINoteUpdate(
-                noteID: context.noteID,
-                originalNote: context.originalNote
+        updatedContext.didDrag = context.didDrag
+            || abs(point.x - context.startPoint.x) >= 2
+            || abs(point.y - context.startPoint.y) >= 2
+        state = .draggingMIDINote(context: updatedContext)
+
+        if !context.isCopying {
+            pendingMIDINoteUpdates[context.noteID] = (
+                containerID: context.containerID,
+                note: updated
             )
-        } else {
-            PlaybackGridPerfLogger.bump("interaction.midiEmit.bufferedUntilMouseUp")
+            if forceEmit {
+                flushPendingMIDINoteUpdate(
+                    noteID: context.noteID,
+                    originalNote: context.originalNote
+                )
+            } else {
+                PlaybackGridPerfLogger.bump("interaction.midiEmit.bufferedUntilMouseUp")
+            }
+        } else if forceEmit, updatedContext.didDrag {
+            var copiedNote = updated
+            copiedNote.id = ID<MIDINoteEvent>()
+            sink?.addMIDINote(context.containerID, note: copiedNote)
         }
         midiLiveOverlay = PlaybackGridMIDINoteOverlay(
             containerID: context.containerID,
@@ -1810,6 +2035,13 @@ public final class PlaybackGridInteractionController {
             laneHeight: laneHeight,
             snapshot: snapshot
         )
+    }
+
+    private func selectedMIDITool(trackID: ID<Track>?, snapshot: PlaybackGridSnapshot) -> MIDITool {
+        guard let trackID, let config = snapshot.inlineMIDIConfigs[trackID] else {
+            return .pencil
+        }
+        return config.tool
     }
 
     private func midiDragKind(for zone: GridContainerZone?) -> PlaybackGridMIDINoteDragKind {

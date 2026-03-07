@@ -55,8 +55,9 @@ public struct MainContentView: View {
     @State private var headerDragStartWidth: CGFloat = 0
     @State private var pendingTrackAutomationLane: PendingEffectSelection?
     @State private var pianoRollEditorState = PianoRollEditorState()
+    @State private var liveTrackHeightPreviews: [ID<Track>: CGFloat] = [:]
     @State private var horizontalScrollCoordinator = TimelineHorizontalScrollCoordinator()
-    @State private var verticalScrollCoordinator = TimelineVerticalScrollCoordinator()
+    @State private var timelineVerticalScrollView: NSScrollView?
     @State private var ghostDropState = GhostTrackDropState()
     @State private var showTempoImportAlert = false
     @State private var pendingTempoImport: PendingTempoImport?
@@ -332,6 +333,28 @@ public struct MainContentView: View {
         .focusEffectDisabled()
         .focused($focusedField, equals: .main)
         .onAppear { focusedField = .main }
+        .inlineMIDIInputMonitor(
+            shouldHandle: {
+                pianoRollEditorState.isExpanded
+                    && pianoRollEditorState.trackID != nil
+                    && !isTextFieldFocused
+            },
+            onZoomIn: {
+                guard let trackID = pianoRollEditorState.trackID else { return }
+                adjustInlineMIDIRowHeight(for: trackID, delta: 1.5)
+            },
+            onZoomOut: {
+                guard let trackID = pianoRollEditorState.trackID else { return }
+                adjustInlineMIDIRowHeight(for: trackID, delta: -1.5)
+            },
+            onMagnify: { magnification in
+                guard let trackID = pianoRollEditorState.trackID else { return }
+                adjustInlineMIDIRowHeight(
+                    for: trackID,
+                    delta: max(-8.0, min(8.0, magnification * 24.0))
+                )
+            }
+        )
         .onKeyPress(.space) {
             guard !isTextFieldFocused else { return .ignored }
             transportViewModel?.togglePlayPause()
@@ -350,6 +373,33 @@ public struct MainContentView: View {
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             openPianoRollSheet()
+            return .handled
+        }
+        .onKeyPress("+") {
+            guard !isTextFieldFocused else { return .ignored }
+            if pianoRollEditorState.isExpanded, let trackID = pianoRollEditorState.trackID {
+                adjustInlineMIDIRowHeight(for: trackID, delta: 1.5)
+                return .handled
+            }
+            timelineViewModel.zoomIn()
+            return .handled
+        }
+        .onKeyPress("=") {
+            guard !isTextFieldFocused else { return .ignored }
+            if pianoRollEditorState.isExpanded, let trackID = pianoRollEditorState.trackID {
+                adjustInlineMIDIRowHeight(for: trackID, delta: 1.5)
+                return .handled
+            }
+            timelineViewModel.zoomIn()
+            return .handled
+        }
+        .onKeyPress("-") {
+            guard !isTextFieldFocused else { return .ignored }
+            if pianoRollEditorState.isExpanded, let trackID = pianoRollEditorState.trackID {
+                adjustInlineMIDIRowHeight(for: trackID, delta: -1.5)
+                return .handled
+            }
+            timelineViewModel.zoomOut()
             return .handled
         }
         .onKeyPress("c", phases: .down) { keyPress in
@@ -612,124 +662,73 @@ public struct MainContentView: View {
 
     @ViewBuilder
     private func timelineContent(song: Song) -> some View {
-        // New baseline layout:
-        // 1) One horizontal scroll source for the entire timeline canvas.
-        // 2) Master dock fixed at bottom.
-        // 3) Header lanes and grid lanes vertically synchronized.
-        let regularTracks = song.tracks.filter { $0.kind != .master }
-        let masterTrack = song.tracks.first { $0.kind == .master }
-        let masterHeight: CGFloat = {
-            guard let masterTrack else { return TimelineViewModel.defaultTrackHeight }
-            let base = timelineViewModel.baseTrackHeight(for: masterTrack.id)
-            return timelineViewModel.trackHeight(for: masterTrack, baseHeight: base)
-        }()
-        let metalActive = true
-
+        let timelineTracks = song.tracks
         GeometryReader { geo in
             let timelineViewportWidth = max(200, geo.size.width - timelineViewModel.trackHeaderWidth - 4)
-            let topViewportHeight = max(120, geo.size.height - (masterTrack == nil ? 0 : (masterHeight + 1)))
-            let regularHeadersHeight = trackListContentHeight(regularTracks)
             let timelineContentWidth = max(timelineViewportWidth, timelineViewModel.totalWidth)
+            let inlineMIDILaneHeights = timelineInlineMIDILaneHeights(for: timelineTracks)
+            let inlineMIDIConfigs = timelineInlineMIDIConfigs(for: timelineTracks)
+            let effectiveTrackHeights = mergedTimelineTrackHeights()
+            let snapshot = PlaybackGridSnapshot(
+                tracks: timelineTracks,
+                sections: song.sections,
+                timeSignature: song.timeSignature,
+                pixelsPerBar: timelineViewModel.pixelsPerBar,
+                totalBars: timelineViewModel.totalBars,
+                trackHeights: effectiveTrackHeights,
+                inlineMIDILaneHeights: inlineMIDILaneHeights,
+                inlineMIDIConfigs: inlineMIDIConfigs,
+                automationExpandedTrackIDs: timelineViewModel.automationExpanded,
+                automationSubLaneHeight: TimelineViewModel.automationSubLaneHeight,
+                automationToolbarHeight: TimelineViewModel.automationToolbarHeight,
+                defaultTrackHeight: TimelineViewModel.defaultTrackHeight,
+                gridMode: timelineViewModel.gridMode,
+                selectedAutomationTool: timelineViewModel.selectedAutomationTool,
+                selectedContainerIDs: selectionState.effectiveSelectedContainerIDs,
+                selectedSectionID: selectionState.selectedSectionID,
+                selectedRange: timelineViewModel.selectedRange,
+                rangeSelection: selectionState.rangeSelection,
+                isSnapEnabled: timelineViewModel.isSnapEnabled,
+                showRulerAndSections: true,
+                playheadBar: timelineViewModel.playheadBar,
+                cursorX: timelineViewModel.cursorX,
+                bottomPadding: 0,
+                minimumContentHeight: max(120, geo.size.height)
+            )
+            let scene = buildTimelineScene(snapshot: snapshot)
+            let headerConfigurations = timelineTrackHeaderConfigurations(
+                scene: scene,
+                inlineMIDILaneHeights: inlineMIDILaneHeights,
+                inlineMIDIConfigs: inlineMIDIConfigs
+            )
 
             VStack(spacing: 0) {
-                HStack(alignment: .top, spacing: 0) {
+                automationFocusBar
+                ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 0) {
-                        ScrollView(.vertical, showsIndicators: false) {
-                            VStack(spacing: 0) {
-                                ScrollViewIntrospector { sv in
-                                    verticalScrollCoordinator.attachHeaderScrollView(sv)
-                                }
-                                .frame(height: 0)
-
-                                LazyVStack(spacing: 0, pinnedViews: metalActive ? [.sectionHeaders] : []) {
-                                    Section {
-                                        ForEach(regularTracks) { track in
-                                            VStack(spacing: 0) {
-                                                trackHeaderWithActions(track: track)
-                                                let midiLaneHeight = inlinePianoRollLaneHeight(for: track.id)
-                                                if midiLaneHeight > 0 {
-                                                    inlinePianoRollKeyboardLabels
-                                                        .frame(height: midiLaneHeight)
-                                                }
-                                            }
-                                            .opacity(draggingTrackID == track.id ? 0.4 : 1.0)
-                                            .onDrag {
-                                                draggingTrackID = track.id
-                                                return NSItemProvider(object: track.id.rawValue.uuidString as NSString)
-                                            }
-                                            .onDrop(of: [.text], delegate: TrackDropDelegate(
-                                                targetTrack: track,
-                                                draggingTrackID: $draggingTrackID,
-                                                song: song,
-                                                onReorder: { source, destination in
-                                                    projectViewModel.moveTrack(from: source, to: destination)
-                                                }
-                                            ))
-                                        }
-                                        if ghostDropState.isActive {
-                                            ForEach(ghostDropState.ghostTracks) { ghost in
-                                                ghostTrackHeader(ghost: ghost)
-                                            }
-                                        }
-                                        Color.clear
-                                            .frame(height: max(80, topViewportHeight - regularHeadersHeight))
-                                            .contentShape(Rectangle())
-                                            .onDrop(of: [.fileURL], delegate: EmptyAreaFileDropDelegate(
-                                                ghostDropState: ghostDropState,
-                                                timelineViewModel: timelineViewModel,
-                                                projectViewModel: projectViewModel,
-                                                onPerformDrop: { urls, bar in
-                                                    handleEmptyAreaDrop(urls: urls, startBar: bar, song: song)
-                                                }
-                                            ))
-                                            .contextMenu {
-                                                ForEach(TrackKind.creatableKinds, id: \.self) { kind in
-                                                    Button("Insert \(kind.displayName) Track") {
-                                                        let insertIndex = song.tracks.filter({ $0.kind != .master }).count
-                                                        projectViewModel.insertTrack(kind: kind, atIndex: insertIndex)
-                                                    }
-                                                }
-                                            }
-                                    } header: {
-                                        if metalActive {
-                                            VStack(spacing: 0) {
-                                                Color.clear.frame(height: TimelineCanvasView.rulerHeight)
-                                                Text("Sections")
-                                                    .font(.system(size: 9))
-                                                    .foregroundStyle(.secondary)
-                                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                            }
-                                            .frame(height: TimelineCanvasView.trackAreaTop)
-                                            .background(Color(nsColor: .controlBackgroundColor))
-                                        }
-                                    }
-                                }
-                            }
+                        ScrollViewIntrospector { sv in
+                            timelineVerticalScrollView = sv
                         }
-                        .frame(height: topViewportHeight)
+                        .frame(height: 0)
 
-                        if let masterTrack {
-                            Divider()
-                            trackHeaderWithActions(track: masterTrack)
-                                .frame(height: masterHeight)
-                        }
-                    }
-                    .frame(width: timelineViewModel.trackHeaderWidth)
-                    .background(Color(nsColor: .controlBackgroundColor))
-
-                    headerColumnResizeHandle
-
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ScrollViewIntrospector { sv in
-                                horizontalScrollCoordinator.attachScrollView(sv)
+                        HStack(alignment: .top, spacing: 0) {
+                            TimelineTrackHeaderListRepresentable(
+                                configurations: headerConfigurations,
+                                scene: scene,
+                                headerWidth: timelineViewModel.trackHeaderWidth
+                            )
+                            .frame(width: timelineViewModel.trackHeaderWidth, height: scene.contentHeight)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .contextMenu {
+                                trackCreationContextMenuItems
                             }
-                            .frame(height: 0)
 
-                            ScrollView(.vertical, showsIndicators: true) {
+                            headerColumnResizeHandle
+
+                            ScrollView(.horizontal, showsIndicators: true) {
                                 VStack(alignment: .leading, spacing: 0) {
                                     ScrollViewIntrospector { sv in
-                                        verticalScrollCoordinator.attachGridScrollView(sv)
+                                        horizontalScrollCoordinator.attachScrollView(sv)
                                     }
                                     .frame(height: 0)
 
@@ -738,12 +737,13 @@ public struct MainContentView: View {
                                         projectViewModel: projectViewModel,
                                         selectionState: selectionState,
                                         song: song,
-                                        tracks: regularTracks,
-                                        minHeight: topViewportHeight,
+                                        tracks: timelineTracks,
+                                        minHeight: scene.contentHeight,
                                         pianoRollState: pianoRollEditorState,
                                         ghostDropState: ghostDropState,
-                                        showRulerAndSections: metalActive,
+                                        showRulerAndSections: true,
                                         bottomPadding: 0,
+                                        prebuiltScene: scene,
                                         onDropFilesToNewTracks: { urls, bar in
                                             handleEmptyAreaDrop(urls: urls, startBar: bar, song: song)
                                         },
@@ -767,53 +767,19 @@ public struct MainContentView: View {
                                         onSectionSelect: { sectionID in
                                             selectionState.selectedSectionID = sectionID
                                         },
-                                    onRangeSelect: { range in
-                                        timelineViewModel.selectedRange = range
-                                    },
-                                    onRangeDeselect: {
-                                        timelineViewModel.clearSelectedRange()
-                                    },
-                                    debugLabel: "top"
-                                )
-                            }
-                            }
-                            .frame(width: timelineContentWidth, height: topViewportHeight, alignment: .topLeading)
-
-                            if let masterTrack {
-                                Divider()
-                                PlaybackGridView(
-                                    viewModel: timelineViewModel,
-                                    projectViewModel: projectViewModel,
-                                    selectionState: selectionState,
-                                    song: song,
-                                    tracks: [masterTrack],
-                                    minHeight: masterHeight,
-                                    pianoRollState: nil,
-                                    ghostDropState: nil,
-                                    showRulerAndSections: false,
-                                    bottomPadding: 0,
-                                    onDropFilesToNewTracks: nil,
-                                    onContainerDoubleClick: {
-                                        openContainerEditor()
-                                    },
-                                    onPlayheadPosition: { bar in
-                                        transportViewModel?.seek(toBar: bar)
-                                    },
-                                    onNotePreview: nil,
-                                    onOpenPianoRollSheet: nil,
-                                    onSectionSelect: nil,
-                                    onRangeSelect: { range in
-                                        timelineViewModel.selectedRange = range
-                                    },
-                                    onRangeDeselect: {
-                                        timelineViewModel.clearSelectedRange()
-                                    },
-                                    debugLabel: "master"
-                                )
-                                .frame(height: masterHeight)
+                                        onRangeSelect: { range in
+                                            timelineViewModel.selectedRange = range
+                                        },
+                                        onRangeDeselect: {
+                                            timelineViewModel.clearSelectedRange()
+                                        },
+                                        debugLabel: "timeline"
+                                    )
+                                    .frame(width: timelineContentWidth, height: scene.contentHeight, alignment: .topLeading)
+                                }
+                                .frame(width: timelineContentWidth, alignment: .topLeading)
                             }
                         }
-                        .frame(width: timelineContentWidth, alignment: .topLeading)
                     }
                 }
             }
@@ -853,7 +819,7 @@ public struct MainContentView: View {
                 )
                 horizontalScrollCoordinator.setOffset(newScrollOffset)
             },
-            onMagnify: { magnification, mouseXInWindow in
+            onMagnify: pianoRollEditorState.isExpanded ? nil : { magnification, mouseXInWindow in
                 guard let scrollView = horizontalScrollCoordinator.scrollView else { return }
                 let scrollViewOriginX = scrollView.convert(NSPoint.zero, to: nil).x
                 let mouseXRelativeToTimeline = mouseXInWindow - scrollViewOriginX
@@ -883,19 +849,22 @@ public struct MainContentView: View {
                 .frame(width: timelineViewModel.trackHeaderWidth)
             Spacer()
         }
+        .contentShape(Rectangle())
+        .contextMenu {
+            trackCreationContextMenuItems
+        }
         .onAppear {
             horizontalScrollCoordinator.onScroll = { [timelineViewModel] offsetX, viewportWidth in
                 timelineViewModel.updateVisibleXRange(scrollOffsetX: offsetX, viewportWidth: viewportWidth)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 resetTimelineScrollToStart()
-                verticalScrollCoordinator.resetToTop()
+                resetTimelineVerticalScrollToTop()
                 horizontalScrollCoordinator.reportCurrentPosition()
             }
         }
         .onDisappear {
             horizontalScrollCoordinator.detach()
-            verticalScrollCoordinator.detach()
         }
         .onChange(of: timelineViewModel.pixelsPerBar) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -905,12 +874,12 @@ public struct MainContentView: View {
         .onChange(of: song.id) { _, _ in
             DispatchQueue.main.async {
                 resetTimelineScrollToStart()
-                verticalScrollCoordinator.resetToTop()
+                resetTimelineVerticalScrollToTop()
                 horizontalScrollCoordinator.reportCurrentPosition()
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 resetTimelineScrollToStart()
-                verticalScrollCoordinator.resetToTop()
+                resetTimelineVerticalScrollToTop()
                 horizontalScrollCoordinator.reportCurrentPosition()
             }
         }
@@ -918,6 +887,12 @@ public struct MainContentView: View {
 
     private func resetTimelineScrollToStart() {
         horizontalScrollCoordinator.setOffset(0)
+    }
+
+    private func resetTimelineVerticalScrollToTop() {
+        guard let scrollView = timelineVerticalScrollView else { return }
+        scrollView.contentView.setBoundsOrigin(NSPoint(x: scrollView.contentView.bounds.origin.x, y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     // MARK: - Ruler Header (Docked at Top)
@@ -1159,20 +1134,38 @@ public struct MainContentView: View {
     }
 
     private func trackHeaderWithActions(track: Track) -> some View {
+        trackHeaderWithActions(
+            track: track,
+            automationLaneLabels: automationLaneLabels(for: track),
+            focusedAutomationLaneLabel: focusedAutomationLaneLabel(
+                for: track,
+                laneLabels: automationLaneLabels(for: track)
+            ),
+            height: timelineViewModel.trackHeight(
+                for: track,
+                baseHeight: effectiveBaseTrackHeight(for: track.id)
+            )
+        )
+    }
+
+    private func trackHeaderWithActions(
+        track: Track,
+        automationLaneLabels: [String],
+        focusedAutomationLaneLabel: String?,
+        height: CGFloat
+    ) -> some View {
         let isExpanded = timelineViewModel.automationExpanded.contains(track.id)
-        let laneLabels = automationLaneLabels(for: track)
-        let baseHeight = timelineViewModel.baseTrackHeight(for: track.id)
-        let perTrackHeight = timelineViewModel.trackHeight(for: track, baseHeight: baseHeight)
         let isSelected = selectionState.selectedTrackID == track.id
+        let isInlineMIDIExpanded = pianoRollEditorState.isExpanded && pianoRollEditorState.trackID == track.id
         return TrackHeaderView(
             track: track,
-            height: perTrackHeight,
+            height: height,
             inputPortName: inputPortName(for: track.inputPortID),
             outputPortName: outputPortName(for: track.outputPortID),
             midiDeviceName: midiDeviceName(for: track.midiInputDeviceID),
             midiChannelLabel: midiChannelLabel(for: track.midiInputChannel),
             isAutomationExpanded: isExpanded,
-            automationLaneLabels: laneLabels,
+            automationLaneLabels: automationLaneLabels,
             onMuteToggle: {
                 projectViewModel.toggleMute(trackID: track.id)
                 if let tracks = projectViewModel.currentSong?.tracks {
@@ -1197,10 +1190,35 @@ public struct MainContentView: View {
             isTrackSelected: isSelected,
             isMIDIActive: midiActivityMonitor?.isTrackActive(track.id) ?? false,
             headerWidth: timelineViewModel.trackHeaderWidth,
+            focusedAutomationLaneLabel: focusedAutomationLaneLabel,
+            isInlineMIDIExpanded: isInlineMIDIExpanded,
+            inlineMIDIScaleSummary: inlineMIDIScaleSummary(for: track.id),
+            selectedMIDITool: pianoRollEditorState.selectedTool,
+            onSelectMIDITool: isInlineMIDIExpanded ? { tool in
+                pianoRollEditorState.selectedTool = tool
+            } : nil,
+            onInlineMIDIZoomOut: isInlineMIDIExpanded ? {
+                adjustInlineMIDIRowHeight(for: track.id, delta: -1.5)
+            } : nil,
+            onInlineMIDIZoomIn: isInlineMIDIExpanded ? {
+                adjustInlineMIDIRowHeight(for: track.id, delta: 1.5)
+            } : nil,
+            onInlineMIDIFit: isInlineMIDIExpanded ? {
+                fitInlineMIDIRange(for: track.id)
+            } : nil,
+            onPreviewTrackHeight: { preview in
+                if let preview {
+                    liveTrackHeightPreviews[track.id] = preview
+                } else {
+                    liveTrackHeightPreviews.removeValue(forKey: track.id)
+                }
+            },
             onResizeTrack: { newHeight in
+                liveTrackHeightPreviews.removeValue(forKey: track.id)
                 timelineViewModel.setTrackHeight(newHeight, for: track.id)
             },
             onResetTrackHeight: {
+                liveTrackHeightPreviews.removeValue(forKey: track.id)
                 timelineViewModel.resetTrackHeight(for: track.id)
             },
             availableInputPorts: settingsViewModel?.inputPorts ?? [],
@@ -1633,16 +1651,21 @@ public struct MainContentView: View {
 
     private var addTrackMenu: some View {
         Menu {
-            ForEach(TrackKind.creatableKinds, id: \.self) { kind in
-                Button(kind.displayName) {
-                    projectViewModel.addTrack(kind: kind)
-                }
-            }
+            trackCreationContextMenuItems
         } label: {
             Label("Add Track", systemImage: "plus")
                 .font(.caption)
         }
         .menuStyle(.borderlessButton)
+    }
+
+    @ViewBuilder
+    private var trackCreationContextMenuItems: some View {
+        ForEach(TrackKind.creatableKinds, id: \.self) { kind in
+            Button(kind.displayName) {
+                projectViewModel.addTrack(kind: kind)
+            }
+        }
     }
 
     func inputPortName(for portID: String?) -> String {
@@ -1713,6 +1736,241 @@ public struct MainContentView: View {
         return "\(trackName) FX\(path.effectIndex)"
     }
 
+    private func adjustInlineMIDIRowHeight(for trackID: ID<Track>, delta: CGFloat) {
+        guard pianoRollEditorState.trackID == trackID else { return }
+        pianoRollEditorState.rowHeight = min(36, max(10, pianoRollEditorState.rowHeight + delta))
+    }
+
+    private func setInlineMIDIDetailLaneHeight(
+        lane: MIDINoteExpressionLane,
+        height: CGFloat
+    ) {
+        pianoRollEditorState.setNoteExpressionLaneHeight(height, for: lane)
+    }
+
+    private func adjustTimelineTrackHeight(for trackID: ID<Track>, delta: CGFloat) {
+        let currentHeight = effectiveBaseTrackHeight(for: trackID)
+        liveTrackHeightPreviews.removeValue(forKey: trackID)
+        timelineViewModel.setTrackHeight(currentHeight + delta, for: trackID)
+    }
+
+    private func shiftInlineMIDIPitchRange(for trackID: ID<Track>, semitoneDelta: Int) {
+        guard pianoRollEditorState.trackID == trackID else { return }
+        let currentLow = Int(pianoRollEditorState.lowPitch)
+        let currentHigh = Int(pianoRollEditorState.highPitch)
+        let span = max(1, currentHigh - currentLow)
+
+        var newLow = currentLow + semitoneDelta
+        var newHigh = currentHigh + semitoneDelta
+        if newLow < 0 {
+            newLow = 0
+            newHigh = min(127, span)
+        } else if newHigh > 127 {
+            newHigh = 127
+            newLow = max(0, 127 - span)
+        }
+
+        pianoRollEditorState.lowPitch = UInt8(clamping: newLow)
+        pianoRollEditorState.highPitch = UInt8(clamping: newHigh)
+    }
+
+    private func mergedTimelineTrackHeights() -> [ID<Track>: CGFloat] {
+        var heights = timelineViewModel.trackHeights
+        for (trackID, previewHeight) in liveTrackHeightPreviews {
+            heights[trackID] = previewHeight
+        }
+        return heights
+    }
+
+    private func effectiveBaseTrackHeight(for trackID: ID<Track>) -> CGFloat {
+        liveTrackHeightPreviews[trackID] ?? timelineViewModel.baseTrackHeight(for: trackID)
+    }
+
+    private func fitInlineMIDIRange(for trackID: ID<Track>) {
+        guard pianoRollEditorState.trackID == trackID,
+              let track = currentSong?.tracks.first(where: { $0.id == trackID }) else { return }
+        let notes = track.containers.compactMap { projectViewModel.resolvedMIDISequence($0)?.notes }.flatMap { $0 }
+        guard !notes.isEmpty else { return }
+        let sequence = MIDISequence(notes: notes)
+        pianoRollEditorState.fitToNotes(sequence: sequence)
+    }
+
+    private func inlineMIDIScaleSummary(for trackID: ID<Track>) -> String? {
+        guard pianoRollEditorState.isExpanded,
+              pianoRollEditorState.trackID == trackID else { return nil }
+        let visibleRows = Int(pianoRollEditorState.highPitch) - Int(pianoRollEditorState.lowPitch) + 1
+        return "\(visibleRows) keys"
+    }
+
+    private func timelineInlineMIDILaneHeights(for tracks: [Track]) -> [ID<Track>: CGFloat] {
+        var heights: [ID<Track>: CGFloat] = [:]
+        for track in tracks {
+            let laneHeight = inlinePianoRollLaneHeight(for: track.id)
+            if laneHeight > 0 {
+                heights[track.id] = laneHeight
+            }
+        }
+        return heights
+    }
+
+    private func timelineInlineMIDIConfigs(for tracks: [Track]) -> [ID<Track>: PlaybackGridMIDIConfig] {
+        guard pianoRollEditorState.isExpanded,
+              let activeTrackID = pianoRollEditorState.trackID,
+              tracks.contains(where: { $0.id == activeTrackID }) else {
+            return [:]
+        }
+        return [
+            activeTrackID: PlaybackGridMIDIConfig(
+                lowPitch: pianoRollEditorState.lowPitch,
+                highPitch: pianoRollEditorState.highPitch,
+                rowHeight: pianoRollEditorState.rowHeight,
+                tool: pianoRollEditorState.selectedTool,
+                detailLanes: pianoRollEditorState.visibleExpressionLanes.map { lane in
+                    .init(
+                        lane: lane,
+                        height: pianoRollEditorState.noteExpressionLaneHeight(for: lane)
+                    )
+                }
+            )
+        ]
+    }
+
+    private var automationFocusBar: some View {
+        Group {
+            if let focusedPath = projectViewModel.lastTouchedAutomationPath {
+                HStack(spacing: 10) {
+                    Label("Automation Focus", systemImage: "waveform.path.ecg")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.pink)
+                    Text(automationPathLabel(focusedPath))
+                        .font(.caption)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button("Reveal") {
+                        revealAutomationPath(focusedPath)
+                    }
+                    .buttonStyle(.borderless)
+                    Button("Clear") {
+                        projectViewModel.clearAutomationFocus()
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.accentColor.opacity(0.06))
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.12))
+                        .frame(height: 1)
+                }
+            }
+        }
+    }
+
+    private func revealAutomationPath(_ path: EffectPath) {
+        selectionState.selectedTrackID = path.trackID
+        timelineViewModel.automationExpanded.insert(path.trackID)
+    }
+
+    private func focusedAutomationLaneLabel(for track: Track, laneLabels: [String]) -> String? {
+        guard let focusedPath = projectViewModel.lastTouchedAutomationPath,
+              focusedPath.trackID == track.id else { return nil }
+        let label = automationPathLabel(focusedPath)
+        return laneLabels.contains(label) ? label : nil
+    }
+
+    private func timelineTrackHeaderConfigurations(
+        scene: PlaybackGridScene,
+        inlineMIDILaneHeights: [ID<Track>: CGFloat],
+        inlineMIDIConfigs: [ID<Track>: PlaybackGridMIDIConfig]
+    ) -> [TimelineTrackHeaderConfiguration] {
+        scene.trackLayouts.map { layout in
+            let track = layout.track
+            let isExpanded = timelineViewModel.automationExpanded.contains(track.id)
+            let laneLabels = layout.automationLaneLayouts.map { automationPathLabel($0.targetPath) }
+            let headerHeight = layout.height - (inlineMIDILaneHeights[track.id] ?? 0)
+            let inlineHeight = inlineMIDILaneHeights[track.id] ?? 0
+            let inlineConfig = inlineMIDIConfigs[track.id].map {
+                TimelineTrackHeaderConfiguration.InlineMIDIConfiguration(
+                    lowPitch: $0.lowPitch,
+                    highPitch: $0.highPitch,
+                    rowHeight: $0.rowHeight ?? PianoRollLayout.defaultRowHeight,
+                    height: inlineHeight,
+                    detailLanes: $0.detailLanes.map { detailLane in
+                        .init(
+                            lane: detailLane.lane,
+                            height: detailLane.height,
+                            onSetHeight: { newHeight in
+                                setInlineMIDIDetailLaneHeight(
+                                    lane: detailLane.lane,
+                                    height: newHeight
+                                )
+                            }
+                        )
+                    },
+                    onAdjustRowHeight: { delta in
+                        adjustInlineMIDIRowHeight(for: track.id, delta: delta)
+                    },
+                    onShiftPitchRange: { semitoneDelta in
+                        shiftInlineMIDIPitchRange(for: track.id, semitoneDelta: semitoneDelta)
+                    }
+                )
+            }
+            return TimelineTrackHeaderConfiguration(
+                track: track,
+                headerHeight: headerHeight,
+                totalHeight: headerHeight + inlineHeight,
+                content: AnyView(
+                    trackHeaderWithActions(
+                        track: track,
+                        automationLaneLabels: laneLabels,
+                        focusedAutomationLaneLabel: focusedAutomationLaneLabel(
+                            for: track,
+                            laneLabels: laneLabels
+                        ),
+                        height: headerHeight
+                    )
+                ),
+                inputPortName: inputPortName(for: track.inputPortID),
+                outputPortName: outputPortName(for: track.outputPortID),
+                midiDeviceName: midiDeviceName(for: track.midiInputDeviceID),
+                midiChannelLabel: midiChannelLabel(for: track.midiInputChannel),
+                isAutomationExpanded: isExpanded,
+                automationLaneLabels: laneLabels,
+                isTrackSelected: selectionState.selectedTrackID == track.id,
+                isMIDIActive: midiActivityMonitor?.isTrackActive(track.id) ?? false,
+                headerWidth: timelineViewModel.trackHeaderWidth,
+                availableInputPorts: settingsViewModel?.inputPorts ?? [],
+                availableOutputPorts: settingsViewModel?.outputPorts ?? [],
+                availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? [],
+                inlineMIDI: inlineConfig,
+                onSelect: {
+                    selectionState.selectedTrackID = track.id
+                }
+            )
+        }
+    }
+
+    private func buildTimelineScene(snapshot: PlaybackGridSnapshot) -> PlaybackGridScene {
+        let layoutBuilder = PlaybackGridSceneBuilder()
+        layoutBuilder.waveformPeaksProvider = { [projectViewModel] container in
+            projectViewModel.waveformPeaks(for: container)
+        }
+        layoutBuilder.waveformExtremaProvider = { [projectViewModel] container in
+            projectViewModel.waveformExtrema(for: container)
+        }
+        layoutBuilder.waveformRMSProvider = { [projectViewModel] container in
+            projectViewModel.waveformRMS(for: container)
+        }
+        layoutBuilder.audioDurationBarsProvider = { [projectViewModel] container in
+            projectViewModel.recordingDurationBars(for: container)
+        }
+        layoutBuilder.resolvedMIDISequenceProvider = { [projectViewModel] container in
+            projectViewModel.resolvedMIDISequence(container)
+        }
+        return layoutBuilder.build(snapshot: snapshot)
+    }
+
     private func trackListContentHeight(_ tracks: [Track]) -> CGFloat {
         tracks.reduce(CGFloat(0)) { total, track in
             let trackH = timelineViewModel.trackHeight(for: track, baseHeight: timelineViewModel.baseTrackHeight(for: track.id))
@@ -1723,7 +1981,10 @@ public struct MainContentView: View {
     private func inlinePianoRollLaneHeight(for trackID: ID<Track>) -> CGFloat {
         guard pianoRollEditorState.isExpanded,
               pianoRollEditorState.trackID == trackID else { return 0 }
-        return max(0, pianoRollEditorState.inlineHeight)
+        let detailHeight = pianoRollEditorState.visibleExpressionLanes.reduce(CGFloat(0)) { partial, lane in
+            partial + pianoRollEditorState.noteExpressionLaneHeight(for: lane)
+        }
+        return max(0, pianoRollEditorState.inlineHeight + detailHeight)
     }
 
     // MARK: - Ghost Track Header
@@ -2220,6 +2481,63 @@ extension View {
         onMagnify: ((_ magnification: CGFloat, _ mouseXInWindow: CGFloat) -> Void)? = nil
     ) -> some View {
         modifier(ScrollWheelHandlerModifier(onCmdScroll: onCmdScroll, onMagnify: onMagnify))
+    }
+
+    func inlineMIDIInputMonitor(
+        shouldHandle: @escaping () -> Bool,
+        onZoomIn: @escaping () -> Void,
+        onZoomOut: @escaping () -> Void,
+        onMagnify: @escaping (_ magnification: CGFloat) -> Void
+    ) -> some View {
+        modifier(InlineMIDIInputMonitorModifier(
+            shouldHandle: shouldHandle,
+            onZoomIn: onZoomIn,
+            onZoomOut: onZoomOut,
+            onMagnify: onMagnify
+        ))
+    }
+}
+
+private struct InlineMIDIInputMonitorModifier: ViewModifier {
+    let shouldHandle: () -> Bool
+    let onZoomIn: () -> Void
+    let onZoomOut: () -> Void
+    let onMagnify: (_ magnification: CGFloat) -> Void
+
+    @State private var keyMonitor: AnyObject?
+    @State private var magnifyMonitor: AnyObject?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    guard shouldHandle() else { return event }
+                    let blockedModifiers: NSEvent.ModifierFlags = [.command, .option, .control]
+                    guard event.modifierFlags.intersection(blockedModifiers).isEmpty else { return event }
+                    switch event.charactersIgnoringModifiers {
+                    case "+", "=":
+                        onZoomIn()
+                        return nil
+                    case "-", "_":
+                        onZoomOut()
+                        return nil
+                    default:
+                        return event
+                    }
+                } as AnyObject
+
+                magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { event in
+                    guard shouldHandle() else { return event }
+                    let magnification = CGFloat(event.magnification)
+                    guard abs(magnification) > 0.001 else { return nil }
+                    onMagnify(magnification)
+                    return nil
+                } as AnyObject
+            }
+            .onDisappear {
+                if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+                if let magnifyMonitor { NSEvent.removeMonitor(magnifyMonitor) }
+            }
     }
 }
 

@@ -4078,6 +4078,35 @@ struct ProjectViewModelTests {
         #expect(containers[1].audioStartOffset == 3.0) // 4 - 1 = 3 bars into recording
     }
 
+    @Test("splitContainer offsets MIDI controller events into right half")
+    @MainActor
+    func splitContainerMIDICCEvents() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+        let trackID = vm.project.songs[0].tracks[0].id
+        let container = Container(
+            startBar: 1,
+            lengthBars: 4,
+            midiSequence: MIDISequence(
+                notes: [MIDINoteEvent(pitch: 60, startBeat: 0, duration: 1)],
+                controllerEvents: [
+                    MIDIControllerEvent(controller: 64, value: 127, beat: 1.0),
+                    MIDIControllerEvent(controller: 64, value: 0, beat: 10.0)
+                ]
+            )
+        )
+        vm.project.songs[0].tracks[0].containers = [container]
+
+        let _ = vm.splitContainer(trackID: trackID, containerID: container.id, atBar: 3)
+        let containers = vm.project.songs[0].tracks[0].containers.sorted { $0.startBar < $1.startBar }
+        #expect(containers.count == 2)
+        #expect(containers[0].midiSequence?.controllerEvents.count == 1)
+        #expect(containers[0].midiSequence?.controllerEvents.first?.beat == 1.0)
+        #expect(containers[1].midiSequence?.controllerEvents.count == 1)
+        #expect(containers[1].midiSequence?.controllerEvents.first?.beat == 2.0)
+    }
+
     @Test("splitContainerAtRange creates three containers")
     @MainActor
     func splitContainerAtRangeBasic() {
@@ -4256,6 +4285,43 @@ struct ProjectViewModelTests {
         #expect(notes[2].startBeat == 16.0)
         #expect(notes[3].pitch == 72)
         #expect(notes[3].startBeat == 18.0)
+    }
+
+    @Test("Glue MIDI containers merges controller events with correct beat offsets")
+    @MainActor
+    func glueMIDIControllerEvents() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+        vm.addTrack(kind: .midi)
+
+        let c1 = Container(
+            name: "MIDI 1",
+            startBar: 1.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence(controllerEvents: [
+                MIDIControllerEvent(controller: 64, value: 127, beat: 1.0),
+                MIDIControllerEvent(controller: 11, value: 80, beat: 3.5)
+            ])
+        )
+        let c2 = Container(
+            name: "MIDI 2",
+            startBar: 5.0,
+            lengthBars: 4.0,
+            midiSequence: MIDISequence(controllerEvents: [
+                MIDIControllerEvent(controller: 64, value: 0, beat: 0.0)
+            ])
+        )
+
+        vm.project.songs[0].tracks[0].containers = [c1, c2]
+        let result = vm.glueContainers(containerIDs: Set([c1.id, c2.id]))
+        #expect(result != nil)
+
+        let merged = vm.project.songs[0].tracks[0].containers[0]
+        let events = merged.midiSequence?.controllerEvents.sorted { $0.beat < $1.beat }
+        #expect(events?.count == 3)
+        #expect(events?[0].beat == 1.0)
+        #expect(events?[1].beat == 3.5)
+        #expect(events?[2].beat == 16.0)
     }
 
     @Test("Glue containers with gap spans full range including gap")

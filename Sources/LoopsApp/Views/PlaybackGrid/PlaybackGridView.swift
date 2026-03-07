@@ -14,6 +14,7 @@ public struct PlaybackGridView: View {
     var ghostDropState: GhostTrackDropState?
     var showRulerAndSections: Bool = true
     var bottomPadding: CGFloat = PlaybackGridLayout.bottomPadding
+    var prebuiltScene: PlaybackGridScene?
     var onDropFilesToNewTracks: ((_ urls: [URL], _ startBar: Double) -> Void)?
     var onContainerDoubleClick: (() -> Void)?
     var onPlayheadPosition: ((Double) -> Void)?
@@ -36,6 +37,7 @@ public struct PlaybackGridView: View {
         ghostDropState: GhostTrackDropState? = nil,
         showRulerAndSections: Bool = true,
         bottomPadding: CGFloat = PlaybackGridLayout.bottomPadding,
+        prebuiltScene: PlaybackGridScene? = nil,
         onDropFilesToNewTracks: ((_ urls: [URL], _ startBar: Double) -> Void)? = nil,
         onContainerDoubleClick: (() -> Void)? = nil,
         onPlayheadPosition: ((Double) -> Void)? = nil,
@@ -57,6 +59,7 @@ public struct PlaybackGridView: View {
         self.ghostDropState = ghostDropState
         self.showRulerAndSections = showRulerAndSections
         self.bottomPadding = bottomPadding
+        self.prebuiltScene = prebuiltScene
         self.onDropFilesToNewTracks = onDropFilesToNewTracks
         self.onContainerDoubleClick = onContainerDoubleClick
         self.onPlayheadPosition = onPlayheadPosition
@@ -103,7 +106,10 @@ public struct PlaybackGridView: View {
         guard let pianoRollState,
               pianoRollState.isExpanded,
               pianoRollState.trackID == trackID else { return 0 }
-        return max(0, pianoRollState.inlineHeight)
+        let detailHeight = pianoRollState.visibleExpressionLanes.reduce(CGFloat(0)) { partial, lane in
+            partial + pianoRollState.noteExpressionLaneHeight(for: lane)
+        }
+        return max(0, pianoRollState.inlineHeight + detailHeight)
     }
 
     private var inlineMIDIConfigs: [ID<Track>: PlaybackGridMIDIConfig] {
@@ -116,7 +122,14 @@ public struct PlaybackGridView: View {
             trackID: PlaybackGridMIDIConfig(
                 lowPitch: pianoRollState.lowPitch,
                 highPitch: pianoRollState.highPitch,
-                rowHeight: pianoRollState.rowHeight
+                rowHeight: pianoRollState.rowHeight,
+                tool: pianoRollState.selectedTool,
+                detailLanes: pianoRollState.visibleExpressionLanes.map { lane in
+                    .init(
+                        lane: lane,
+                        height: pianoRollState.noteExpressionLaneHeight(for: lane)
+                    )
+                }
             )
         ]
     }
@@ -130,11 +143,13 @@ public struct PlaybackGridView: View {
             selectionState: selectionState,
             timeSignature: song.timeSignature,
             sections: song.sections,
+            selectedMIDINoteIDs: pianoRollState?.selectedNoteIDs ?? [],
             inlineMIDILaneHeights: inlineMIDILaneHeights,
             inlineMIDIConfigs: inlineMIDIConfigs,
             showRulerAndSections: showRulerAndSections,
             bottomPadding: bottomPadding,
             minimumContentHeight: displayHeight,
+            prebuiltScene: prebuiltScene,
             debugLabel: debugLabel,
             onPlayheadPosition: onPlayheadPosition,
             onSectionSelect: onSectionSelect,
@@ -227,10 +242,18 @@ public struct PlaybackGridView: View {
             onSetInlineMIDILaneHeight: { trackID, height in
                 guard let pianoRollState,
                       pianoRollState.trackID == trackID else { return }
-                let clamped = min(max(height, 120), 640)
-                if abs(pianoRollState.inlineHeight - clamped) > 0.5 {
-                    pianoRollState.inlineHeight = clamped
+                let detailHeight = pianoRollState.visibleExpressionLanes.reduce(CGFloat(0)) { partial, lane in
+                    partial + pianoRollState.noteExpressionLaneHeight(for: lane)
                 }
+                let clampedTotal = min(max(height, 120 + detailHeight), 640 + detailHeight)
+                let noteAreaHeight = max(120, clampedTotal - detailHeight)
+                if abs(pianoRollState.inlineHeight - noteAreaHeight) > 0.5 {
+                    pianoRollState.inlineHeight = noteAreaHeight
+                }
+            },
+            onAdjustTrackHeight: { trackID, delta in
+                let currentHeight = viewModel.baseTrackHeight(for: trackID)
+                viewModel.setTrackHeight(currentHeight + delta, for: trackID)
             },
             onAdjustInlineMIDIRowHeight: { trackID, delta in
                 guard let pianoRollState,
@@ -271,6 +294,19 @@ public struct PlaybackGridView: View {
             },
             onRemoveMIDINote: { containerID, noteID in
                 projectViewModel.removeMIDINote(containerID: containerID, noteID: noteID)
+            },
+            onSetSelectedMIDINotes: { containerID, trackID, noteIDs, additive in
+                guard let pianoRollState else { return }
+                if pianoRollState.trackID != trackID {
+                    pianoRollState.trackID = trackID
+                }
+                if pianoRollState.containerID != containerID {
+                    pianoRollState.switchContainer(containerID: containerID)
+                }
+                pianoRollState.selectedNoteIDs = additive
+                    ? pianoRollState.selectedNoteIDs.union(noteIDs)
+                    : noteIDs
+                pianoRollState.isFocused = !pianoRollState.selectedNoteIDs.isEmpty
             },
             onAddAutomationBreakpoint: { containerID, laneID, breakpoint in
                 projectViewModel.addAutomationBreakpoint(containerID: containerID, laneID: laneID, breakpoint: breakpoint)

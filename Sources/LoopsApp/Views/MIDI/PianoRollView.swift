@@ -11,6 +11,8 @@ enum PianoRollLayout {
     static let defaultRowHeight: CGFloat = 14
     static let minRowHeight: CGFloat = 6
     static let maxRowHeight: CGFloat = 40
+    static let minDetailLaneHeight: CGFloat = 56
+    static let maxDetailLaneHeight: CGFloat = 220
     static let keyboardWidth: CGFloat = 48
     static let defaultPixelsPerBeat: CGFloat = 40
 
@@ -56,6 +58,9 @@ public struct PianoRollView: View {
     var onAddNote: ((MIDINoteEvent) -> Void)?
     var onUpdateNote: ((MIDINoteEvent) -> Void)?
     var onRemoveNote: ((ID<MIDINoteEvent>) -> Void)?
+    var onAddControllerEvent: ((MIDIControllerEvent) -> Void)?
+    var onUpdateControllerEvent: ((MIDIControllerEvent) -> Void)?
+    var onRemoveControllerEvent: ((ID<MIDIControllerEvent>) -> Void)?
     var onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)?
     /// Called to dismiss the view. When hosted in NSWindow, closes the window.
     var onDismiss: (() -> Void)?
@@ -65,6 +70,10 @@ public struct PianoRollView: View {
     @State private var lowPitch: UInt8 = PianoRollLayout.defaultLowPitch
     @State private var highPitch: UInt8 = PianoRollLayout.defaultHighPitch
     @State private var rowHeight: CGFloat = PianoRollLayout.defaultRowHeight
+    @State private var selectedTool: MIDITool = .pointer
+    @State private var selectedExpressionLane: MIDINoteExpressionLane = .velocity
+    @State private var visibleExpressionLanes: [MIDINoteExpressionLane] = [.velocity]
+    @State private var noteExpressionLaneHeights: [MIDINoteExpressionLane: CGFloat] = [:]
     @State private var snapResolution: SnapResolution = .sixteenth
 
     public init(
@@ -78,6 +87,9 @@ public struct PianoRollView: View {
         onAddNote: ((MIDINoteEvent) -> Void)? = nil,
         onUpdateNote: ((MIDINoteEvent) -> Void)? = nil,
         onRemoveNote: ((ID<MIDINoteEvent>) -> Void)? = nil,
+        onAddControllerEvent: ((MIDIControllerEvent) -> Void)? = nil,
+        onUpdateControllerEvent: ((MIDIControllerEvent) -> Void)? = nil,
+        onRemoveControllerEvent: ((ID<MIDIControllerEvent>) -> Void)? = nil,
         onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil
     ) {
@@ -91,6 +103,9 @@ public struct PianoRollView: View {
         self.onAddNote = onAddNote
         self.onUpdateNote = onUpdateNote
         self.onRemoveNote = onRemoveNote
+        self.onAddControllerEvent = onAddControllerEvent
+        self.onUpdateControllerEvent = onUpdateControllerEvent
+        self.onRemoveControllerEvent = onRemoveControllerEvent
         self.onNotePreview = onNotePreview
         self.onDismiss = onDismiss
     }
@@ -108,12 +123,19 @@ public struct PianoRollView: View {
                 lowPitch: $lowPitch,
                 highPitch: $highPitch,
                 rowHeight: $rowHeight,
+                selectedTool: $selectedTool,
+                selectedExpressionLane: $selectedExpressionLane,
+                visibleExpressionLanes: $visibleExpressionLanes,
+                noteExpressionLaneHeights: $noteExpressionLaneHeights,
                 selectedNoteIDs: $selectedNoteIDs,
                 playheadBeat: playheadBeat,
                 containerStartBar: containerStartBar,
                 onAddNote: onAddNote,
                 onUpdateNote: onUpdateNote,
                 onRemoveNote: onRemoveNote,
+                onAddControllerEvent: onAddControllerEvent,
+                onUpdateControllerEvent: onUpdateControllerEvent,
+                onRemoveControllerEvent: onRemoveControllerEvent,
                 onNotePreview: onNotePreview
             )
         }
@@ -157,6 +179,63 @@ public struct PianoRollView: View {
 
             Divider().frame(height: 16)
 
+            ForEach(MIDITool.allCases, id: \.self) { tool in
+                Button(action: { selectedTool = tool }) {
+                    Image(systemName: tool.iconName)
+                        .foregroundStyle(selectedTool == tool ? Color.primary : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(tool.label)
+            }
+
+            Divider().frame(height: 16)
+
+            Menu {
+                ForEach(MIDINoteExpressionLane.allCases, id: \.self) { lane in
+                    Button {
+                        selectedExpressionLane = lane
+                        if !visibleExpressionLanes.contains(lane) {
+                            visibleExpressionLanes.append(lane)
+                            visibleExpressionLanes.sort { lhs, rhs in
+                                MIDINoteExpressionLane.allCases.firstIndex(of: lhs)! < MIDINoteExpressionLane.allCases.firstIndex(of: rhs)!
+                            }
+                        }
+                    } label: {
+                        Label(lane.label, systemImage: visibleExpressionLanes.contains(lane) ? "checkmark.circle.fill" : lane.iconName)
+                    }
+                }
+            } label: {
+                Label(selectedExpressionLane.shortLabel, systemImage: selectedExpressionLane.iconName)
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(!visibleExpressionLanes.isEmpty ? Color.primary : Color.secondary)
+            }
+            .menuStyle(.borderlessButton)
+
+            Button(action: {
+                if visibleExpressionLanes.contains(selectedExpressionLane) {
+                    visibleExpressionLanes.removeAll { $0 == selectedExpressionLane }
+                    if visibleExpressionLanes.isEmpty == false {
+                        selectedExpressionLane = visibleExpressionLanes[0]
+                    }
+                } else {
+                    visibleExpressionLanes.append(selectedExpressionLane)
+                    visibleExpressionLanes.sort { lhs, rhs in
+                        MIDINoteExpressionLane.allCases.firstIndex(of: lhs)! < MIDINoteExpressionLane.allCases.firstIndex(of: rhs)!
+                    }
+                }
+            }) {
+                Image(systemName: visibleExpressionLanes.contains(selectedExpressionLane) ? "rectangle.bottomthird.inset.filled" : "rectangle.bottomthird.inset")
+                    .foregroundStyle(visibleExpressionLanes.contains(selectedExpressionLane) ? Color.primary : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(visibleExpressionLanes.contains(selectedExpressionLane) ? "Hide Active MIDI Lane" : "Show Active MIDI Lane")
+
+            Button("Vel") {
+                focusLane(.velocity)
+            }
+            .buttonStyle(.plain)
+            .help("Show and focus velocity lane")
+
             // Vertical zoom
             Button(action: {
                 rowHeight = max(PianoRollLayout.minRowHeight, rowHeight - 2)
@@ -174,14 +253,25 @@ public struct PianoRollView: View {
             .buttonStyle(.plain)
             .help("Vertical Zoom In")
 
-            // Fit to content
+            Button("-Range") {
+                adjustVisiblePitchSpan(by: -6)
+            }
+            .buttonStyle(.plain)
+            .help("Show fewer notes")
+
+            Button("+Range") {
+                adjustVisiblePitchSpan(by: 6)
+            }
+            .buttonStyle(.plain)
+            .help("Show more notes")
+
             Button(action: {
                 fitToContent()
             }) {
-                Image(systemName: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left")
+                Text("Fit")
             }
             .buttonStyle(.plain)
-            .help("Fit to Content")
+            .help("Fit pitch range to content")
 
             Divider().frame(height: 16)
 
@@ -200,6 +290,28 @@ public struct PianoRollView: View {
             lowPitch = UInt8(max(0, Int(low) - Int(padding)))
             highPitch = UInt8(min(127, Int(high) + Int(padding)))
         }
+    }
+
+    private func focusLane(_ lane: MIDINoteExpressionLane) {
+        selectedExpressionLane = lane
+        if !visibleExpressionLanes.contains(lane) {
+            visibleExpressionLanes.append(lane)
+            visibleExpressionLanes.sort { lhs, rhs in
+                MIDINoteExpressionLane.allCases.firstIndex(of: lhs)! < MIDINoteExpressionLane.allCases.firstIndex(of: rhs)!
+            }
+        }
+    }
+
+    private func adjustVisiblePitchSpan(by semitones: Int) {
+        let low = Int(lowPitch)
+        let high = Int(highPitch)
+        let currentSpan = max(12, high - low + 1)
+        let nextSpan = min(84, max(12, currentSpan + semitones))
+        let center = low + (currentSpan / 2)
+        let newLow = max(0, min(127 - nextSpan + 1, center - (nextSpan / 2)))
+        let newHigh = newLow + nextSpan - 1
+        lowPitch = UInt8(clamping: newLow)
+        highPitch = UInt8(clamping: newHigh)
     }
 }
 
@@ -240,6 +352,15 @@ struct LivePianoRollWindowContent: View {
                 onRemoveNote: { noteID in
                     projectViewModel.removeMIDINote(containerID: containerID, noteID: noteID)
                 },
+                onAddControllerEvent: { event in
+                    projectViewModel.addMIDIControllerEvent(containerID: containerID, event: event)
+                },
+                onUpdateControllerEvent: { event in
+                    projectViewModel.updateMIDIControllerEvent(containerID: containerID, event: event)
+                },
+                onRemoveControllerEvent: { eventID in
+                    projectViewModel.removeMIDIControllerEvent(containerID: containerID, eventID: eventID)
+                },
                 onNotePreview: { pitch, isNoteOn in
                     let message: MIDIActionMessage = isNoteOn
                         ? .noteOn(channel: 0, note: pitch, velocity: 100)
@@ -253,60 +374,5 @@ struct LivePianoRollWindowContent: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-}
-
-// MARK: - Velocity Editor
-
-/// Bottom lane showing velocity bars for each note.
-struct VelocityLaneView: View {
-    let sequence: MIDISequence
-    let totalBeats: Double
-    let pixelsPerBeat: CGFloat
-    let height: CGFloat = 60
-
-    var onUpdateVelocity: ((ID<MIDINoteEvent>, UInt8) -> Void)?
-
-    var body: some View {
-        Canvas { context, size in
-            // Background
-            context.fill(
-                Path(CGRect(origin: .zero, size: size)),
-                with: .color(.gray.opacity(0.05))
-            )
-
-            // Velocity bars
-            for note in sequence.notes {
-                let x = PianoRollLayout.xPosition(forBeat: note.startBeat, pixelsPerBeat: pixelsPerBeat)
-                let w = max(4, CGFloat(note.duration) * pixelsPerBeat - 1)
-                let barHeight = CGFloat(note.velocity) / 127.0 * (size.height - 4)
-                let y = size.height - barHeight - 2
-
-                context.fill(
-                    Path(CGRect(x: x, y: y, width: w, height: barHeight)),
-                    with: .color(.accentColor.opacity(0.6))
-                )
-            }
-
-            // Horizontal reference lines at 50% and 100%
-            let midY = size.height / 2
-            context.stroke(
-                Path { p in p.move(to: CGPoint(x: 0, y: midY)); p.addLine(to: CGPoint(x: size.width, y: midY)) },
-                with: .color(.gray.opacity(0.2)),
-                style: StrokeStyle(lineWidth: 0.5, dash: [4, 4])
-            )
-        }
-        .frame(height: height)
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    let beat = PianoRollLayout.beat(forX: value.location.x, pixelsPerBeat: pixelsPerBeat)
-                    let velocity = UInt8(clamping: Int((1.0 - value.location.y / height) * 127))
-                    // Find note at this beat position
-                    if let note = sequence.notes.first(where: { beat >= $0.startBeat && beat < $0.endBeat }) {
-                        onUpdateVelocity?(note.id, max(1, velocity))
-                    }
-                }
-        )
     }
 }

@@ -219,6 +219,26 @@ public struct LoopsRootView: View {
             transportViewModel.onRecordingComplete = { [weak viewModel] trackID, containerID, recording in
                 viewModel?.setContainerRecording(trackID: trackID, containerID: containerID, recording: recording)
             }
+            transportViewModel.onMIDINotesRecorded = { [weak viewModel] containerID, notes in
+                viewModel?.recordMIDINotes(containerID: containerID, notes: notes)
+            }
+            transportViewModel.onMIDIRecordingSessionChanged = { [weak viewModel] isActive in
+                if isActive {
+                    viewModel?.beginMIDIRecordingSession()
+                } else {
+                    viewModel?.endMIDIRecordingSession()
+                }
+            }
+            transportViewModel.onAutomationWriteValue = { [weak viewModel] path, playbackBar, value in
+                viewModel?.recordAutomationValue(path: path, playbackBar: playbackBar, value: value)
+            }
+            transportViewModel.onAutomationWriteSessionChanged = { [weak viewModel] isActive in
+                if isActive {
+                    viewModel?.beginAutomationWriteSession()
+                } else {
+                    viewModel?.endAutomationWriteSession()
+                }
+            }
 
             // Wire recording propagation: register audio file and schedule linked containers
             viewModel.onRecordingPropagated = { [weak transportViewModel] recordingID, filename, linkedContainers in
@@ -278,6 +298,11 @@ public struct LoopsRootView: View {
         paramDispatcher.onParameterValue = { [weak transportViewModel] path, value in
             Task { @MainActor [weak transportViewModel] in
                 transportViewModel?.setParameter(at: path, value: value)
+            }
+        }
+        paramDispatcher.onParameterValueNormalized = { [weak transportViewModel] path, normalizedValue in
+            Task { @MainActor [weak transportViewModel] in
+                transportViewModel?.recordAutomationWrite(path: path, normalizedValue: normalizedValue)
             }
         }
 
@@ -403,6 +428,9 @@ public struct LoopsRootView: View {
             }
             // Forward MIDI note/CC events to instrument tracks (runs on MIDI thread)
             weakTransport?.playbackScheduler?.forwardExternalMIDI(word: word, deviceID: deviceID)
+            Task { @MainActor [weak weakTransport] in
+                weakTransport?.handleIncomingRecordedMIDI(word: word, deviceID: deviceID)
+            }
         }
     }
 }

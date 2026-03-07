@@ -18,6 +18,8 @@ public final class MIDIDispatcher: @unchecked Sendable {
 
     /// Callback when a parameter mapping CC is received. Parameters: (EffectPath, scaledValue).
     public var onParameterValue: ((EffectPath, Float) -> Void)?
+    /// Callback when a parameter mapping CC is received with a normalized 0...1 value.
+    public var onParameterValueNormalized: ((EffectPath, Float) -> Void)?
 
     /// Whether we're in learn mode.
     public var isLearning: Bool = false
@@ -86,6 +88,7 @@ public final class MIDIDispatcher: @unchecked Sendable {
             for mapping in paramMappings {
                 let scaled = mapping.scaledValue(ccValue: ccValue)
                 onParameterValue?(mapping.targetPath, scaled)
+                onParameterValueNormalized?(mapping.targetPath, Float(ccValue) / 127.0)
             }
         }
     }

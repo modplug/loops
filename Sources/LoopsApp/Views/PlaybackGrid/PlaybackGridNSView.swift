@@ -10,6 +10,7 @@ public final class PlaybackGridNSView: NSView {
     private let metalLayer: CAMetalLayer
     private let waveformOverlayLayer = CALayer()
     private let textOverlayLayer = TimelineTextOverlayLayer()
+    private let midiMarqueeLayer = CAShapeLayer()
     private let waveformTileCache = WaveformTileCache()
     private var waveformTileLayers: [ID<Container>: CALayer] = [:]
     private var waveformTileHashes: [ID<Container>: Int] = [:]
@@ -20,6 +21,10 @@ public final class PlaybackGridNSView: NSView {
     private var commandSink: (any PlaybackGridCommandSink)?
     private var contextMenuTargetContainerID: ID<Container>?
     private var contextMenuTargetTrackID: ID<Track>?
+    private var contextMenuTargetMIDINoteID: ID<MIDINoteEvent>?
+    private var contextMenuTargetAutomationLaneID: ID<AutomationLane>?
+    private var contextMenuTargetAutomationBreakpointID: ID<AutomationBreakpoint>?
+    private var contextMenuTargetPoint: CGPoint?
 
     private var snapshot: PlaybackGridSnapshot?
     private var scene = PlaybackGridScene(trackLayouts: [], sectionLayouts: [], contentHeight: PlaybackGridLayout.bottomPadding)
@@ -36,6 +41,18 @@ public final class PlaybackGridNSView: NSView {
     private var hoveredPick: GridPickObject = .none
     private var cachedMIDINoteLabels: [TimelineTextOverlayLayer.MIDINoteLabelLayout] = []
     private var lastSuppressedAutomationLanes: Set<PlaybackGridAutomationSuppression> = []
+    private var currentCursorStyle: CursorStyle = .arrow
+
+    private enum CursorStyle: Equatable {
+        case arrow
+        case crosshair
+        case openHand
+        case closedHand
+        case resizeLeftRight
+        case resizeUpDown
+        case iBeam
+        case dragCopy
+    }
 
     public var waveformPeaksProvider: ((_ container: Container) -> [Float]?)? {
         didSet {
@@ -147,6 +164,14 @@ public final class PlaybackGridNSView: NSView {
         textOverlayLayer.contentsScale = metalLayer.contentsScale
         backingLayer.addSublayer(textOverlayLayer)
 
+        midiMarqueeLayer.zPosition = 2
+        midiMarqueeLayer.fillColor = NSColor.systemPink.withAlphaComponent(0.14).cgColor
+        midiMarqueeLayer.strokeColor = NSColor.systemPink.withAlphaComponent(0.8).cgColor
+        midiMarqueeLayer.lineWidth = 1
+        midiMarqueeLayer.lineDashPattern = [5, 4]
+        midiMarqueeLayer.isHidden = true
+        backingLayer.addSublayer(midiMarqueeLayer)
+
         playheadLayer.backgroundColor = NSColor.systemRed.cgColor
         playheadLayer.zPosition = 100
         playheadLayer.isHidden = true
@@ -201,6 +226,7 @@ public final class PlaybackGridNSView: NSView {
             metalLayer.contentsScale = scale
             waveformOverlayLayer.contentsScale = scale
             textOverlayLayer.contentsScale = scale
+            midiMarqueeLayer.contentsScale = scale
         }
     }
 
@@ -210,6 +236,7 @@ public final class PlaybackGridNSView: NSView {
         metalLayer.contentsScale = scale
         waveformOverlayLayer.contentsScale = scale
         textOverlayLayer.contentsScale = scale
+        midiMarqueeLayer.contentsScale = scale
         needsDisplay = true
     }
 
@@ -248,89 +275,68 @@ public final class PlaybackGridNSView: NSView {
             visibleRect: visibleRect,
             canvasWidth: bounds.width
         )
+        resetContextMenuTargets()
+        contextMenuTargetPoint = local
 
-        guard pick.kind == .containerZone,
-              let containerID = pick.containerID,
-              let trackID = pick.trackID else {
-            return super.menu(for: event)
+        let menu: NSMenu?
+        switch pick.kind {
+        case .containerZone:
+            guard let containerID = pick.containerID, let trackID = pick.trackID else {
+                return super.menu(for: event)
+            }
+            contextMenuTargetContainerID = containerID
+            contextMenuTargetTrackID = trackID
+            commandSink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
+            menu = buildContainerContextMenu(snapshot: snapshot, containerID: containerID, trackID: trackID)
+
+        case .midiNote:
+            guard let containerID = pick.containerID,
+                  let trackID = pick.trackID,
+                  let noteID = pick.midiNoteID else {
+                return super.menu(for: event)
+            }
+            contextMenuTargetContainerID = containerID
+            contextMenuTargetTrackID = trackID
+            contextMenuTargetMIDINoteID = noteID
+            commandSink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
+            commandSink?.setSelectedMIDINotes(containerID: containerID, trackID: trackID, noteIDs: [noteID], additive: false)
+            menu = buildMIDINoteContextMenu()
+
+        case .automationBreakpoint, .automationSegment:
+            guard let trackID = pick.trackID,
+                  let laneID = pick.automationLaneID else {
+                return super.menu(for: event)
+            }
+            contextMenuTargetTrackID = trackID
+            contextMenuTargetContainerID = pick.containerID
+            contextMenuTargetAutomationLaneID = laneID
+            contextMenuTargetAutomationBreakpointID = pick.automationBreakpointID
+            if let containerID = pick.containerID {
+                commandSink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
+            }
+            menu = buildAutomationContextMenu(isBreakpoint: pick.kind == .automationBreakpoint)
+
+        case .trackBackground, .none:
+            if let trackID = inlineMIDITrackID(at: local, snapshot: snapshot),
+               let target = midiContextTarget(at: local, preferredTrackID: trackID, snapshot: snapshot) {
+                contextMenuTargetTrackID = target.track.id
+                contextMenuTargetContainerID = target.container.id
+                commandSink?.selectContainer(target.container.id, trackID: target.track.id, modifiers: event.modifierFlags)
+                menu = buildMIDILaneContextMenu()
+            } else if let trackID = pick.trackID ?? trackID(at: local) {
+                contextMenuTargetTrackID = trackID
+                menu = buildTrackContextMenu()
+            } else {
+                menu = nil
+            }
+
+        default:
+            menu = nil
         }
 
-        contextMenuTargetContainerID = containerID
-        contextMenuTargetTrackID = trackID
-        commandSink?.selectContainer(containerID, trackID: trackID, modifiers: event.modifierFlags)
-
-        let container = snapshot.tracks
-            .first { $0.id == trackID }?
-            .containers
-            .first { $0.id == containerID }
-        let track = snapshot.tracks.first { $0.id == trackID }
-        let selectedCount = snapshot.selectedContainerIDs.count
-        let isClone = container?.parentContainerID != nil
-        let crossfades = track?.crossfades
-            .filter { $0.containerAID == containerID || $0.containerBID == containerID } ?? []
-
-        let menu = NSMenu(title: "Container")
-
-        if selectedCount > 1 {
-            menu.addItem(NSMenuItem(title: "Copy \(selectedCount) Containers", action: #selector(contextCopyContainer(_:)), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "Duplicate \(selectedCount) Containers", action: #selector(contextDuplicateContainer(_:)), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "Split \(selectedCount) at Playhead", action: #selector(contextSplitContainer(_:)), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "Glue", action: #selector(contextGlueContainers(_:)), keyEquivalent: ""))
-            menu.addItem(NSMenuItem.separator())
-            menu.addItem(NSMenuItem(title: "Delete \(selectedCount) Containers", action: #selector(contextDeleteContainer(_:)), keyEquivalent: ""))
-        } else {
-            menu.addItem(NSMenuItem(title: "Copy", action: #selector(contextCopyContainer(_:)), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "Duplicate", action: #selector(contextDuplicateContainer(_:)), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "Link (Create Clone)", action: #selector(contextLinkContainer(_:)), keyEquivalent: ""))
-            if isClone {
-                menu.addItem(NSMenuItem(title: "Unlink (Consolidate)", action: #selector(contextUnlinkContainer(_:)), keyEquivalent: ""))
-            }
-            menu.addItem(NSMenuItem.separator())
-            menu.addItem(NSMenuItem(title: "Split at Playhead", action: #selector(contextSplitContainer(_:)), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "Edit…", action: #selector(contextEditContainer(_:)), keyEquivalent: ""))
-
-            let armTitle = container?.isRecordArmed == true ? "Disarm" : "Arm"
-            menu.addItem(NSMenuItem(title: armTitle, action: #selector(contextToggleArm(_:)), keyEquivalent: ""))
-
-            if !crossfades.isEmpty {
-                let crossfadeMenu = NSMenu(title: "Crossfade Curve")
-                for crossfade in crossfades {
-                    let submenu = NSMenu(title: "Crossfade")
-                    for curveType in CrossfadeCurveType.allCases {
-                        let item = NSMenuItem(title: curveType.displayName, action: #selector(contextSetCrossfadeCurve(_:)), keyEquivalent: "")
-                        item.representedObject = CrossfadeCurveMenuInfo(crossfadeID: crossfade.id, trackID: trackID, curveType: curveType)
-                        item.target = self
-                        if crossfade.curveType == curveType {
-                            item.state = .on
-                        }
-                        submenu.addItem(item)
-                    }
-                    if crossfades.count == 1 {
-                        let curveItem = NSMenuItem(title: "Crossfade Curve", action: nil, keyEquivalent: "")
-                        curveItem.submenu = submenu
-                        menu.addItem(curveItem)
-                    } else {
-                        let label = crossfade.containerAID == containerID ? "Crossfade (exit)" : "Crossfade (enter)"
-                        let curveItem = NSMenuItem(title: label, action: nil, keyEquivalent: "")
-                        curveItem.submenu = submenu
-                        crossfadeMenu.addItem(curveItem)
-                    }
-                }
-                if crossfades.count > 1 {
-                    let parentItem = NSMenuItem(title: "Crossfade Curves", action: nil, keyEquivalent: "")
-                    parentItem.submenu = crossfadeMenu
-                    menu.addItem(parentItem)
-                }
-            }
-
-            menu.addItem(NSMenuItem.separator())
-            menu.addItem(NSMenuItem(title: "Delete", action: #selector(contextDeleteContainer(_:)), keyEquivalent: ""))
-        }
-
-        for item in menu.items {
-            if item.target == nil && !item.isSeparatorItem && item.action != nil {
-                item.target = self
-            }
+        guard let menu else { return super.menu(for: event) }
+        for item in menu.items where item.target == nil && !item.isSeparatorItem && item.action != nil {
+            item.target = self
         }
         return menu
     }
@@ -356,6 +362,59 @@ public final class PlaybackGridNSView: NSView {
     @objc private func contextDeleteContainer(_ sender: NSMenuItem) {
         withContextTarget { containerID, trackID in
             commandSink?.deleteContainer(containerID, trackID: trackID)
+        }
+    }
+
+    @objc private func contextDeleteMIDINote(_ sender: NSMenuItem) {
+        guard let containerID = contextMenuTargetContainerID,
+              let noteID = contextMenuTargetMIDINoteID else { return }
+        commandSink?.removeMIDINote(containerID, noteID: noteID)
+    }
+
+    @objc private func contextInsertMIDINote(_ sender: NSMenuItem) {
+        guard let snapshot,
+              let point = contextMenuTargetPoint,
+              let trackID = contextMenuTargetTrackID,
+              let target = midiContextTarget(at: point, preferredTrackID: trackID, snapshot: snapshot) else { return }
+        let note = makeContextMIDINote(at: point, container: target.container, trackID: target.track.id, snapshot: snapshot)
+        commandSink?.addMIDINote(target.container.id, note: note)
+    }
+
+    @objc private func contextCreateContainerAtPoint(_ sender: NSMenuItem) {
+        guard let snapshot,
+              let point = contextMenuTargetPoint,
+              let trackID = contextMenuTargetTrackID else { return }
+        let startBar = snappedBarForContextX(point.x, snapshot: snapshot)
+        _ = commandSink?.createContainer(trackID: trackID, startBar: startBar, lengthBars: 1)
+    }
+
+    @objc private func contextDeleteAutomationBreakpoint(_ sender: NSMenuItem) {
+        guard let trackID = contextMenuTargetTrackID,
+              let laneID = contextMenuTargetAutomationLaneID,
+              let breakpointID = contextMenuTargetAutomationBreakpointID else { return }
+        if let containerID = contextMenuTargetContainerID {
+            commandSink?.removeAutomationBreakpoint(containerID, laneID: laneID, breakpointID: breakpointID)
+        } else {
+            commandSink?.removeTrackAutomationBreakpoint(trackID: trackID, laneID: laneID, breakpointID: breakpointID)
+        }
+    }
+
+    @objc private func contextAddAutomationBreakpoint(_ sender: NSMenuItem) {
+        guard let snapshot,
+              let point = contextMenuTargetPoint,
+              let trackID = contextMenuTargetTrackID,
+              let laneID = contextMenuTargetAutomationLaneID,
+              let breakpoint = makeContextAutomationBreakpoint(
+                at: point,
+                trackID: trackID,
+                containerID: contextMenuTargetContainerID,
+                laneID: laneID,
+                snapshot: snapshot
+              ) else { return }
+        if let containerID = contextMenuTargetContainerID {
+            commandSink?.addAutomationBreakpoint(containerID, laneID: laneID, breakpoint: breakpoint)
+        } else {
+            commandSink?.addTrackAutomationBreakpoint(trackID: trackID, laneID: laneID, breakpoint: breakpoint)
         }
     }
 
@@ -399,7 +458,351 @@ public final class PlaybackGridNSView: NSView {
         action(containerID, trackID)
     }
 
-    public func configure(snapshot newSnapshot: PlaybackGridSnapshot) {
+    private func resetContextMenuTargets() {
+        contextMenuTargetContainerID = nil
+        contextMenuTargetTrackID = nil
+        contextMenuTargetMIDINoteID = nil
+        contextMenuTargetAutomationLaneID = nil
+        contextMenuTargetAutomationBreakpointID = nil
+        contextMenuTargetPoint = nil
+    }
+
+    private func buildContainerContextMenu(
+        snapshot: PlaybackGridSnapshot,
+        containerID: ID<Container>,
+        trackID: ID<Track>
+    ) -> NSMenu {
+        let container = snapshot.tracks
+            .first { $0.id == trackID }?
+            .containers
+            .first { $0.id == containerID }
+        let track = snapshot.tracks.first { $0.id == trackID }
+        let selectedCount = snapshot.selectedContainerIDs.count
+        let isClone = container?.parentContainerID != nil
+        let crossfades = track?.crossfades
+            .filter { $0.containerAID == containerID || $0.containerBID == containerID } ?? []
+
+        let menu = NSMenu(title: "Container")
+        if selectedCount > 1 {
+            menu.addItem(NSMenuItem(title: "Copy \(selectedCount) Containers", action: #selector(contextCopyContainer(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Duplicate \(selectedCount) Containers", action: #selector(contextDuplicateContainer(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Split \(selectedCount) at Playhead", action: #selector(contextSplitContainer(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Glue", action: #selector(contextGlueContainers(_:)), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Delete \(selectedCount) Containers", action: #selector(contextDeleteContainer(_:)), keyEquivalent: ""))
+            return menu
+        }
+
+        menu.addItem(NSMenuItem(title: "Copy", action: #selector(contextCopyContainer(_:)), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Duplicate", action: #selector(contextDuplicateContainer(_:)), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Link (Create Clone)", action: #selector(contextLinkContainer(_:)), keyEquivalent: ""))
+        if isClone {
+            menu.addItem(NSMenuItem(title: "Unlink (Consolidate)", action: #selector(contextUnlinkContainer(_:)), keyEquivalent: ""))
+        }
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Split at Playhead", action: #selector(contextSplitContainer(_:)), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Edit…", action: #selector(contextEditContainer(_:)), keyEquivalent: ""))
+
+        let armTitle = container?.isRecordArmed == true ? "Disarm" : "Arm"
+        menu.addItem(NSMenuItem(title: armTitle, action: #selector(contextToggleArm(_:)), keyEquivalent: ""))
+
+        if !crossfades.isEmpty {
+            let crossfadeMenu = NSMenu(title: "Crossfade Curve")
+            for crossfade in crossfades {
+                let submenu = NSMenu(title: "Crossfade")
+                for curveType in CrossfadeCurveType.allCases {
+                    let item = NSMenuItem(title: curveType.displayName, action: #selector(contextSetCrossfadeCurve(_:)), keyEquivalent: "")
+                    item.representedObject = CrossfadeCurveMenuInfo(crossfadeID: crossfade.id, trackID: trackID, curveType: curveType)
+                    item.target = self
+                    if crossfade.curveType == curveType {
+                        item.state = .on
+                    }
+                    submenu.addItem(item)
+                }
+                if crossfades.count == 1 {
+                    let curveItem = NSMenuItem(title: "Crossfade Curve", action: nil, keyEquivalent: "")
+                    curveItem.submenu = submenu
+                    menu.addItem(curveItem)
+                } else {
+                    let label = crossfade.containerAID == containerID ? "Crossfade (exit)" : "Crossfade (enter)"
+                    let curveItem = NSMenuItem(title: label, action: nil, keyEquivalent: "")
+                    curveItem.submenu = submenu
+                    crossfadeMenu.addItem(curveItem)
+                }
+            }
+            if crossfades.count > 1 {
+                let parentItem = NSMenuItem(title: "Crossfade Curves", action: nil, keyEquivalent: "")
+                parentItem.submenu = crossfadeMenu
+                menu.addItem(parentItem)
+            }
+        }
+
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Delete", action: #selector(contextDeleteContainer(_:)), keyEquivalent: ""))
+        return menu
+    }
+
+    private func buildMIDINoteContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "MIDI Note")
+        menu.addItem(NSMenuItem(title: "Delete Note", action: #selector(contextDeleteMIDINote(_:)), keyEquivalent: ""))
+        return menu
+    }
+
+    private func buildMIDILaneContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "MIDI Lane")
+        menu.addItem(NSMenuItem(title: "Insert Note Here", action: #selector(contextInsertMIDINote(_:)), keyEquivalent: ""))
+        return menu
+    }
+
+    private func buildAutomationContextMenu(isBreakpoint: Bool) -> NSMenu {
+        let menu = NSMenu(title: "Automation Lane")
+        menu.addItem(NSMenuItem(title: "Add Breakpoint Here", action: #selector(contextAddAutomationBreakpoint(_:)), keyEquivalent: ""))
+        if isBreakpoint {
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Delete Breakpoint", action: #selector(contextDeleteAutomationBreakpoint(_:)), keyEquivalent: ""))
+        }
+        return menu
+    }
+
+    private func buildTrackContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "Track")
+        menu.addItem(NSMenuItem(title: "Create Container Here", action: #selector(contextCreateContainerAtPoint(_:)), keyEquivalent: ""))
+        return menu
+    }
+
+    private func midiContextTarget(
+        at point: CGPoint,
+        preferredTrackID: ID<Track>?,
+        snapshot: PlaybackGridSnapshot
+    ) -> (track: Track, container: Container)? {
+        let bar = (Double(max(0, point.x)) / Double(snapshot.pixelsPerBar)) + 1.0
+
+        func containerForTrack(_ track: Track) -> Container? {
+            guard track.kind == .midi else { return nil }
+            let candidates = track.containers.filter { bar >= $0.startBar && bar <= $0.endBar }
+            let laneCandidates = candidates.filter { container in
+                guard let laneRect = midiLaneRect(
+                    containerID: container.id,
+                    trackID: track.id,
+                    snapshot: snapshot
+                ) else { return false }
+                return laneRect.contains(point)
+            }
+            if let selected = laneCandidates.first(where: { snapshot.selectedContainerIDs.contains($0.id) }) {
+                return selected
+            }
+            return laneCandidates.first
+        }
+
+        if let preferredTrackID,
+           let preferredTrack = snapshot.tracks.first(where: { $0.id == preferredTrackID }),
+           let preferredContainer = containerForTrack(preferredTrack) {
+            return (preferredTrack, preferredContainer)
+        }
+
+        for track in snapshot.tracks where track.kind == .midi {
+            if let container = containerForTrack(track) {
+                return (track, container)
+            }
+        }
+        return nil
+    }
+
+    private func makeContextMIDINote(
+        at point: CGPoint,
+        container: Container,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> MIDINoteEvent {
+        guard let laneRect = midiLaneRect(containerID: container.id, trackID: trackID, snapshot: snapshot) else {
+            return MIDINoteEvent(pitch: 60, velocity: 100, startBeat: 0, duration: 1)
+        }
+        let resolved = PlaybackGridMIDIViewResolver.resolveTrackLayout(
+            track: snapshot.tracks.first(where: { $0.id == trackID }) ?? Track(name: "MIDI", kind: .midi),
+            laneHeight: laneRect.height,
+            snapshot: snapshot
+        )
+        let beatsPerBar = Double(snapshot.timeSignature.beatsPerBar)
+        let rawOffsetBars = Double(point.x / snapshot.pixelsPerBar) - (container.startBar - 1.0)
+        let rawOffsetBeats = max(0, min(container.lengthBars * beatsPerBar, rawOffsetBars * beatsPerBar))
+        let startBeat = snapBeat(rawOffsetBeats, snapshot: snapshot)
+        let pitch = pitchForContextPointY(point.y, laneRect: laneRect, resolved: resolved)
+        let duration = snapshot.isSnapEnabled ? contextSnapResolution(snapshot).beatsPerUnit : 1.0
+        let maxStart = max(0, (container.lengthBars * beatsPerBar) - duration)
+        return MIDINoteEvent(
+            pitch: pitch,
+            velocity: 100,
+            startBeat: min(startBeat, maxStart),
+            duration: duration
+        )
+    }
+
+    private func makeContextAutomationBreakpoint(
+        at point: CGPoint,
+        trackID: ID<Track>,
+        containerID: ID<Container>?,
+        laneID: ID<AutomationLane>,
+        snapshot: PlaybackGridSnapshot
+    ) -> AutomationBreakpoint? {
+        guard let laneRect = automationLaneRect(trackID: trackID, containerID: containerID, laneID: laneID, snapshot: snapshot) else {
+            return nil
+        }
+        let clampedValue = max(0, min(1, 1 - ((point.y - laneRect.minY) / max(laneRect.height, 1))))
+        if let containerID,
+           let track = snapshot.tracks.first(where: { $0.id == trackID }),
+           let container = track.containers.first(where: { $0.id == containerID }) {
+            let rawBar = (Double(max(0, point.x)) / Double(snapshot.pixelsPerBar)) + 1.0
+            let clampedBar = max(container.startBar, min(container.endBar, rawBar))
+            let normalized = max(0, min(1, (clampedBar - container.startBar) / max(container.lengthBars, 0.0001)))
+            return AutomationBreakpoint(position: normalized, value: Float(clampedValue))
+        }
+
+        let snappedBar = snappedBarForContextX(point.x, snapshot: snapshot)
+        return AutomationBreakpoint(position: snappedBar, value: Float(clampedValue))
+    }
+
+    private func automationLaneRect(
+        trackID: ID<Track>,
+        containerID: ID<Container>?,
+        laneID: ID<AutomationLane>,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect? {
+        guard let trackLayout = scene.trackLayouts.first(where: { $0.track.id == trackID }),
+              let track = snapshot.tracks.first(where: { $0.id == trackID }) else {
+            return nil
+        }
+
+        let targetPath: EffectPath?
+        if let containerID,
+           let container = track.containers.first(where: { $0.id == containerID }) {
+            targetPath = container.automationLanes.first(where: { $0.id == laneID })?.targetPath
+        } else {
+            targetPath = track.trackAutomationLanes.first(where: { $0.id == laneID })?.targetPath
+        }
+        guard let targetPath,
+              let layout = trackLayout.automationLaneLayouts.first(where: { $0.targetPath == targetPath }) else {
+            return nil
+        }
+
+        if let containerID,
+           let containerRect = containerRect(containerID: containerID, trackID: trackID, snapshot: snapshot) {
+            return CGRect(x: containerRect.minX, y: layout.rect.minY, width: containerRect.width, height: layout.rect.height)
+        }
+        return layout.rect
+    }
+
+    private func containerRect(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect? {
+        for layout in scene.trackLayouts where layout.track.id == trackID {
+            guard let containerLayout = layout.containers.first(where: { $0.container.id == containerID }) else { return nil }
+            return containerLayout.rect
+        }
+        return nil
+    }
+
+    private func midiLaneRect(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect? {
+        guard let baseRect = containerRect(containerID: containerID, trackID: trackID, snapshot: snapshot) else {
+            return nil
+        }
+        let inlineHeight = snapshot.inlineMIDILaneHeights[trackID] ?? 0
+        guard inlineHeight > 0 else { return baseRect }
+        let automationExtra = automationTrackExtraHeight(trackID: trackID, snapshot: snapshot)
+        let noteAreaHeight = snapshot.inlineMIDIConfigs[trackID]?.noteAreaHeight(totalInlineHeight: inlineHeight) ?? inlineHeight
+        return CGRect(
+            x: baseRect.minX,
+            y: baseRect.maxY + automationExtra,
+            width: baseRect.width,
+            height: noteAreaHeight
+        )
+    }
+
+    private func midiVelocityLaneRect(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        snapshot: PlaybackGridSnapshot
+    ) -> CGRect? {
+        guard let config = snapshot.inlineMIDIConfigs[trackID],
+              let velocityLane = config.detailLanes.first(where: { $0.lane == .velocity }),
+              let noteAreaRect = midiLaneRect(
+                containerID: containerID,
+                trackID: trackID,
+                snapshot: snapshot
+              ) else {
+            return nil
+        }
+        return CGRect(
+            x: noteAreaRect.minX,
+            y: noteAreaRect.maxY,
+            width: noteAreaRect.width,
+            height: velocityLane.height
+        )
+    }
+
+    private func automationTrackExtraHeight(trackID: ID<Track>, snapshot: PlaybackGridSnapshot) -> CGFloat {
+        guard let track = snapshot.tracks.first(where: { $0.id == trackID }),
+              snapshot.automationExpandedTrackIDs.contains(track.id) else {
+            return 0
+        }
+        var seen = Set<EffectPath>()
+        var count = 0
+        for lane in track.trackAutomationLanes where seen.insert(lane.targetPath).inserted {
+            count += 1
+        }
+        for container in track.containers {
+            for lane in container.automationLanes where seen.insert(lane.targetPath).inserted {
+                count += 1
+            }
+        }
+        guard count > 0 else { return 0 }
+        return snapshot.automationToolbarHeight + (CGFloat(count) * snapshot.automationSubLaneHeight)
+    }
+
+    private func pitchForContextPointY(
+        _ y: CGFloat,
+        laneRect: CGRect,
+        resolved: PlaybackGridMIDIResolvedLayout
+    ) -> UInt8 {
+        let clampedY = max(laneRect.minY, min(laneRect.maxY - 0.001, y))
+        let rowFromTop = Int(floor((clampedY - laneRect.minY) / max(resolved.rowHeight, 1)))
+        let clampedRow = max(0, min(max(resolved.rows - 1, 0), rowFromTop))
+        return UInt8(clamping: Int(resolved.highPitch) - clampedRow)
+    }
+
+    private func snappedBarForContextX(_ x: CGFloat, snapshot: PlaybackGridSnapshot) -> Double {
+        let rawBar = (Double(max(0, x)) / Double(snapshot.pixelsPerBar)) + 1.0
+        let beatsPerBar = Double(snapshot.timeSignature.beatsPerBar)
+        let totalBeats = (rawBar - 1.0) * beatsPerBar
+        let snappedBeats = snapBeat(totalBeats, snapshot: snapshot)
+        return max((snappedBeats / beatsPerBar) + 1.0, 1.0)
+    }
+
+    private func snapBeat(_ beat: Double, snapshot: PlaybackGridSnapshot) -> Double {
+        guard snapshot.isSnapEnabled else { return beat }
+        let unit = contextSnapResolution(snapshot).beatsPerUnit
+        return (beat / unit).rounded() * unit
+    }
+
+    private func contextSnapResolution(_ snapshot: PlaybackGridSnapshot) -> SnapResolution {
+        switch snapshot.gridMode {
+        case .fixed(let resolution):
+            return resolution
+        case .adaptive:
+            let ppBeat = snapshot.pixelsPerBar / CGFloat(snapshot.timeSignature.beatsPerBar)
+            if ppBeat >= 150 { return .thirtySecond }
+            if ppBeat >= 80 { return .sixteenth }
+            if ppBeat >= 40 { return .quarter }
+            return .whole
+        }
+    }
+
+    public func configure(snapshot newSnapshot: PlaybackGridSnapshot, prebuiltScene: PlaybackGridScene? = nil) {
         PlaybackGridPerfLogger.bump("grid.configure.calls")
         if let oldSnapshot = snapshot {
             let compareStart = PlaybackGridPerfLogger.begin()
@@ -420,7 +823,7 @@ public final class PlaybackGridNSView: NSView {
         let oldScene = scene
         snapshot = newSnapshot
         let buildStart = PlaybackGridPerfLogger.begin()
-        scene = sceneBuilder.build(snapshot: newSnapshot)
+        scene = prebuiltScene ?? sceneBuilder.build(snapshot: newSnapshot)
         PlaybackGridPerfLogger.end("grid.configure.sceneBuild.ms", buildStart)
         needsBufferRebuild = true
         configureWillRedraw = true
@@ -542,13 +945,20 @@ public final class PlaybackGridNSView: NSView {
 
         addTrackingArea(NSTrackingArea(
             rect: bounds,
-            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
+            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .inVisibleRect],
             owner: self
         ))
     }
 
+    public override func cursorUpdate(with event: NSEvent) {
+        guard let snapshot else { return }
+        let local = convert(event.locationInWindow, from: nil)
+        applyCursorStyle(desiredCursorStyle(at: local, snapshot: snapshot))
+    }
+
     public override func mouseMoved(with event: NSEvent) {
         PlaybackGridPerfLogger.bump("input.mouseMoved")
+        guard let snapshot else { return }
         let local = convert(event.locationInWindow, from: nil)
         if let last = lastCursorPoint,
            abs(last.x - local.x) < 0.5,
@@ -561,11 +971,21 @@ public final class PlaybackGridNSView: NSView {
         // During active drags/edits we do not need hover picking. Skipping it
         // avoids CPU-heavy hit-tests while pointer events are already saturated.
         if interactionController.isInteractionActive {
+            applyCursorStyle(desiredCursorStyle(at: local, snapshot: snapshot))
             PlaybackGridPerfLogger.bump("grid.pick.skippedWhileInteracting")
             return
         }
 
-        guard let snapshot else { return }
+        if let trackID = inlineMIDITrackID(at: local, snapshot: snapshot),
+           !isPointNearInlineMIDILaneResizeHandle(local, snapshot: snapshot) {
+            applyCursorStyle(inlineMIDICursorStyle(trackID: trackID, snapshot: snapshot))
+            if hoveredPick != .none {
+                hoveredPick = .none
+                needsDisplay = true
+            }
+            return
+        }
+
         let pickStart = PlaybackGridPerfLogger.begin()
         let pick = pickingRenderer.pick(
             at: local,
@@ -575,34 +995,7 @@ public final class PlaybackGridNSView: NSView {
             canvasWidth: bounds.width
         )
         PlaybackGridPerfLogger.end("grid.pick.mouseMoved.ms", pickStart)
-
-        if isPointNearInlineMIDILaneResizeHandle(local, snapshot: snapshot) {
-            NSCursor.resizeUpDown.set()
-        } else {
-            switch pick.kind {
-            case .midiNote:
-                if pick.zone == .resizeLeft || pick.zone == .resizeRight {
-                    NSCursor.resizeLeftRight.set()
-                } else {
-                    NSCursor.openHand.set()
-                }
-            case .containerZone:
-                switch pick.zone {
-                case .fadeLeft, .fadeRight:
-                    NSCursor.crosshair.set()
-                case .resizeLeft, .resizeRight, .trimLeft, .trimRight:
-                    NSCursor.resizeLeftRight.set()
-                case .selector:
-                    NSCursor.iBeam.set()
-                case .move:
-                    NSCursor.openHand.set()
-                case nil:
-                    NSCursor.arrow.set()
-                }
-            default:
-                NSCursor.arrow.set()
-            }
-        }
+        applyCursorStyle(cursorStyle(forHoverPick: pick, point: local, snapshot: snapshot))
 
         let newHoveredPick: GridPickObject
         switch pick.kind {
@@ -630,6 +1023,7 @@ public final class PlaybackGridNSView: NSView {
             hoveredPick = .none
             needsDisplay = true
         }
+        currentCursorStyle = .arrow
         NSCursor.arrow.set()
     }
 
@@ -671,6 +1065,7 @@ public final class PlaybackGridNSView: NSView {
             snapshot: snapshot,
             modifiers: event.modifierFlags
         )
+        applyCursorStyle(desiredCursorStyle(at: local, snapshot: snapshot))
         if visualChanged {
             needsDisplay = true
         }
@@ -685,6 +1080,7 @@ public final class PlaybackGridNSView: NSView {
             snapshot: snapshot,
             modifiers: event.modifierFlags
         )
+        applyCursorStyle(desiredCursorStyle(at: local, snapshot: snapshot))
         needsDisplay = true
     }
 
@@ -695,12 +1091,31 @@ public final class PlaybackGridNSView: NSView {
             return
         }
         let local = convert(event.locationInWindow, from: nil)
-        guard let trackID = inlineMIDITrackID(at: local, snapshot: snapshot) else {
+        let mods = event.modifierFlags
+
+        if mods.contains(.option), abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) {
+            if let trackID = inlineMIDITrackID(at: local, snapshot: snapshot) {
+                commandSink?.adjustInlineMIDIRowHeight(
+                    trackID: trackID,
+                    delta: inlineMIDIZoomDelta(for: event)
+                )
+                return
+            }
+            if let trackID = trackID(at: local) {
+                commandSink?.adjustTrackHeight(
+                    trackID: trackID,
+                    delta: trackHeightZoomDelta(for: event)
+                )
+                return
+            }
+        }
+
+        guard let trackID = inlineMIDIKeyboardTrackID(at: local, snapshot: snapshot) else {
+            midiRangeScrollAccumulator = 0
             super.scrollWheel(with: event)
             return
         }
 
-        let mods = event.modifierFlags
         let signedStep: CGFloat = event.scrollingDeltaY > 0 ? 1 : -1
         if mods.contains(.command) {
             commandSink?.adjustInlineMIDIRowHeight(trackID: trackID, delta: signedStep)
@@ -770,6 +1185,7 @@ public final class PlaybackGridNSView: NSView {
         waveformOverlayLayer.frame = visible
         waveformOverlayLayer.isHidden = !useWaveformTiles
         textOverlayLayer.frame = visible
+        midiMarqueeLayer.frame = visible
         CATransaction.commit()
 
         renderer.useWaveformTileOverlay = useWaveformTiles
@@ -806,7 +1222,7 @@ public final class PlaybackGridNSView: NSView {
             needsDisplay = true
         }
 
-        if needsBufferRebuild {
+        if needsBufferRebuild || !midiOverlays.isEmpty {
             PlaybackGridPerfLogger.bump("grid.updateLayer.bufferRebuild")
             let rebuildStart = PlaybackGridPerfLogger.begin()
             renderer.buildBuffers(
@@ -814,6 +1230,7 @@ public final class PlaybackGridNSView: NSView {
                 snapshot: snapshot,
                 canvasSize: bounds.size,
                 visibleRect: visible,
+                midiOverlays: midiOverlays,
                 focusedPick: .none,
                 suppressedAutomationLanes: suppressedAutomationLanes
             )
@@ -874,26 +1291,35 @@ public final class PlaybackGridNSView: NSView {
         textOverlayLayer.showRulerAndSections = snapshot.showRulerAndSections
         textOverlayLayer.viewportOrigin = visible.origin
         if interactionController.isInteractionActive {
-            // Preserve previously visible note labels while dragging and only add
-            // the actively dragged live-note labels. This avoids costly relayout
-            // of the whole MIDI text set and prevents labels from disappearing.
+            // While dragging MIDI notes, render only the live overlay labels so
+            // the text stays attached to the moving note instead of leaving a
+            // stale cached label behind.
             let liveLabels = buildLiveMIDINoteOverlayLabels(
                 snapshot: snapshot,
                 midiOverlays: midiOverlays
             )
-            textOverlayLayer.midiNoteLabels = cachedMIDINoteLabels + liveLabels
+            textOverlayLayer.midiNoteLabels = liveLabels + buildMIDIVelocityValueLabels(
+                snapshot: snapshot,
+                midiOverlays: midiOverlays
+            )
         } else {
             let labels = buildMIDINoteLabels(
                 snapshot: snapshot,
                 midiOverlays: midiOverlays
             )
-            cachedMIDINoteLabels = labels
-            textOverlayLayer.midiNoteLabels = labels
+            let combinedLabels = labels + buildMIDIVelocityValueLabels(
+                snapshot: snapshot,
+                midiOverlays: midiOverlays
+            )
+            cachedMIDINoteLabels = combinedLabels
+            textOverlayLayer.midiNoteLabels = combinedLabels
         }
         if textOverlayLayer.updateIfNeeded() {
             textOverlayLayer.displayIfNeeded()
         }
         PlaybackGridPerfLogger.end("grid.updateLayer.textOverlay.ms", textStart)
+
+        updateMIDIMarqueeLayer(visibleRect: visible)
 
         let passDesc = MTLRenderPassDescriptor()
         passDesc.colorAttachments[0].texture = drawable.texture
@@ -941,6 +1367,17 @@ public final class PlaybackGridNSView: NSView {
 
         lastDrawDuration = CACurrentMediaTime() - drawStart
         PlaybackGridPerfLogger.recordDurationMs("grid.updateLayer.lastDraw.ms", lastDrawDuration * 1000.0)
+    }
+
+    private func updateMIDIMarqueeLayer(visibleRect: CGRect) {
+        guard let rect = interactionController.activeMIDIMarqueeRect else {
+            midiMarqueeLayer.path = nil
+            midiMarqueeLayer.isHidden = true
+            return
+        }
+        let localRect = rect.offsetBy(dx: -visibleRect.minX, dy: -visibleRect.minY).integral.insetBy(dx: 0.5, dy: 0.5)
+        midiMarqueeLayer.path = CGPath(rect: localRect, transform: nil)
+        midiMarqueeLayer.isHidden = localRect.isEmpty
     }
 
     public override var intrinsicContentSize: NSSize {
@@ -1309,6 +1746,7 @@ public final class PlaybackGridNSView: NSView {
                 ) else { continue }
                 guard noteRect.width >= 20, noteRect.height >= 10 else { continue }
                 labels.append(.init(
+                    noteID: overlay.note.id,
                     text: PianoLayout.noteName(overlay.note.pitch),
                     worldRect: noteRect,
                     isFocused: true
@@ -1356,6 +1794,7 @@ public final class PlaybackGridNSView: NSView {
                     ) else { continue }
                     guard noteRect.width >= 30, noteRect.height >= 11 else { continue }
                     labels.append(.init(
+                        noteID: note.id,
                         text: PianoLayout.noteName(note.pitch),
                         worldRect: noteRect,
                         isFocused: focusedNoteID == note.id
@@ -1389,6 +1828,7 @@ public final class PlaybackGridNSView: NSView {
             ) else { continue }
             guard noteRect.width >= 30, noteRect.height >= 11 else { continue }
             labels.append(.init(
+                noteID: overlay.note.id,
                 text: PianoLayout.noteName(overlay.note.pitch),
                 worldRect: noteRect,
                 isFocused: true
@@ -1442,12 +1882,245 @@ public final class PlaybackGridNSView: NSView {
             ) else { continue }
             guard noteRect.width >= 20, noteRect.height >= 10 else { continue }
             labels.append(.init(
+                noteID: overlay.note.id,
                 text: PianoLayout.noteName(overlay.note.pitch),
                 worldRect: noteRect,
                 isFocused: true
             ))
         }
         return labels
+    }
+
+    private func buildMIDIVelocityValueLabels(
+        snapshot: PlaybackGridSnapshot,
+        midiOverlays: [PlaybackGridMIDINoteOverlay]
+    ) -> [TimelineTextOverlayLayer.MIDINoteLabelLayout] {
+        guard let target = velocityValueTarget(snapshot: snapshot, midiOverlays: midiOverlays),
+              let trackLayout = scene.trackLayouts.first(where: { $0.track.id == target.trackID }),
+              let containerLayout = trackLayout.containers.first(where: { $0.container.id == target.containerID }),
+              let laneRect = midiVelocityLaneRect(
+                containerID: target.containerID,
+                trackID: target.trackID,
+                snapshot: snapshot
+              ) else {
+            return []
+        }
+
+        let midiRect = midiEditorRect(
+            trackLayout: trackLayout,
+            for: containerLayout,
+            snapshot: snapshot
+        )
+        let resolved = PlaybackGridMIDIViewResolver.resolveTrackLayout(
+            trackLayout: trackLayout,
+            laneHeight: midiRect.height,
+            snapshot: snapshot
+        )
+        guard let noteRect = PlaybackGridMIDIViewResolver.noteRect(
+            note: target.note,
+            containerLengthBars: containerLayout.container.lengthBars,
+            laneRect: midiRect,
+            timeSignature: snapshot.timeSignature,
+            resolved: resolved
+        ) else {
+            return []
+        }
+
+        let x = min(
+            max(noteRect.minX + min(noteRect.width * 0.25, 10), laneRect.minX + 6),
+            laneRect.maxX - 6
+        )
+        let normalized = max(0.0, min(1.0, CGFloat(target.note.velocity) / 127.0))
+        let topY = laneRect.maxY - max(5, normalized * max(laneRect.height - 8, 1))
+        let labelWidth: CGFloat = 36
+        let labelRect = CGRect(
+            x: min(max(x - (labelWidth * 0.5), laneRect.minX + 2), laneRect.maxX - labelWidth - 2),
+            y: max(laneRect.minY + 2, topY - 16),
+            width: labelWidth,
+            height: 12
+        )
+        return [
+            .init(
+                noteID: target.note.id,
+                text: "\(target.note.velocity)",
+                worldRect: labelRect,
+                isFocused: true
+            )
+        ]
+    }
+
+    private func velocityValueTarget(
+        snapshot: PlaybackGridSnapshot,
+        midiOverlays: [PlaybackGridMIDINoteOverlay]
+    ) -> (note: MIDINoteEvent, containerID: ID<Container>, trackID: ID<Track>)? {
+        if case let .draggingMIDINote(context) = interactionController.state,
+           context.kind == .velocity {
+            if let overlay = midiOverlays.last(where: {
+                !$0.isGhost
+                && $0.containerID == context.containerID
+                && $0.trackID == context.trackID
+                && $0.note.id == context.noteID
+            }) {
+                return (overlay.note, overlay.containerID, overlay.trackID)
+            }
+            if let note = resolveMIDINote(
+                noteID: context.noteID,
+                containerID: context.containerID,
+                trackID: context.trackID
+            ) {
+                return (note, context.containerID, context.trackID)
+            }
+        }
+
+        guard hoveredPick.kind == .midiNote,
+              let noteID = hoveredPick.midiNoteID,
+              let containerID = hoveredPick.containerID,
+              let trackID = hoveredPick.trackID else {
+            return nil
+        }
+
+        if let overlay = midiOverlays.last(where: {
+            !$0.isGhost
+            && $0.containerID == containerID
+            && $0.trackID == trackID
+            && $0.note.id == noteID
+        }) {
+            return (overlay.note, overlay.containerID, overlay.trackID)
+        }
+        guard let note = resolveMIDINote(
+            noteID: noteID,
+            containerID: containerID,
+            trackID: trackID
+        ) else {
+            return nil
+        }
+        return (note, containerID, trackID)
+    }
+
+    private func resolveMIDINote(
+        noteID: ID<MIDINoteEvent>,
+        containerID: ID<Container>,
+        trackID: ID<Track>
+    ) -> MIDINoteEvent? {
+        guard let trackLayout = scene.trackLayouts.first(where: { $0.track.id == trackID }),
+              let containerLayout = trackLayout.containers.first(where: { $0.container.id == containerID }) else {
+            return nil
+        }
+        return containerLayout.resolvedMIDINotes?.first(where: { $0.id == noteID })
+    }
+
+    private func desiredCursorStyle(at point: CGPoint, snapshot: PlaybackGridSnapshot) -> CursorStyle {
+        if let trackID = inlineMIDITrackID(at: point, snapshot: snapshot),
+           !isPointNearInlineMIDILaneResizeHandle(point, snapshot: snapshot) {
+            return inlineMIDICursorStyle(trackID: trackID, snapshot: snapshot)
+        }
+        if interactionController.isInteractionActive {
+            return cursorStyle(forInteractionState: interactionController.state)
+        }
+        let pick = pickingRenderer.pick(
+            at: point,
+            scene: scene,
+            snapshot: snapshot,
+            visibleRect: visibleRect,
+            canvasWidth: bounds.width
+        )
+        return cursorStyle(forHoverPick: pick, point: point, snapshot: snapshot)
+    }
+
+    private func inlineMIDICursorStyle(trackID: ID<Track>, snapshot: PlaybackGridSnapshot) -> CursorStyle {
+        switch snapshot.inlineMIDIConfigs[trackID]?.tool {
+        case .pencil:
+            return .crosshair
+        case .pointer, .none:
+            return .arrow
+        }
+    }
+
+    private func cursorStyle(forHoverPick pick: GridPickObject, point: CGPoint, snapshot: PlaybackGridSnapshot) -> CursorStyle {
+        if isPointNearInlineMIDILaneResizeHandle(point, snapshot: snapshot) {
+            return .resizeUpDown
+        }
+        switch pick.kind {
+        case .midiNote:
+            return (pick.zone == .resizeLeft || pick.zone == .resizeRight) ? .resizeLeftRight : .openHand
+        case .containerZone:
+            switch pick.zone {
+            case .fadeLeft, .fadeRight:
+                return .crosshair
+            case .resizeLeft, .resizeRight, .trimLeft, .trimRight:
+                return .resizeLeftRight
+            case .selector:
+                return .iBeam
+            case .move:
+                return .openHand
+            case nil:
+                return .arrow
+            }
+        default:
+            return .arrow
+        }
+    }
+
+    private func cursorStyle(forInteractionState state: PlaybackGridInteractionState) -> CursorStyle {
+        switch state {
+        case .idle:
+            return .arrow
+        case .scrubbingRuler, .selectingRange:
+            return .iBeam
+        case .selectingMIDINotes:
+            return .arrow
+        case .resizingMIDILane:
+            return .resizeUpDown
+        case .creatingMIDINote, .drawingAutomationShape, .drawingTrackAutomationShape:
+            return .crosshair
+        case let .draggingMIDINote(context):
+            switch context.kind {
+            case .move:
+                return .closedHand
+            case .resizeLeft, .resizeRight:
+                return .resizeLeftRight
+            case .velocity:
+                return .resizeUpDown
+            }
+        case let .draggingContainer(context):
+            switch context.kind {
+            case .clone:
+                return .dragCopy
+            case .move:
+                return .closedHand
+            case .resizeLeft, .resizeRight, .trimLeft, .trimRight:
+                return .resizeLeftRight
+            case .fadeLeft, .fadeRight:
+                return .crosshair
+            }
+        case .creatingContainer:
+            return .crosshair
+        case .draggingAutomationBreakpoint, .draggingTrackAutomationBreakpoint:
+            return .crosshair
+        }
+    }
+
+    private func applyCursorStyle(_ style: CursorStyle) {
+        guard style != currentCursorStyle else { return }
+        currentCursorStyle = style
+        switch style {
+        case .arrow:
+            NSCursor.arrow.set()
+        case .crosshair:
+            NSCursor.crosshair.set()
+        case .openHand:
+            NSCursor.openHand.set()
+        case .closedHand:
+            NSCursor.closedHand.set()
+        case .resizeLeftRight:
+            NSCursor.resizeLeftRight.set()
+        case .resizeUpDown:
+            NSCursor.resizeUpDown.set()
+        case .iBeam:
+            NSCursor.iBeam.set()
+        case .dragCopy:
+            NSCursor.dragCopy.set()
+        }
     }
 
     private func updateLiveCursor(at x: CGFloat) {
@@ -1479,13 +2152,14 @@ public final class PlaybackGridNSView: NSView {
     ) -> CGRect {
         let inlineHeight = snapshot.inlineMIDILaneHeights[trackLayout.track.id] ?? 0
         guard inlineHeight > 0 else { return containerLayout.rect }
+        let noteAreaHeight = snapshot.inlineMIDIConfigs[trackLayout.track.id]?.noteAreaHeight(totalInlineHeight: inlineHeight) ?? inlineHeight
         let automationHeight = trackLayout.automationToolbarHeight
             + (CGFloat(trackLayout.automationLaneLayouts.count) * snapshot.automationSubLaneHeight)
         return CGRect(
             x: containerLayout.rect.minX,
             y: trackLayout.yOrigin + trackLayout.clipHeight + automationHeight,
             width: containerLayout.rect.width,
-            height: inlineHeight
+            height: noteAreaHeight
         )
     }
 
@@ -1531,6 +2205,43 @@ public final class PlaybackGridNSView: NSView {
             }
         }
         return nil
+    }
+
+    private func trackID(at point: CGPoint) -> ID<Track>? {
+        for layout in scene.trackLayouts {
+            let trackRect = CGRect(
+                x: 0,
+                y: layout.yOrigin,
+                width: bounds.width,
+                height: layout.height
+            )
+            if trackRect.contains(point) {
+                return layout.track.id
+            }
+        }
+        return nil
+    }
+
+    private func inlineMIDIKeyboardTrackID(
+        at point: CGPoint,
+        snapshot: PlaybackGridSnapshot
+    ) -> ID<Track>? {
+        guard point.x <= PianoRollLayout.keyboardWidth else { return nil }
+        return inlineMIDITrackID(at: point, snapshot: snapshot)
+    }
+
+    private func inlineMIDIZoomDelta(for event: NSEvent) -> CGFloat {
+        if event.hasPreciseScrollingDeltas {
+            return max(-3.0, min(3.0, CGFloat(event.scrollingDeltaY) * 0.12))
+        }
+        return event.scrollingDeltaY > 0 ? 1.5 : -1.5
+    }
+
+    private func trackHeightZoomDelta(for event: NSEvent) -> CGFloat {
+        if event.hasPreciseScrollingDeltas {
+            return max(-18.0, min(18.0, CGFloat(event.scrollingDeltaY) * 0.75))
+        }
+        return event.scrollingDeltaY > 0 ? 12 : -12
     }
 
     private func presentAutomationValueEditor(

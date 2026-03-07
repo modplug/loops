@@ -16,6 +16,9 @@ struct InlinePianoRollView: View {
     var onAddNote: ((ID<Container>, MIDINoteEvent) -> Void)?
     var onUpdateNote: ((ID<Container>, MIDINoteEvent) -> Void)?
     var onRemoveNote: ((ID<Container>, ID<MIDINoteEvent>) -> Void)?
+    var onAddControllerEvent: ((ID<Container>, MIDIControllerEvent) -> Void)?
+    var onUpdateControllerEvent: ((ID<Container>, MIDIControllerEvent) -> Void)?
+    var onRemoveControllerEvent: ((ID<Container>, ID<MIDIControllerEvent>) -> Void)?
     var onNotePreview: ((_ pitch: UInt8, _ isNoteOn: Bool) -> Void)?
     var onOpenSheet: (() -> Void)?
     var onOverrideMIDI: (() -> Void)?
@@ -129,6 +132,10 @@ struct InlinePianoRollView: View {
                 lowPitch: $editorState.lowPitch,
                 highPitch: $editorState.highPitch,
                 rowHeight: $editorState.rowHeight,
+                selectedTool: $editorState.selectedTool,
+                selectedExpressionLane: $editorState.selectedExpressionLane,
+                visibleExpressionLanes: $editorState.visibleExpressionLanes,
+                noteExpressionLaneHeights: $editorState.noteExpressionLaneHeights,
                 selectedNoteIDs: $editorState.selectedNoteIDs,
                 playheadBeat: nil,
                 containerStartBar: 1,
@@ -155,6 +162,15 @@ struct InlinePianoRollView: View {
                 },
                 onRemoveNote: activeIsLinkedInherited ? nil : { noteID in
                     onRemoveNote?(activeContainerID, noteID)
+                },
+                onAddControllerEvent: activeIsLinkedInherited ? nil : { event in
+                    onAddControllerEvent?(activeContainerID, event)
+                },
+                onUpdateControllerEvent: activeIsLinkedInherited ? nil : { event in
+                    onUpdateControllerEvent?(activeContainerID, event)
+                },
+                onRemoveControllerEvent: activeIsLinkedInherited ? nil : { eventID in
+                    onRemoveControllerEvent?(activeContainerID, eventID)
                 },
                 onNotePreview: onNotePreview
             )
@@ -198,6 +214,29 @@ struct InlinePianoRollView: View {
         }
     }
 
+    private func focusLane(_ lane: MIDINoteExpressionLane) {
+        editorState.selectedExpressionLane = lane
+        editorState.showExpressionLane(lane)
+    }
+
+    private func adjustVisiblePitchSpan(by semitones: Int) {
+        let low = Int(editorState.lowPitch)
+        let high = Int(editorState.highPitch)
+        let currentSpan = max(12, high - low + 1)
+        let nextSpan = min(84, max(12, currentSpan + semitones))
+        let center = low + (currentSpan / 2)
+        let newLow = max(0, min(127 - nextSpan + 1, center - (nextSpan / 2)))
+        let newHigh = newLow + nextSpan - 1
+        editorState.lowPitch = UInt8(clamping: newLow)
+        editorState.highPitch = UInt8(clamping: newHigh)
+    }
+
+    private func fitToContent() {
+        guard let low = activeSequence.lowestPitch, let high = activeSequence.highestPitch else { return }
+        editorState.lowPitch = UInt8(max(0, Int(low) - 6))
+        editorState.highPitch = UInt8(min(127, Int(high) + 6))
+    }
+
     // MARK: - Inline Toolbar
 
     private var inlineToolbar: some View {
@@ -215,6 +254,18 @@ struct InlinePianoRollView: View {
 
             Spacer()
 
+            ForEach(MIDITool.allCases, id: \.self) { tool in
+                Button(action: { editorState.selectedTool = tool }) {
+                    Image(systemName: tool.iconName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(editorState.selectedTool == tool ? Color.primary : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(tool.label)
+            }
+
+            Divider().frame(height: 14)
+
             // Snap resolution
             Picker("", selection: $editorState.snapResolution) {
                 ForEach(SnapResolution.allCases, id: \.self) { res in
@@ -225,6 +276,61 @@ struct InlinePianoRollView: View {
             .controlSize(.small)
 
             Divider().frame(height: 14)
+
+            Menu {
+                ForEach(MIDINoteExpressionLane.allCases, id: \.self) { lane in
+                    Button {
+                        editorState.selectedExpressionLane = lane
+                        editorState.showExpressionLane(lane)
+                    } label: {
+                        Label(lane.label, systemImage: editorState.isExpressionLaneVisible(lane) ? "checkmark.circle.fill" : lane.iconName)
+                    }
+                }
+            } label: {
+                Label(editorState.selectedExpressionLane.shortLabel, systemImage: editorState.selectedExpressionLane.iconName)
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption)
+                    .foregroundStyle(!editorState.visibleExpressionLanes.isEmpty ? Color.primary : Color.secondary)
+            }
+            .menuStyle(.borderlessButton)
+
+            Button(action: {
+                editorState.toggleExpressionLane(editorState.selectedExpressionLane)
+            }) {
+                Image(systemName: editorState.isExpressionLaneVisible(editorState.selectedExpressionLane) ? "rectangle.bottomthird.inset.filled" : "rectangle.bottomthird.inset")
+                    .foregroundStyle(editorState.isExpressionLaneVisible(editorState.selectedExpressionLane) ? Color.primary : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .controlSize(.small)
+            .help(editorState.isExpressionLaneVisible(editorState.selectedExpressionLane) ? "Hide Active MIDI Lane" : "Show Active MIDI Lane")
+
+            Button("Vel") {
+                focusLane(.velocity)
+            }
+            .buttonStyle(.plain)
+            .controlSize(.small)
+            .help("Show and focus velocity lane")
+
+            Button("-Range") {
+                adjustVisiblePitchSpan(by: -6)
+            }
+            .buttonStyle(.plain)
+            .controlSize(.small)
+            .help("Show fewer notes")
+
+            Button("+Range") {
+                adjustVisiblePitchSpan(by: 6)
+            }
+            .buttonStyle(.plain)
+            .controlSize(.small)
+            .help("Show more notes")
+
+            Button("Fit") {
+                fitToContent()
+            }
+            .buttonStyle(.plain)
+            .controlSize(.small)
+            .help("Fit pitch range to content")
 
             // Pop-out to sheet
             Button(action: { onOpenSheet?() }) {
@@ -357,4 +463,3 @@ struct HorizontalScrollObserver: NSViewRepresentable {
         }
     }
 }
-

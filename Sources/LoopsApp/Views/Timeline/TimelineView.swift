@@ -357,6 +357,15 @@ public struct TimelineView: View {
                 onRemoveNote: { containerID, noteID in
                     projectViewModel.removeMIDINote(containerID: containerID, noteID: noteID)
                 },
+                onAddControllerEvent: { containerID, event in
+                    projectViewModel.addMIDIControllerEvent(containerID: containerID, event: event)
+                },
+                onUpdateControllerEvent: { containerID, event in
+                    projectViewModel.updateMIDIControllerEvent(containerID: containerID, event: event)
+                },
+                onRemoveControllerEvent: { containerID, eventID in
+                    projectViewModel.removeMIDIControllerEvent(containerID: containerID, eventID: eventID)
+                },
                 onNotePreview: onNotePreview,
                 onOpenSheet: onOpenPianoRollSheet,
                 onOverrideMIDI: {

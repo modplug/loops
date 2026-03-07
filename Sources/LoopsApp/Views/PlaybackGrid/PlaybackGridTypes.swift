@@ -68,6 +68,7 @@ public enum PlaybackGridInteractionState: Equatable {
     case idle
     case scrubbingRuler
     case selectingRange(startBar: Int, startPoint: CGPoint, containerID: ID<Container>?)
+    case selectingMIDINotes(context: PlaybackGridMIDIMarqueeContext)
     case draggingContainer(context: PlaybackGridContainerDragContext)
     case creatingContainer(context: PlaybackGridContainerCreateContext)
     case resizingMIDILane(context: PlaybackGridMIDILaneResizeContext)
@@ -154,6 +155,14 @@ public struct PlaybackGridMIDILaneResizeContext: Equatable {
     public var originHeight: CGFloat
 }
 
+public struct PlaybackGridMIDIMarqueeContext: Equatable {
+    public var containerID: ID<Container>
+    public var trackID: ID<Track>
+    public var startPoint: CGPoint
+    public var currentPoint: CGPoint
+    public var additive: Bool
+}
+
 public struct PlaybackGridMIDINoteDragContext: Equatable {
     public var kind: PlaybackGridMIDINoteDragKind
     public var containerID: ID<Container>
@@ -163,12 +172,15 @@ public struct PlaybackGridMIDINoteDragContext: Equatable {
     public var originalNote: MIDINoteEvent
     public var containerStartBar: Double
     public var containerLengthBars: Double
+    public var isCopying: Bool
+    public var didDrag: Bool
 }
 
 public enum PlaybackGridMIDINoteDragKind: Equatable {
     case move
     case resizeLeft
     case resizeRight
+    case velocity
 }
 
 public struct PlaybackGridMIDINoteCreateContext: Equatable {
@@ -177,6 +189,7 @@ public struct PlaybackGridMIDINoteCreateContext: Equatable {
     public var startPoint: CGPoint
     public var startBeat: Double
     public var pitch: UInt8
+    public var didDrag: Bool
     public var provisionalNoteID: ID<MIDINoteEvent>?
 }
 
@@ -315,12 +328,19 @@ public protocol PlaybackGridCommandSink: AnyObject {
     func setContainerExitFade(_ containerID: ID<Container>, fade: FadeSettings?)
     func createContainer(trackID: ID<Track>, startBar: Double, lengthBars: Double) -> Bool
     func setInlineMIDILaneHeight(trackID: ID<Track>, height: CGFloat)
+    func adjustTrackHeight(trackID: ID<Track>, delta: CGFloat)
     func adjustInlineMIDIRowHeight(trackID: ID<Track>, delta: CGFloat)
     func shiftInlineMIDIPitchRange(trackID: ID<Track>, semitoneDelta: Int)
     func previewMIDINote(pitch: UInt8, isNoteOn: Bool)
     func addMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent)
     func updateMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent)
     func removeMIDINote(_ containerID: ID<Container>, noteID: ID<MIDINoteEvent>)
+    func setSelectedMIDINotes(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        noteIDs: Set<ID<MIDINoteEvent>>,
+        additive: Bool
+    )
     func addAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint)
     func updateAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint)
     func removeAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>)
@@ -369,12 +389,19 @@ public extension PlaybackGridCommandSink {
     func setContainerExitFade(_ containerID: ID<Container>, fade: FadeSettings?) {}
     func createContainer(trackID: ID<Track>, startBar: Double, lengthBars: Double) -> Bool { false }
     func setInlineMIDILaneHeight(trackID: ID<Track>, height: CGFloat) {}
+    func adjustTrackHeight(trackID: ID<Track>, delta: CGFloat) {}
     func adjustInlineMIDIRowHeight(trackID: ID<Track>, delta: CGFloat) {}
     func shiftInlineMIDIPitchRange(trackID: ID<Track>, semitoneDelta: Int) {}
     func previewMIDINote(pitch: UInt8, isNoteOn: Bool) {}
     func addMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent) {}
     func updateMIDINote(_ containerID: ID<Container>, note: MIDINoteEvent) {}
     func removeMIDINote(_ containerID: ID<Container>, noteID: ID<MIDINoteEvent>) {}
+    func setSelectedMIDINotes(
+        containerID: ID<Container>,
+        trackID: ID<Track>,
+        noteIDs: Set<ID<MIDINoteEvent>>,
+        additive: Bool
+    ) {}
     func addAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {}
     func updateAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpoint: AutomationBreakpoint) {}
     func removeAutomationBreakpoint(_ containerID: ID<Container>, laneID: ID<AutomationLane>, breakpointID: ID<AutomationBreakpoint>) {}
@@ -426,6 +453,7 @@ public struct PlaybackGridSnapshot: Equatable {
     public var gridMode: GridMode
     public var selectedAutomationTool: AutomationTool
     public var selectedContainerIDs: Set<ID<Container>>
+    public var selectedMIDINoteIDs: Set<ID<MIDINoteEvent>>
     public var selectedSectionID: ID<SectionRegion>?
     public var selectedRange: ClosedRange<Int>?
     public var rangeSelection: SelectionState.RangeSelection?
@@ -452,6 +480,7 @@ public struct PlaybackGridSnapshot: Equatable {
         gridMode: GridMode,
         selectedAutomationTool: AutomationTool = .pointer,
         selectedContainerIDs: Set<ID<Container>>,
+        selectedMIDINoteIDs: Set<ID<MIDINoteEvent>> = [],
         selectedSectionID: ID<SectionRegion>?,
         selectedRange: ClosedRange<Int>?,
         rangeSelection: SelectionState.RangeSelection?,
@@ -477,6 +506,7 @@ public struct PlaybackGridSnapshot: Equatable {
         self.gridMode = gridMode
         self.selectedAutomationTool = selectedAutomationTool
         self.selectedContainerIDs = selectedContainerIDs
+        self.selectedMIDINoteIDs = selectedMIDINoteIDs
         self.selectedSectionID = selectedSectionID
         self.selectedRange = selectedRange
         self.rangeSelection = rangeSelection
@@ -490,14 +520,42 @@ public struct PlaybackGridSnapshot: Equatable {
 }
 
 public struct PlaybackGridMIDIConfig: Equatable {
+    public struct DetailLane: Equatable {
+        public var lane: MIDINoteExpressionLane
+        public var height: CGFloat
+
+        public init(lane: MIDINoteExpressionLane, height: CGFloat) {
+            self.lane = lane
+            self.height = height
+        }
+    }
+
     public var lowPitch: UInt8
     public var highPitch: UInt8
     public var rowHeight: CGFloat?
+    public var tool: MIDITool
+    public var detailLanes: [DetailLane]
 
-    public init(lowPitch: UInt8, highPitch: UInt8, rowHeight: CGFloat? = nil) {
+    public init(
+        lowPitch: UInt8,
+        highPitch: UInt8,
+        rowHeight: CGFloat? = nil,
+        tool: MIDITool = .pointer,
+        detailLanes: [DetailLane] = []
+    ) {
         self.lowPitch = min(lowPitch, highPitch)
         self.highPitch = max(lowPitch, highPitch)
         self.rowHeight = rowHeight
+        self.tool = tool
+        self.detailLanes = detailLanes
+    }
+
+    public var totalDetailLaneHeight: CGFloat {
+        detailLanes.reduce(CGFloat(0)) { $0 + max(0, $1.height) }
+    }
+
+    public func noteAreaHeight(totalInlineHeight: CGFloat) -> CGFloat {
+        max(0, totalInlineHeight - totalDetailLaneHeight)
     }
 }
 

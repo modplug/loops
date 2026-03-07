@@ -34,6 +34,16 @@ public final class PianoRollEditorState {
     public var highPitch: UInt8 = PianoRollLayout.defaultHighPitch
     /// Vertical zoom — row height in points.
     public var rowHeight: CGFloat = PianoRollLayout.defaultRowHeight
+    /// Current MIDI editing tool.
+    public var selectedTool: MIDITool = .pointer
+    /// Legacy summary for whether any MIDI detail lane is visible.
+    public var isExpressionLaneVisible: Bool = true
+    /// Active note-expression lane.
+    public var selectedExpressionLane: MIDINoteExpressionLane = .velocity
+    /// Visible note-expression lanes in stable display order.
+    public var visibleExpressionLanes: [MIDINoteExpressionLane] = [.velocity]
+    /// Per-lane heights for note-expression editors.
+    public var noteExpressionLaneHeights: [MIDINoteExpressionLane: CGFloat] = [:]
     /// Snap grid resolution.
     public var snapResolution: SnapResolution = .sixteenth
     /// Vertical scroll offset tracked from the inline piano roll content (used to sync keyboard labels).
@@ -42,6 +52,9 @@ public final class PianoRollEditorState {
     public var selectedNoteIDs: Set<ID<MIDINoteEvent>> = []
 
     public init() {}
+
+    public static let minDetailLaneHeight: CGFloat = 56
+    public static let maxDetailLaneHeight: CGFloat = 220
 
     /// Activates the inline piano roll for a given container/track.
     public func open(containerID: ID<Container>, trackID: ID<Track>) {
@@ -86,5 +99,56 @@ public final class PianoRollEditorState {
         guard let low = sequence.lowestPitch, let high = sequence.highestPitch else { return }
         lowPitch = UInt8(max(0, Int(low) - Int(padding)))
         highPitch = UInt8(min(127, Int(high) + Int(padding)))
+    }
+
+    public func noteExpressionLaneHeight(for lane: MIDINoteExpressionLane) -> CGFloat {
+        noteExpressionLaneHeights[lane] ?? defaultNoteExpressionLaneHeight(for: lane)
+    }
+
+    public func setNoteExpressionLaneHeight(_ height: CGFloat, for lane: MIDINoteExpressionLane) {
+        noteExpressionLaneHeights[lane] = min(max(height, Self.minDetailLaneHeight), Self.maxDetailLaneHeight)
+    }
+
+    public func isExpressionLaneVisible(_ lane: MIDINoteExpressionLane) -> Bool {
+        visibleExpressionLanes.contains(lane)
+    }
+
+    public func showExpressionLane(_ lane: MIDINoteExpressionLane) {
+        guard !visibleExpressionLanes.contains(lane) else { return }
+        visibleExpressionLanes.append(lane)
+        visibleExpressionLanes.sort { lhs, rhs in
+            MIDINoteExpressionLane.allCases.firstIndex(of: lhs)! < MIDINoteExpressionLane.allCases.firstIndex(of: rhs)!
+        }
+        isExpressionLaneVisible = !visibleExpressionLanes.isEmpty
+    }
+
+    public func hideExpressionLane(_ lane: MIDINoteExpressionLane) {
+        visibleExpressionLanes.removeAll { $0 == lane }
+        if selectedExpressionLane == lane {
+            selectedExpressionLane = visibleExpressionLanes.first ?? .velocity
+        }
+        isExpressionLaneVisible = !visibleExpressionLanes.isEmpty
+    }
+
+    public func toggleExpressionLane(_ lane: MIDINoteExpressionLane) {
+        if isExpressionLaneVisible(lane) {
+            hideExpressionLane(lane)
+        } else {
+            showExpressionLane(lane)
+            selectedExpressionLane = lane
+        }
+    }
+
+    private func defaultNoteExpressionLaneHeight(for lane: MIDINoteExpressionLane) -> CGFloat {
+        switch lane {
+        case .velocity:
+            return 96
+        case .channel:
+            return 84
+        case .sustain:
+            return 72
+        case .expression:
+            return 96
+        }
     }
 }

@@ -11,6 +11,7 @@ import LoopsCore
 /// top of the viewport.
 final class TimelineTextOverlayLayer: CALayer {
     struct MIDINoteLabelLayout: Equatable {
+        var noteID: ID<MIDINoteEvent>?
         var text: String
         var worldRect: CGRect
         var isFocused: Bool

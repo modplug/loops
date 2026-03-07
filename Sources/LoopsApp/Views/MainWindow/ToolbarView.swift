@@ -97,6 +97,14 @@ public struct ToolbarView: View {
                 .buttonStyle(.plain)
                 .help("Record Arm")
 
+                Button(action: { viewModel.toggleAutomationWriteEnabled() }) {
+                    Image(systemName: "waveform.path.ecg")
+                        .foregroundStyle(viewModel.isAutomationWriteEnabled ? .pink : .secondary)
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .help("Automation Write")
+
                 // Play/Pause
                 Button(action: { viewModel.togglePlayPause() }) {
                     Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")

@@ -25,6 +25,15 @@ public struct TrackHeaderView: View {
     var isTrackSelected: Bool
     var isMIDIActive: Bool
     var headerWidth: CGFloat
+    var focusedAutomationLaneLabel: String?
+    var isInlineMIDIExpanded: Bool
+    var inlineMIDIScaleSummary: String?
+    var selectedMIDITool: MIDITool = .pointer
+    var onSelectMIDITool: ((MIDITool) -> Void)?
+    var onInlineMIDIZoomOut: (() -> Void)?
+    var onInlineMIDIZoomIn: (() -> Void)?
+    var onInlineMIDIFit: (() -> Void)?
+    var onPreviewTrackHeight: ((CGFloat?) -> Void)?
     var onResizeTrack: ((CGFloat) -> Void)?
     var onResetTrackHeight: (() -> Void)?
     // Inline I/O routing
@@ -52,6 +61,15 @@ public struct TrackHeaderView: View {
         isTrackSelected: Bool = false,
         isMIDIActive: Bool = false,
         headerWidth: CGFloat = 160,
+        focusedAutomationLaneLabel: String? = nil,
+        isInlineMIDIExpanded: Bool = false,
+        inlineMIDIScaleSummary: String? = nil,
+        selectedMIDITool: MIDITool = .pointer,
+        onSelectMIDITool: ((MIDITool) -> Void)? = nil,
+        onInlineMIDIZoomOut: (() -> Void)? = nil,
+        onInlineMIDIZoomIn: (() -> Void)? = nil,
+        onInlineMIDIFit: (() -> Void)? = nil,
+        onPreviewTrackHeight: ((CGFloat?) -> Void)? = nil,
         onResizeTrack: ((CGFloat) -> Void)? = nil,
         onResetTrackHeight: (() -> Void)? = nil,
         availableInputPorts: [InputPort] = [],
@@ -77,6 +95,15 @@ public struct TrackHeaderView: View {
         self.isTrackSelected = isTrackSelected
         self.isMIDIActive = isMIDIActive
         self.headerWidth = headerWidth
+        self.focusedAutomationLaneLabel = focusedAutomationLaneLabel
+        self.isInlineMIDIExpanded = isInlineMIDIExpanded
+        self.inlineMIDIScaleSummary = inlineMIDIScaleSummary
+        self.selectedMIDITool = selectedMIDITool
+        self.onSelectMIDITool = onSelectMIDITool
+        self.onInlineMIDIZoomOut = onInlineMIDIZoomOut
+        self.onInlineMIDIZoomIn = onInlineMIDIZoomIn
+        self.onInlineMIDIFit = onInlineMIDIFit
+        self.onPreviewTrackHeight = onPreviewTrackHeight
         self.onResizeTrack = onResizeTrack
         self.onResetTrackHeight = onResetTrackHeight
         self.availableInputPorts = availableInputPorts
@@ -205,27 +232,36 @@ public struct TrackHeaderView: View {
                 if track.kind == .midi {
                     inlineMIDIDevicePicker
                     inlineMIDIChannelPicker
+                    if isInlineMIDIExpanded {
+                        inlineMIDIZoomControls
+                    }
                 }
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             // Automation sub-lane labels
             if isAutomationExpanded && !automationLaneLabels.isEmpty {
                 ForEach(Array(automationLaneLabels.enumerated()), id: \.offset) { index, label in
+                    let isFocusedLane = label == focusedAutomationLaneLabel
                     HStack(spacing: 3) {
                         Circle()
                             .fill(AutomationColors.color(at: index))
                             .frame(width: 6, height: 6)
                         Text(label)
                             .font(.system(size: 8))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(isFocusedLane ? .primary : .secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
                     .padding(.horizontal, 6)
                     .frame(width: headerWidth, height: TimelineViewModel.automationSubLaneHeight, alignment: .leading)
-                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                    .background(
+                        isFocusedLane
+                            ? Color.accentColor.opacity(0.12)
+                            : Color(nsColor: .controlBackgroundColor).opacity(0.5)
+                    )
                     .overlay(
                         Rectangle()
                             .frame(height: 0.5)
@@ -235,7 +271,7 @@ public struct TrackHeaderView: View {
                 }
             }
         }
-        .frame(width: headerWidth, height: height)
+        .frame(width: headerWidth, height: height, alignment: .topLeading)
         .background(
             track.isRecordArmed
                 ? Color.red.opacity(0.1)
@@ -262,9 +298,62 @@ public struct TrackHeaderView: View {
             if onResizeTrack != nil {
                 TrackResizeHandle(
                     currentHeight: height,
+                    onPreviewHeight: { onPreviewTrackHeight?($0) },
                     onResize: { onResizeTrack?($0) },
                     onReset: { onResetTrackHeight?() }
                 )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var inlineMIDIZoomControls: some View {
+        HStack(spacing: 4) {
+            ForEach(MIDITool.allCases, id: \.self) { tool in
+                Button(action: { onSelectMIDITool?(tool) }) {
+                    Image(systemName: tool.iconName)
+                        .font(.system(size: 8, weight: .semibold))
+                        .frame(width: 16, height: 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(selectedMIDITool == tool ? Color.accentColor.opacity(0.28) : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(tool.label)
+            }
+
+            Divider()
+                .frame(height: 10)
+
+            Button(action: { onInlineMIDIZoomOut?() }) {
+                Image(systemName: "minus")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.plain)
+            .help("Show more notes vertically")
+
+            Button(action: { onInlineMIDIZoomIn?() }) {
+                Image(systemName: "plus")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.plain)
+            .help("Show fewer, larger notes vertically")
+
+            Button("Fit") {
+                onInlineMIDIFit?()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 8, weight: .medium))
+            .help("Fit visible pitch range to notes")
+
+            if let inlineMIDIScaleSummary {
+                Text(inlineMIDIScaleSummary)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
     }
@@ -389,17 +478,17 @@ public struct TrackHeaderView: View {
 /// A drag handle at the bottom edge of a track header for resizing.
 struct TrackResizeHandle: View {
     let currentHeight: CGFloat
+    let onPreviewHeight: (CGFloat?) -> Void
     let onResize: (CGFloat) -> Void
     let onReset: () -> Void
 
     @State private var dragStartHeight: CGFloat = 0
-    @State private var previewDelta: CGFloat = 0
+    @State private var latestPreviewHeight: CGFloat?
 
     var body: some View {
         Rectangle()
-            .fill(previewDelta != 0 ? Color.accentColor.opacity(0.5) : Color.clear)
+            .fill(Color.accentColor.opacity(0.35))
             .frame(height: 6)
-            .offset(y: previewDelta)
             .contentShape(Rectangle())
             .onHover { hovering in
                 if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
@@ -411,16 +500,21 @@ struct TrackResizeHandle: View {
                             dragStartHeight = currentHeight
                         }
                         let newHeight = max(TimelineViewModel.minimumTrackHeight, dragStartHeight + value.translation.height)
-                        previewDelta = newHeight - currentHeight
+                        latestPreviewHeight = newHeight
+                        onPreviewHeight(newHeight)
                     }
                     .onEnded { _ in
-                        let finalHeight = max(TimelineViewModel.minimumTrackHeight, dragStartHeight + previewDelta)
+                        let finalHeight = latestPreviewHeight
+                            ?? max(TimelineViewModel.minimumTrackHeight, dragStartHeight)
+                        onPreviewHeight(nil)
                         onResize(finalHeight)
-                        previewDelta = 0
+                        latestPreviewHeight = nil
                         dragStartHeight = 0
                     }
             )
             .onTapGesture(count: 2) {
+                onPreviewHeight(nil)
+                latestPreviewHeight = nil
                 onReset()
             }
     }

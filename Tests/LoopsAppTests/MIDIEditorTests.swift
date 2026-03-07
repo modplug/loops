@@ -104,6 +104,28 @@ struct MIDIEditorTests {
         #expect(updated?.velocity == 80)
     }
 
+    @Test("MIDI controller event CRUD works on container sequence")
+    @MainActor
+    func midiControllerEventCRUD() {
+        let (vm, _, containerID) = makeVM()
+
+        let event = MIDIControllerEvent(controller: 64, value: 127, beat: 1.0)
+        vm.addMIDIControllerEvent(containerID: containerID, event: event)
+
+        var updated = event
+        updated.value = 0
+        updated.beat = 2.0
+        vm.updateMIDIControllerEvent(containerID: containerID, event: updated)
+
+        let stored = vm.project.songs[0].tracks[0].containers[0].midiSequence?.controllerEvents
+        #expect(stored?.count == 1)
+        #expect(stored?.first?.value == 0)
+        #expect(stored?.first?.beat == 2.0)
+
+        vm.removeMIDIControllerEvent(containerID: containerID, eventID: updated.id)
+        #expect(vm.project.songs[0].tracks[0].containers[0].midiSequence?.controllerEvents.isEmpty == true)
+    }
+
     @Test("MIDI editing marks field as overridden on clones")
     @MainActor
     func midiEditMarksOverridden() {
