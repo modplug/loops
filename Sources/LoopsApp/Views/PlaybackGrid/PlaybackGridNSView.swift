@@ -1425,31 +1425,6 @@ public final class PlaybackGridNSView: NSView {
         return NSSize(width: width, height: scene.contentHeight)
     }
 
-    private func staticSnapshotEqual(_ lhs: PlaybackGridSnapshot, _ rhs: PlaybackGridSnapshot) -> Bool {
-        lhs.tracks == rhs.tracks
-            && lhs.sections == rhs.sections
-            && lhs.timeSignature == rhs.timeSignature
-            && lhs.pixelsPerBar == rhs.pixelsPerBar
-            && lhs.totalBars == rhs.totalBars
-            && lhs.trackHeights == rhs.trackHeights
-            && lhs.inlineMIDILaneHeights == rhs.inlineMIDILaneHeights
-            && lhs.inlineMIDIConfigs == rhs.inlineMIDIConfigs
-            && lhs.automationExpandedTrackIDs == rhs.automationExpandedTrackIDs
-            && lhs.automationSubLaneHeight == rhs.automationSubLaneHeight
-            && lhs.automationToolbarHeight == rhs.automationToolbarHeight
-            && lhs.defaultTrackHeight == rhs.defaultTrackHeight
-            && lhs.gridMode == rhs.gridMode
-            && lhs.selectedAutomationTool == rhs.selectedAutomationTool
-            && lhs.selectedContainerIDs == rhs.selectedContainerIDs
-            && lhs.selectedSectionID == rhs.selectedSectionID
-            && lhs.selectedRange == rhs.selectedRange
-            && lhs.rangeSelection == rhs.rangeSelection
-            && lhs.isSnapEnabled == rhs.isSnapEnabled
-            && lhs.showRulerAndSections == rhs.showRulerAndSections
-            && lhs.bottomPadding == rhs.bottomPadding
-            && lhs.minimumContentHeight == rhs.minimumContentHeight
-    }
-
     private func dirtyRectForSnapshotChange(
         oldSnapshot: PlaybackGridSnapshot,
         oldScene: PlaybackGridScene,

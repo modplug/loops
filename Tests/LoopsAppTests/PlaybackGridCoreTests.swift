@@ -1,4 +1,5 @@
 import AppKit
+import Metal
 import Testing
 @testable import LoopsApp
 @testable import LoopsCore
@@ -1875,6 +1876,88 @@ struct PlaybackGridCoreTests {
         #expect(sink.lastUpdatedTrackAutomationBreakpoint?.laneID == lane.id)
         #expect((sink.lastUpdatedTrackAutomationBreakpoint?.breakpoint.position ?? 0) > 2.0)
         #expect((sink.lastUpdatedTrackAutomationBreakpoint?.breakpoint.value ?? 0) > 0.55)
+    }
+
+    @MainActor
+    @Test("NSView configure tracks model, viewport, and overlay invalidation separately")
+    func nsViewInvalidationDomains() {
+        let view = PlaybackGridNSView(frame: NSRect(x: 0, y: 0, width: 1200, height: 400))
+        let container = Container(name: "Clip", startBar: 1.0, lengthBars: 4.0)
+        let track = Track(name: "Audio 1", kind: .audio, containers: [container])
+
+        var snapshot = PlaybackGridSnapshot(
+            tracks: [track],
+            sections: [],
+            timeSignature: TimeSignature(),
+            pixelsPerBar: 120,
+            totalBars: 64,
+            trackHeights: [:],
+            defaultTrackHeight: 80,
+            gridMode: .adaptive,
+            selectedContainerIDs: [],
+            selectedSectionID: nil,
+            selectedRange: nil,
+            rangeSelection: nil,
+            showRulerAndSections: true,
+            playheadBar: 1,
+            cursorX: nil
+        )
+
+        view.configure(snapshot: snapshot)
+        #expect(view.modelInvalidationCount == 1)
+        #expect(view.viewportInvalidationCount == 0)
+        #expect(view.overlayInvalidationCount == 1)
+
+        snapshot.playheadBar = 5
+        view.configure(snapshot: snapshot)
+        #expect(view.modelInvalidationCount == 1)
+        #expect(view.viewportInvalidationCount == 0)
+        #expect(view.overlayInvalidationCount == 2)
+
+        snapshot.pixelsPerBar = 240
+        view.configure(snapshot: snapshot)
+        #expect(view.modelInvalidationCount == 1)
+        #expect(view.viewportInvalidationCount == 1)
+        #expect(view.overlayInvalidationCount == 2)
+
+        var updatedTrack = track
+        updatedTrack.containers.append(Container(name: "Clip 2", startBar: 9.0, lengthBars: 2.0))
+        snapshot.tracks = [updatedTrack]
+        view.configure(snapshot: snapshot)
+        #expect(view.modelInvalidationCount == 2)
+    }
+
+    @Test("Waveform residency cache reuses persistent Metal buffers for unchanged recordings")
+    func waveformResidencyReuse() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            Issue.record("Metal device unavailable")
+            return
+        }
+
+        let cache = PlaybackGridWaveformResidencyCache()
+        let recordingID = ID<SourceRecording>()
+        let extrema = (0..<2048).map { index in
+            let value = Float(sin(Double(index) * 0.02))
+            return WaveformExtrema(minimum: -abs(value), maximum: abs(value))
+        }
+        let rms = extrema.map { max(abs($0.minimum), abs($0.maximum)) * 0.6 }
+
+        let first = try #require(cache.residency(
+            for: recordingID,
+            extrema: extrema,
+            rms: rms,
+            device: device
+        ))
+        let second = try #require(cache.residency(
+            for: recordingID,
+            extrema: extrema,
+            rms: rms,
+            device: device
+        ))
+
+        #expect(first.buffer === second.buffer)
+        #expect(first.levels.contains(where: { $0.mode == .envelope }))
+        #expect(first.levels.contains(where: { $0.mode == .rms }))
     }
 
     private func makeMouseEvent(

@@ -6,7 +6,6 @@ import LoopsCore
 public final class PlaybackGridRenderer {
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
-    public var useWaveformTileOverlay = false
     private let library: MTLLibrary
 
     private let rectPipeline: MTLRenderPipelineState
@@ -165,7 +164,7 @@ public final class PlaybackGridRenderer {
         let visibleMinX = Float(visibleRect.minX)
         let visibleMaxX = Float(visibleRect.maxX)
         let visibleMinY = Float(visibleRect.minY)
-        let visibleMaxY = Float(visibleRect.maxY)
+        let canvasHeight = Float(canvasSize.height)
         let rulerHeight = Float(PlaybackGridLayout.rulerHeight)
         let sectionLaneHeight = Float(PlaybackGridLayout.sectionLaneHeight)
 
@@ -621,7 +620,7 @@ public final class PlaybackGridRenderer {
             }
 
             if scopedBands.isEmpty {
-                let totalHeight = scene.trackLayouts.last.map { Float($0.yOrigin + $0.height) } ?? Float(PlaybackGridLayout.trackAreaTop)
+                let totalHeight = scene.trackLayouts.last.map { Float($0.yOrigin + $0.height) } ?? canvasHeight
                 rects.append(PlaybackGridRectInstance(
                     origin: SIMD2(startX, 0),
                     size: SIMD2(endX - startX, totalHeight),
