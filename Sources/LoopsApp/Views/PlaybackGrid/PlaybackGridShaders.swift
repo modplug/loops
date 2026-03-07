@@ -32,6 +32,27 @@ struct PlaybackGridWaveformParams {
     uint peakOffset;
     uint peakCount;
     float amplitude;
+    float visibleBars;
+    float audioStartOffsetBars;
+    float clipLengthBars;
+    float enterFadeBars;
+    float exitFadeBars;
+    float3 reserved;
+};
+
+struct PlaybackGridProceduralGridUniforms {
+    float visibleMinX;
+    float visibleMaxX;
+    float visibleMinY;
+    float visibleMaxY;
+    float pixelsPerBar;
+    uint beatsPerBar;
+    float rulerHeight;
+    float sectionLaneHeight;
+    float trackAreaTop;
+    uint showRulerAndSections;
+    int selectedRangeStartBar;
+    int selectedRangeLength;
 };
 
 struct PlaybackGridMIDINoteInstance {
@@ -172,6 +193,7 @@ struct WaveformVertexOut {
     float2 waveformUV;
     float amplitude;
     float asymmetry;
+    float gain;
 };
 
 vertex WaveformVertexOut pg_waveform_vertex(
@@ -184,14 +206,28 @@ vertex WaveformVertexOut pg_waveform_vertex(
     uint peakIndex = vertexID / 2;
     bool isTop = (vertexID % 2) == 0;
 
+    float visibleBars = params.visibleBars > 0.0 ? params.visibleBars : max(params.containerSize.x, 0.0001);
     float t = peakCount > 0 ? (float(peakIndex) + 0.5) / float(peakCount) : 0.5;
-    float x = params.containerOrigin.x + t * params.containerSize.x;
+    float localBar = t * visibleBars;
+    float x = (params.containerOrigin.x + localBar) * uniforms.pixelsPerBar;
     float midY = params.containerOrigin.y + params.containerSize.y * 0.5;
     float halfHeight = params.containerSize.y * 0.5 * params.amplitude;
 
     float2 extrema = allExtrema[params.peakOffset + min(peakIndex, peakCount - 1)];
     float minValue = clamp(extrema.x, -1.0, 1.0);
     float maxValue = clamp(extrema.y, -1.0, 1.0);
+    float gain = 1.0;
+    if (params.enterFadeBars > 0.0) {
+        gain *= min(localBar / params.enterFadeBars, 1.0);
+    }
+    if (params.exitFadeBars > 0.0 && params.clipLengthBars > 0.0) {
+        float exitStart = max(params.clipLengthBars - params.exitFadeBars, 0.0);
+        if (localBar > exitStart) {
+            gain *= max(0.0, 1.0 - ((localBar - exitStart) / params.exitFadeBars));
+        }
+    }
+    minValue *= gain;
+    maxValue *= gain;
     float amplitude = max(abs(minValue), abs(maxValue));
     float asymmetry = clamp((maxValue + minValue) * 0.5 + 0.5, 0.0, 1.0);
     float y = isTop ? midY - maxValue * halfHeight : midY - minValue * halfHeight;
@@ -202,6 +238,7 @@ vertex WaveformVertexOut pg_waveform_vertex(
     out.waveformUV = float2(t, isTop ? 0.0 : 1.0);
     out.amplitude = amplitude;
     out.asymmetry = asymmetry;
+    out.gain = gain;
     return out;
 }
 
@@ -228,7 +265,96 @@ fragment float4 pg_waveform_fragment(WaveformVertexOut in [[stage_in]]) {
     float alpha = in.color.a;
     alpha *= bodyMask;
     alpha *= horizontalFade;
-    alpha *= 0.90 + (0.10 * innerLift) + (0.05 * amplitude);
+    alpha *= (0.90 + (0.10 * innerLift) + (0.05 * amplitude)) * in.gain;
+
+    return float4(rgb, alpha);
+}
+
+struct ProceduralVertexOut {
+    float4 position [[position]];
+    float2 worldPos;
+};
+
+vertex ProceduralVertexOut pg_procedural_vertex(
+    uint vertexID [[vertex_id]],
+    constant PlaybackGridUniforms &uniforms [[buffer(0)]]
+) {
+    float2 positions[4] = {
+        float2(uniforms.viewportMinX, 0.0),
+        float2(uniforms.viewportMaxX, 0.0),
+        float2(uniforms.viewportMinX, uniforms.canvasHeight),
+        float2(uniforms.viewportMaxX, uniforms.canvasHeight)
+    };
+
+    ProceduralVertexOut out;
+    out.worldPos = positions[vertexID];
+    out.position = uniforms.projectionMatrix * float4(out.worldPos, 0.0, 1.0);
+    return out;
+}
+
+fragment float4 pg_grid_fragment(
+    ProceduralVertexOut in [[stage_in]],
+    constant PlaybackGridProceduralGridUniforms &grid [[buffer(1)]]
+) {
+    float x = in.worldPos.x;
+    float y = in.worldPos.y;
+
+    float3 rgb = float3(0.0);
+    float alpha = 0.0;
+
+    float rulerBottom = grid.visibleMinY + grid.rulerHeight;
+    float sectionBottom = grid.visibleMinY + grid.trackAreaTop;
+    float contentTop = grid.showRulerAndSections == 1 ? sectionBottom : grid.visibleMinY;
+
+    if (grid.showRulerAndSections == 1 && y < rulerBottom) {
+        rgb = float3(0.13, 0.14, 0.16);
+        alpha = 0.95;
+    } else if (grid.showRulerAndSections == 1 && y < sectionBottom) {
+        rgb = float3(0.15, 0.16, 0.18);
+        alpha = 0.95;
+    }
+
+    if (y >= contentTop) {
+        float barIndex = floor(x / max(grid.pixelsPerBar, 0.001));
+        if (fmod(barIndex, 2.0) == 0.0) {
+            rgb = mix(rgb, float3(0.56, 0.64, 0.76), 0.010);
+            alpha = max(alpha, 0.010);
+        }
+    }
+
+    float bars = x / max(grid.pixelsPerBar, 0.001);
+    float barFrac = fract(bars);
+    float barDistance = min(barFrac, 1.0 - barFrac) * grid.pixelsPerBar;
+    float barAlpha = 1.0 - smoothstep(0.0, 1.0, barDistance);
+    rgb = mix(rgb, float3(0.78, 0.84, 0.95), 0.060 * barAlpha);
+    alpha = max(alpha, 0.060 * barAlpha);
+
+    float pixelsPerBeat = grid.pixelsPerBar / max(float(grid.beatsPerBar), 1.0);
+    if (pixelsPerBeat >= 20.0) {
+        float beats = bars * max(float(grid.beatsPerBar), 1.0);
+        float beatFrac = fract(beats);
+        float beatDistance = min(beatFrac, 1.0 - beatFrac) * pixelsPerBeat;
+        float beatAlpha = 1.0 - smoothstep(0.0, 1.0, beatDistance);
+        rgb = mix(rgb, float3(0.72, 0.79, 0.90), 0.020 * beatAlpha);
+        alpha = max(alpha, 0.020 * beatAlpha);
+    }
+
+    if (grid.showRulerAndSections == 1) {
+        float rulerLine = 1.0 - smoothstep(0.0, 1.0, abs(y - rulerBottom));
+        float sectionLine = 1.0 - smoothstep(0.0, 1.0, abs(y - sectionBottom));
+        float headerAlpha = max(rulerLine, sectionLine) * 0.24;
+        rgb = mix(rgb, float3(1.0), headerAlpha);
+        alpha = max(alpha, headerAlpha);
+
+        if (grid.selectedRangeStartBar >= 1 && grid.selectedRangeLength > 0 && y < rulerBottom) {
+            float rangeStart = float(grid.selectedRangeStartBar - 1) * grid.pixelsPerBar;
+            float rangeEnd = rangeStart + float(grid.selectedRangeLength) * grid.pixelsPerBar;
+            if (x >= rangeStart && x <= rangeEnd) {
+                rgb = mix(rgb, float3(0.25, 0.55, 1.0), 0.25);
+                alpha = max(alpha, 0.25);
+            }
+        }
+    }
 
     return float4(rgb, alpha);
 }

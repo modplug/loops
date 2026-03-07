@@ -395,15 +395,7 @@ public final class ProjectViewModel {
     /// Selects a song by its ID.
     public func selectSong(id: ID<Song>) {
         guard project.songs.contains(where: { $0.id == id }) else { return }
-        let previousSongID = currentSongID
-        if let prevID = previousSongID, prevID != id {
-            onSongWillChange?(prevID)
-        }
-        currentSongID = id
-        selectedContainerID = nil
-        if id != previousSongID {
-            onSongChanged?()
-        }
+        applySongSelection(id: id)
     }
 
     /// Adds a new song with default settings (including master track).
@@ -413,7 +405,7 @@ public final class ProjectViewModel {
         var song = Song(name: "Song \(existingCount + 1)")
         song.ensureMasterTrack()
         project.songs.append(song)
-        currentSongID = song.id
+        applySongSelection(id: song.id)
         hasUnsavedChanges = true
     }
 
@@ -429,10 +421,21 @@ public final class ProjectViewModel {
         if wasSelected {
             // Select the nearest song
             let newIndex = min(index, project.songs.count - 1)
-            currentSongID = project.songs[newIndex].id
-            selectedContainerID = nil
+            applySongSelection(id: project.songs[newIndex].id)
         }
         hasUnsavedChanges = true
+    }
+
+    private func applySongSelection(id: ID<Song>) {
+        let previousSongID = currentSongID
+        if let prevID = previousSongID, prevID != id {
+            onSongWillChange?(prevID)
+        }
+        currentSongID = id
+        selectedContainerID = nil
+        if id != previousSongID {
+            onSongChanged?()
+        }
     }
 
     /// Renames a song.
@@ -547,13 +550,16 @@ public final class ProjectViewModel {
 
     /// Adds a new track to the current song with auto-generated name.
     /// Master tracks cannot be added manually (they are auto-created).
-    public func addTrack(kind: TrackKind) {
+    public func addTrack(kind: TrackKind, customName: String? = nil) {
         guard !project.songs.isEmpty else { return }
         guard kind != .master else { return }
         registerUndo(actionName: "Add Track")
         let existingCount = project.songs[currentSongIndex].tracks
             .filter { $0.kind == kind }.count
-        let name = "\(kind.displayName) \(existingCount + 1)"
+        let defaultName = "\(kind.displayName) \(existingCount + 1)"
+        let name = customName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? customName!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : defaultName
         let orderIndex = project.songs[currentSongIndex].tracks.count
         let track = Track(name: name, kind: kind, orderIndex: orderIndex)
         project.songs[currentSongIndex].tracks.append(track)
@@ -700,6 +706,17 @@ public final class ProjectViewModel {
         project.songs[currentSongIndex].tracks[index].midiInputDeviceID = deviceID
         project.songs[currentSongIndex].tracks[index].midiInputChannel = channel
         hasUnsavedChanges = true
+    }
+
+    /// Sets or clears the instrument on a MIDI track.
+    public func setTrackInstrument(trackID: ID<Track>, instrument: AudioComponentInfo?) {
+        guard !project.songs.isEmpty else { return }
+        guard let index = project.songs[currentSongIndex].tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard project.songs[currentSongIndex].tracks[index].kind == .midi else { return }
+        registerUndo(actionName: instrument != nil ? "Set Track Instrument" : "Remove Track Instrument")
+        project.songs[currentSongIndex].tracks[index].instrumentComponent = instrument
+        hasUnsavedChanges = true
+        onPlaybackGraphChanged?()
     }
 
     /// Sets the pan on a track.

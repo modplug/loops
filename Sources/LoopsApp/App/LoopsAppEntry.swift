@@ -6,6 +6,7 @@ import LoopsEngine
 public struct LoopsRootView: View {
     @Bindable var viewModel: ProjectViewModel
     @Bindable var transportViewModel: TransportViewModel
+    @Bindable var shortcutManager: ShortcutManager
     let engineManager: AudioEngineManager?
     var settingsViewModel: SettingsViewModel?
     @State private var timelineViewModel = TimelineViewModel()
@@ -14,11 +15,34 @@ public struct LoopsRootView: View {
     @State private var midiActivityMonitor = MIDIActivityMonitor()
     @State private var isVirtualKeyboardVisible = false
 
-    public init(viewModel: ProjectViewModel, transportViewModel: TransportViewModel, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil) {
+    public init(
+        viewModel: ProjectViewModel,
+        transportViewModel: TransportViewModel,
+        shortcutManager: ShortcutManager,
+        engineManager: AudioEngineManager? = nil,
+        settingsViewModel: SettingsViewModel? = nil
+    ) {
         self.viewModel = viewModel
         self.transportViewModel = transportViewModel
+        self.shortcutManager = shortcutManager
         self.engineManager = engineManager
         self.settingsViewModel = settingsViewModel
+    }
+
+    @MainActor
+    public init(
+        viewModel: ProjectViewModel,
+        transportViewModel: TransportViewModel,
+        engineManager: AudioEngineManager? = nil,
+        settingsViewModel: SettingsViewModel? = nil
+    ) {
+        self.init(
+            viewModel: viewModel,
+            transportViewModel: transportViewModel,
+            shortcutManager: ShortcutManager(),
+            engineManager: engineManager,
+            settingsViewModel: settingsViewModel
+        )
     }
 
     public var body: some View {
@@ -283,6 +307,7 @@ public struct LoopsRootView: View {
             settingsViewModel: settingsViewModel,
             mixerViewModel: mixerViewModel,
             midiActivityMonitor: midiActivityMonitor,
+            shortcutManager: shortcutManager,
             isVirtualKeyboardVisible: $isVirtualKeyboardVisible
         )
     }
@@ -438,9 +463,11 @@ public struct LoopsRootView: View {
 /// File menu commands for project management.
 public struct ProjectCommands: Commands {
     @Bindable var viewModel: ProjectViewModel
+    @Bindable var shortcutManager: ShortcutManager
 
-    public init(viewModel: ProjectViewModel) {
+    public init(viewModel: ProjectViewModel, shortcutManager: ShortcutManager) {
         self.viewModel = viewModel
+        self.shortcutManager = shortcutManager
     }
 
     public var body: some Commands {
@@ -448,14 +475,14 @@ public struct ProjectCommands: Commands {
             Button("New Project") {
                 viewModel.newProject()
             }
-            .keyboardShortcut("n")
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .newProject))
 
             Divider()
 
             Button("Open Project...") {
                 openProject()
             }
-            .keyboardShortcut("o")
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .openProject))
 
             Menu("Open Recent") {
                 ForEach(viewModel.recentProjectURLs, id: \.self) { url in
@@ -489,19 +516,19 @@ public struct ProjectCommands: Commands {
                     presentError(error)
                 }
             }
-            .keyboardShortcut("s")
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .saveProject))
 
             Button("Save Project As...") {
                 saveProjectAs()
             }
-            .keyboardShortcut("s", modifiers: [.command, .shift])
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .saveProjectAs))
 
             Divider()
 
             Button("Export Audio...") {
                 viewModel.isExportSheetPresented = true
             }
-            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .exportAudio))
         }
     }
 
@@ -547,9 +574,11 @@ public struct ProjectCommands: Commands {
 /// Edit menu commands for undo/redo.
 public struct EditCommands: Commands {
     @Bindable var viewModel: ProjectViewModel
+    @Bindable var shortcutManager: ShortcutManager
 
-    public init(viewModel: ProjectViewModel) {
+    public init(viewModel: ProjectViewModel, shortcutManager: ShortcutManager) {
         self.viewModel = viewModel
+        self.shortcutManager = shortcutManager
     }
 
     public var body: some Commands {
@@ -557,14 +586,29 @@ public struct EditCommands: Commands {
             Button(undoTitle) {
                 viewModel.undoManager?.undo()
             }
-            .keyboardShortcut("z")
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .undo))
             .disabled(!(viewModel.undoManager?.canUndo ?? false))
 
             Button(redoTitle) {
                 viewModel.undoManager?.redo()
             }
-            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .redo))
             .disabled(!(viewModel.undoManager?.canRedo ?? false))
+
+            Divider()
+
+            Button("Undo History") {
+                NotificationCenter.default.post(name: .loopsOpenUndoHistory, object: nil)
+            }
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .undoHistory))
+
+            Divider()
+
+            Button(containerArmTitle) {
+                NotificationCenter.default.post(name: .loopsToggleSelectedContainerArm, object: nil)
+            }
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .toggleContainerArm))
+            .disabled(viewModel.selectedContainer == nil)
         }
     }
 
@@ -580,5 +624,97 @@ public struct EditCommands: Commands {
             return "Redo \(actionName)"
         }
         return "Redo"
+    }
+
+    private var containerArmTitle: String {
+        if viewModel.selectedContainer?.isRecordArmed == true {
+            return "Disarm Selected Container"
+        }
+        return "Arm Selected Container"
+    }
+}
+
+public struct CreateCommands: Commands {
+    @Bindable var viewModel: ProjectViewModel
+    @Bindable var shortcutManager: ShortcutManager
+
+    public init(viewModel: ProjectViewModel, shortcutManager: ShortcutManager) {
+        self.viewModel = viewModel
+        self.shortcutManager = shortcutManager
+    }
+
+    public var body: some Commands {
+        CommandMenu("Create") {
+            Button("Add Song") {
+                viewModel.addSong()
+            }
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .addSong))
+
+            Button("Add Track") {
+                NotificationCenter.default.post(name: .loopsOpenAddTrackFlow, object: nil)
+            }
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .addTrack))
+        }
+    }
+}
+
+public struct NavigationCommands: Commands {
+    @Bindable var shortcutManager: ShortcutManager
+
+    public init(shortcutManager: ShortcutManager) {
+        self.shortcutManager = shortcutManager
+    }
+
+    public var body: some Commands {
+        CommandMenu("Navigate") {
+            Button("Find Everything...") {
+                NotificationCenter.default.post(name: .loopsOpenCommandPalette, object: nil)
+            }
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .findEverything))
+
+            Button("Go to Current Song") {
+                NotificationCenter.default.post(name: .loopsGoToCurrentSong, object: nil)
+            }
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .goToCurrentSong))
+
+            Button("Open Setlists") {
+                NotificationCenter.default.post(name: .loopsOpenSetlists, object: nil)
+            }
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .openSetlists))
+        }
+    }
+}
+
+public struct ViewCommands: Commands {
+    @Bindable var shortcutManager: ShortcutManager
+
+    public init(shortcutManager: ShortcutManager) {
+        self.shortcutManager = shortcutManager
+    }
+
+    public var body: some Commands {
+        CommandMenu("View") {
+            Button("Open Mixer") {
+                NotificationCenter.default.post(name: .loopsOpenMixer, object: nil)
+            }
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .openMixer))
+        }
+    }
+}
+
+public struct AppPreferencesCommands: Commands {
+    @Bindable var shortcutManager: ShortcutManager
+
+    public init(shortcutManager: ShortcutManager) {
+        self.shortcutManager = shortcutManager
+    }
+
+    public var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings...") {
+                NotificationCenter.default.post(name: .loopsOpenSettings, object: nil)
+            }
+            .appKeyboardShortcut(shortcutManager.shortcut(for: .openSettings))
+        }
     }
 }

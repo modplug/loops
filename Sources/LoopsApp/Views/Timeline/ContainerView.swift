@@ -602,7 +602,14 @@ public struct ContainerView: View {
                 Divider()
                 Button("Split at Playhead") { onSplit?() }
                 Button("Edit...") { onDoubleClick?() }
-                Button("Arm/Disarm") { onArmToggle?() }
+                Button {
+                    onArmToggle?()
+                } label: {
+                    contextMenuLabel(
+                        title: container.isRecordArmed ? "Disarm Container" : "Arm Container",
+                        shortcut: ShortcutManager().displayString(for: .toggleContainerArm)
+                    )
+                }
                 if !crossfades.isEmpty {
                     Divider()
                     ForEach(crossfades) { xfade in
@@ -640,6 +647,18 @@ public struct ContainerView: View {
                 }
                 .offset(x: altDragOffset)
                 .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private func contextMenuLabel(title: String, shortcut: String?) -> some View {
+        HStack(spacing: 18) {
+            Text(title)
+            if let shortcut, !shortcut.isEmpty {
+                Spacer()
+                Text(shortcut)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

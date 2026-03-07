@@ -19,7 +19,7 @@ public struct SongListView: View {
                 Text("Songs")
                     .font(.headline)
                 Spacer()
-                Button(action: { viewModel.addSong() }) {
+                Button(action: addSongAndRefocus) {
                     Image(systemName: "plus")
                         .font(.caption)
                 }
@@ -88,7 +88,10 @@ public struct SongListView: View {
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .listRowBackground(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
-        .onTapGesture { viewModel.selectSong(id: song.id) }
+        .onTapGesture {
+            viewModel.selectSong(id: song.id)
+            refocusMainContent()
+        }
         .contextMenu {
             Button("Rename...") {
                 renamingSongID = song.id
@@ -110,5 +113,14 @@ public struct SongListView: View {
             viewModel.renameSong(id: id, newName: renamingText)
         }
         renamingSongID = nil
+    }
+
+    private func addSongAndRefocus() {
+        viewModel.addSong()
+        refocusMainContent()
+    }
+
+    private func refocusMainContent() {
+        NotificationCenter.default.post(name: .loopsRequestMainContentFocus, object: nil)
     }
 }

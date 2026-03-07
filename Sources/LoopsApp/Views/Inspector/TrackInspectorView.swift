@@ -45,6 +45,10 @@ public struct TrackInspectorView: View {
     // Whether MIDI learn is currently active
     var isMIDILearning: Bool = false
 
+    // Transient command palette preview state.
+    var previewedEffectID: ID<InsertEffect>? = nil
+    var previewedAutomationPath: EffectPath? = nil
+
     // Available ports and devices for interactive pickers
     var availableInputPorts: [InputPort] = []
     var availableOutputPorts: [OutputPort] = []
@@ -408,6 +412,10 @@ public struct TrackInspectorView: View {
             Spacer()
             effectRowButtons(effect: effect, effectIndex: effectIndex, sortedEffects: sortedEffects)
         }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(previewHighlight(isActive: previewedEffectID == effect.id))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
         .contextMenu {
             if hasMIDIMapping {
                 Button("Remove MIDI Mapping") {
@@ -616,6 +624,10 @@ public struct TrackInspectorView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(previewHighlight(isActive: previewedAutomationPath == lane.targetPath))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
@@ -652,5 +664,19 @@ public struct TrackInspectorView: View {
         if abs(pan) < 0.01 { return "C" }
         if pan < 0 { return String(format: "L%.0f", abs(pan) * 100) }
         return String(format: "R%.0f", pan * 100)
+    }
+
+    @ViewBuilder
+    private func previewHighlight(isActive: Bool) -> some View {
+        if isActive {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.accentColor.opacity(0.14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
+                )
+        } else {
+            Color.clear
+        }
     }
 }

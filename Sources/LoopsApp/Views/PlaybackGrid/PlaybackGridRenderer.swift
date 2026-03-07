@@ -14,58 +14,76 @@ public final class PlaybackGridRenderer {
     private let waveformPipeline: MTLRenderPipelineState
     private let midiPipeline: MTLRenderPipelineState
     private let fadePipeline: MTLRenderPipelineState
+    private let proceduralGridPipeline: MTLRenderPipelineState
 
     private let quadIndexBuffer: MTLBuffer
-    private let waveformCache = PlaybackGridWaveformCache()
-    private let waveformBufferCache = PlaybackGridWaveformBufferCache()
+    private let waveformResidencyCache = PlaybackGridWaveformResidencyCache()
 
     public let frameSemaphore = DispatchSemaphore(value: 2)
 
+    private let rectBufferStorage = PlaybackGridReusableBuffer()
     private var rectBuffer: MTLBuffer?
     private var rectCount = 0
 
+    private let lineBufferStorage = PlaybackGridReusableBuffer()
     private var lineBuffer: MTLBuffer?
     private var lineCount = 0
 
     private var waveformDrawCalls: [PlaybackGridWaveformDrawCall] = []
     private var waveformCoreDrawCalls: [PlaybackGridWaveformDrawCall] = []
 
+    private let midiBufferStorage = PlaybackGridReusableBuffer()
     private var midiBuffer: MTLBuffer?
     private var midiCount = 0
+    private let midiOverlayBufferStorage = PlaybackGridReusableBuffer()
     private var midiOverlayBuffer: MTLBuffer?
     private var midiOverlayCount = 0
+    private let containerOverlayRectBufferStorage = PlaybackGridReusableBuffer()
     private var containerOverlayRectBuffer: MTLBuffer?
     private var containerOverlayRectCount = 0
+    private let containerOverlayLineBufferStorage = PlaybackGridReusableBuffer()
     private var containerOverlayLineBuffer: MTLBuffer?
     private var containerOverlayLineCount = 0
     private var containerOverlayWaveformDrawCalls: [PlaybackGridWaveformDrawCall] = []
     private var containerOverlayWaveformCoreDrawCalls: [PlaybackGridWaveformDrawCall] = []
+    private let containerOverlayMIDIBufferStorage = PlaybackGridReusableBuffer()
     private var containerOverlayMIDIBuffer: MTLBuffer?
     private var containerOverlayMIDICount = 0
+    private let containerOverlayFadeVertexBufferStorage = PlaybackGridReusableBuffer()
     private var containerOverlayFadeVertexBuffer: MTLBuffer?
     private var containerOverlayFadeVertexCount = 0
     private var containerOverlayFadeDrawCalls: [(offset: Int, count: Int)] = []
+    private let containerOverlayBorderBufferStorage = PlaybackGridReusableBuffer()
     private var containerOverlayBorderBuffer: MTLBuffer?
     private var containerOverlayBorderCount = 0
+    private let focusRectBufferStorage = PlaybackGridReusableBuffer()
     private var focusRectBuffer: MTLBuffer?
     private var focusRectCount = 0
+    private let focusLineBufferStorage = PlaybackGridReusableBuffer()
     private var focusLineBuffer: MTLBuffer?
     private var focusLineCount = 0
+    private let focusMIDIBufferStorage = PlaybackGridReusableBuffer()
     private var focusMIDIBuffer: MTLBuffer?
     private var focusMIDICount = 0
+    private let automationOverlayLineBufferStorage = PlaybackGridReusableBuffer()
     private var automationOverlayLineBuffer: MTLBuffer?
     private var automationOverlayLineCount = 0
+    private let automationOverlayRectBufferStorage = PlaybackGridReusableBuffer()
     private var automationOverlayRectBuffer: MTLBuffer?
     private var automationOverlayRectCount = 0
+    private let automationShapeOverlayLineBufferStorage = PlaybackGridReusableBuffer()
     private var automationShapeOverlayLineBuffer: MTLBuffer?
     private var automationShapeOverlayLineCount = 0
+    private let automationShapeOverlayRectBufferStorage = PlaybackGridReusableBuffer()
     private var automationShapeOverlayRectBuffer: MTLBuffer?
     private var automationShapeOverlayRectCount = 0
 
+    private let fadeVertexBufferStorage = PlaybackGridReusableBuffer()
     private var fadeVertexBuffer: MTLBuffer?
     private var fadeVertexCount = 0
     private var fadeDrawCalls: [(offset: Int, count: Int)] = []
 
+    private let borderBufferStorage = PlaybackGridReusableBuffer()
     private var borderBuffer: MTLBuffer?
     private var borderCount = 0
     public private(set) var debugStats = PlaybackGridDebugStats()
@@ -115,6 +133,13 @@ public final class PlaybackGridRenderer {
             vertexFunction: "pg_fade_vertex",
             fragmentFunction: "pg_fade_fragment"
         )
+        proceduralGridPipeline = try Self.makePipeline(
+            device: device,
+            library: library,
+            pixelFormat: pixelFormat,
+            vertexFunction: "pg_procedural_vertex",
+            fragmentFunction: "pg_grid_fragment"
+        )
 
         let indices: [UInt16] = [0, 1, 2, 2, 1, 3]
         guard let ib = device.makeBuffer(
@@ -141,12 +166,8 @@ public final class PlaybackGridRenderer {
         let visibleMaxX = Float(visibleRect.maxX)
         let visibleMinY = Float(visibleRect.minY)
         let visibleMaxY = Float(visibleRect.maxY)
-        let canvasHeight = Float(canvasSize.height)
-
         let rulerHeight = Float(PlaybackGridLayout.rulerHeight)
         let sectionLaneHeight = Float(PlaybackGridLayout.sectionLaneHeight)
-        let trackAreaTop = rulerHeight + sectionLaneHeight
-        let gridTop = snapshot.showRulerAndSections ? (visibleMinY + trackAreaTop) : Float(0)
 
         var rects: [PlaybackGridRectInstance] = []
         var lines: [PlaybackGridLineInstance] = []
@@ -170,48 +191,6 @@ public final class PlaybackGridRenderer {
             )
         }
 
-        let gridBottom = max(canvasHeight, visibleMaxY)
-        let startBar = max(0, Int(floor(visibleMinX / ppb)) - 2)
-        let endBar = Int(ceil(visibleMaxX / ppb)) + 2
-        let shadingColor = SIMD4<Float>(0.56, 0.64, 0.76, 0.010)
-
-        for bar in startBar..<endBar where bar % 2 == 0 {
-            let x = Float(bar) * ppb
-            rects.append(PlaybackGridRectInstance(
-                origin: SIMD2(x, gridTop),
-                size: SIMD2(ppb, gridBottom - gridTop),
-                color: shadingColor
-            ))
-        }
-
-        let barLineColor = SIMD4<Float>(0.78, 0.84, 0.95, 0.060)
-        for bar in startBar...endBar {
-            let x = Float(bar) * ppb
-            lines.append(PlaybackGridLineInstance(
-                start: SIMD2(x, gridTop),
-                end: SIMD2(x, gridBottom),
-                color: barLineColor,
-                width: 1
-            ))
-        }
-
-        let pixelsPerBeat = ppb / Float(snapshot.timeSignature.beatsPerBar)
-        if pixelsPerBeat >= 20 {
-            let beatLineColor = SIMD4<Float>(0.72, 0.79, 0.90, 0.020)
-            for bar in startBar...endBar {
-                let barX = Float(bar) * ppb
-                for beat in 1..<snapshot.timeSignature.beatsPerBar {
-                    let beatX = barX + Float(beat) * pixelsPerBeat
-                    lines.append(PlaybackGridLineInstance(
-                        start: SIMD2(beatX, gridTop),
-                        end: SIMD2(beatX, gridBottom),
-                        color: beatLineColor,
-                        width: 1
-                    ))
-                }
-            }
-        }
-
         let bgColor = SIMD4<Float>(0.16, 0.18, 0.22, 0.13)
         let sepColor = SIMD4<Float>(0.76, 0.82, 0.91, 0.10)
         for layout in scene.trackLayouts {
@@ -220,7 +199,7 @@ public final class PlaybackGridRenderer {
             rects.append(PlaybackGridRectInstance(
                 origin: SIMD2(visibleMinX, y),
                 size: SIMD2(visibleMaxX - visibleMinX, h),
-                color: bgColor
+                color: layout.isPreviewed ? SIMD4<Float>(0.25, 0.55, 1.0, 0.08) : bgColor
             ))
 
             let sepY = y + h
@@ -254,7 +233,9 @@ public final class PlaybackGridRenderer {
                     rects.append(PlaybackGridRectInstance(
                         origin: SIMD2(visibleMinX, laneMinY),
                         size: SIMD2(visibleMaxX - visibleMinX, laneHeight),
-                        color: SIMD4(laneTint.x, laneTint.y, laneTint.z, 0.055)
+                        color: laneLayout.isPreviewed
+                            ? SIMD4(laneTint.x, laneTint.y, laneTint.z, 0.14)
+                            : SIMD4(laneTint.x, laneTint.y, laneTint.z, 0.055)
                     ))
                     for frac: Float in [0.25, 0.5, 0.75] {
                         let yGuide = laneMinY + ((1.0 - frac) * laneHeight)
@@ -344,7 +325,8 @@ public final class PlaybackGridRenderer {
 
                 let isArmed = cl.container.isRecordArmed
                 let isFocusedContainer = focusedPick.kind == .containerZone && focusedPick.containerID == cl.container.id
-                let fillColor: SIMD4<Float> = isArmed ? trackColors.fillArmed
+                let fillColor: SIMD4<Float> = cl.isPreviewed ? SIMD4<Float>(0.22, 0.48, 0.96, 0.30)
+                    : isArmed ? trackColors.fillArmed
                     : cl.isSelected ? trackColors.fillSelected
                     : isFocusedContainer ? trackColors.fillFocused : trackColors.fillNormal
 
@@ -355,10 +337,11 @@ public final class PlaybackGridRenderer {
                 let fillSize = SIMD2<Float>(size.x, max(size.y - 2, 1))
                 rects.append(PlaybackGridRectInstance(origin: fillOrigin, size: fillSize, color: fillColor))
 
-                let borderColor: SIMD4<Float> = isArmed ? trackColors.borderArmed
+                let borderColor: SIMD4<Float> = cl.isPreviewed ? SIMD4<Float>(0.42, 0.70, 1.0, 0.90)
+                    : isArmed ? trackColors.borderArmed
                     : cl.isSelected ? trackColors.borderSelected
                     : isFocusedContainer ? trackColors.borderFocused : trackColors.borderNormal
-                let borderW: Float = cl.isSelected ? 1.5 : 1.0
+                let borderW: Float = cl.isPreviewed ? 2.0 : cl.isSelected ? 1.5 : 1.0
                 borders.append(PlaybackGridRectInstance(
                     origin: fillOrigin,
                     size: fillSize,
@@ -367,7 +350,7 @@ public final class PlaybackGridRenderer {
                     borderWidth: borderW
                 ))
 
-                if cl.isSelected {
+                if cl.isSelected || cl.isPreviewed {
                     let shadowExtent: Float = 26
                     let shadowY = max(fillOrigin.y - 1, 0)
                     let shadowH = fillSize.y + 2
@@ -384,7 +367,7 @@ public final class PlaybackGridRenderer {
                     borders.append(PlaybackGridRectInstance(
                         origin: SIMD2(fillOrigin.x - 1, fillOrigin.y - 1),
                         size: SIMD2(fillSize.x + 2, fillSize.y + 2),
-                        color: trackColors.selectionHighlight,
+                        color: cl.isPreviewed ? SIMD4<Float>(0.42, 0.70, 1.0, 0.62) : trackColors.selectionHighlight,
                         cornerRadius: 5
                     ))
                 } else if isFocusedContainer {
@@ -399,143 +382,78 @@ public final class PlaybackGridRenderer {
                 let waveformExtrema = cl.waveformExtrema
                     ?? cl.waveformPeaks.map { symmetricExtrema(from: $0) }
                 let waveformRMS = cl.waveformRMS
-                if !useWaveformTileOverlay, let extrema = waveformExtrema, !extrema.isEmpty {
-                    let containerWidthPx = fillSize.x
-                    if containerWidthPx >= 4 {
-                        let waveformWidth: Float
-                        if let audioDuration = cl.audioDurationBars {
-                            let visibleAudioBars = min(
-                                cl.container.lengthBars,
-                                audioDuration - cl.container.audioStartOffset
-                            )
-                            waveformWidth = Float(visibleAudioBars) * ppb
-                        } else {
-                            waveformWidth = fillSize.x
+                if let extrema = waveformExtrema, !extrema.isEmpty, fillSize.x >= 4 {
+                    let visibleAudioBars = max(0.0001, min(
+                        cl.container.lengthBars,
+                        (cl.audioDurationBars ?? cl.container.lengthBars) - cl.container.audioStartOffset
+                    ))
+                    let waveformWidth = Float(visibleAudioBars) * ppb
+                    let maxPeaks = targetWaveformPeakCount(
+                        containerWidthPx: max(waveformWidth, 1),
+                        detailed: true
+                    )
+                    let envelopeParamsBase = PlaybackGridWaveformParams(
+                        containerOrigin: SIMD2(Float(cl.container.startBar - 1.0), fillOrigin.y),
+                        containerSize: SIMD2(Float(cl.container.lengthBars), fillSize.y),
+                        fillColor: isFocusedContainer ? trackColors.waveformFocused : trackColors.waveformFill,
+                        peakOffset: 0,
+                        peakCount: 0,
+                        amplitude: isFocusedContainer ? 0.98 : 0.92,
+                        visibleBars: Float(visibleAudioBars),
+                        audioStartOffsetBars: Float(cl.container.audioStartOffset),
+                        clipLengthBars: Float(cl.container.lengthBars),
+                        enterFadeBars: Float(cl.enterFade?.duration ?? 0),
+                        exitFadeBars: Float(cl.exitFade?.duration ?? 0),
+                        reserved: .zero
+                    )
+
+                    if let recordingID = cl.container.sourceRecordingID,
+                       cl.waveformExtrema != nil,
+                       let residency = waveformResidencyCache.residency(
+                            for: recordingID,
+                            extrema: extrema,
+                            rms: waveformRMS ?? [],
+                            device: device
+                       ),
+                       let envelopeLevel = selectWaveformResidencyLevel(
+                            levels: residency.levels,
+                            mode: .envelope,
+                            targetPeakCount: maxPeaks
+                       ) {
+                        var params = envelopeParamsBase
+                        params.peakOffset = UInt32(envelopeLevel.offset)
+                        params.peakCount = UInt32(envelopeLevel.count)
+                        wfDrawCalls.append(PlaybackGridWaveformDrawCall(
+                            buffer: residency.buffer,
+                            params: params
+                        ))
+
+                        if let rmsLevel = selectWaveformResidencyLevel(
+                            levels: residency.levels,
+                            mode: .rms,
+                            targetPeakCount: maxPeaks
+                        ) {
+                            var coreParams = envelopeParamsBase
+                            coreParams.fillColor = isFocusedContainer
+                                ? withAlpha(trackColors.waveformFocused, 0.26)
+                                : withAlpha(trackColors.waveformFill, 0.18)
+                            coreParams.peakOffset = UInt32(rmsLevel.offset)
+                            coreParams.peakCount = UInt32(rmsLevel.count)
+                            coreParams.amplitude = 0.78
+                            wfCoreDrawCalls.append(PlaybackGridWaveformDrawCall(
+                                buffer: residency.buffer,
+                                params: coreParams
+                            ))
                         }
-
-                        let renderMode = waveformRenderMode(
-                            sourceExtremaCount: extrema.count,
-                            waveformWidth: waveformWidth
-                        )
-                        let maxPeaks = targetWaveformPeakCount(
-                            containerWidthPx: containerWidthPx,
-                            detailed: renderMode == .detailedExtrema
-                        )
-                        let cachedLevels: [PlaybackGridWaveformCache.Level]
-                        if let recordingID = cl.container.sourceRecordingID,
-                           cl.waveformExtrema != nil {
-                            cachedLevels = waveformCache.levels(
-                                for: recordingID,
-                                extrema: extrema,
-                                rms: waveformRMS ?? []
-                            )
-                        } else {
-                            cachedLevels = [PlaybackGridWaveformCache.Level(
-                                stride: 1,
-                                extrema: extrema,
-                                rms: waveformRMS ?? Array(repeating: 0, count: extrema.count)
-                            )]
-                        }
-                        let cachedLevel = selectWaveformLevel(
-                            levels: cachedLevels,
-                            targetPeakCount: maxPeaks
-                        )
-                        let levelExtrema = cachedLevel?.extrema ?? selectWaveformExtrema(
-                            levels: cachedLevels,
-                            targetPeakCount: maxPeaks
-                        )
-                        let baseExtrema = renderMode == .detailedExtrema
-                            ? levelExtrema
-                            : smoothEnvelope(symmetricEnvelope(from: levelExtrema))
-                        let levelRMS = cachedLevel?.rms ?? selectWaveformRMS(
-                            levels: cachedLevels,
-                            targetPeakCount: maxPeaks
-                        )
-                        let uploadRMS = renderMode == .detailedExtrema ? levelRMS : smoothRMS(levelRMS)
-
-                        // Apply fade gain attenuation only when needed so steady-state
-                        // scrolling can reuse cached waveform levels without rewriting them.
-                        let enterFadeWidth = cl.enterFade.map { Float($0.duration) * ppb } ?? 0
-                        let exitFadeWidth = cl.exitFade.map { Float($0.duration) * ppb } ?? 0
-                        let uploadExtrema = applyWaveformFades(
-                            extrema: baseExtrema,
-                            waveformWidth: waveformWidth,
-                            containerWidth: fillSize.x,
-                            enterFade: cl.enterFade,
-                            exitFade: cl.exitFade,
-                            enterFadeWidth: enterFadeWidth,
-                            exitFadeWidth: exitFadeWidth
-                        )
-
-                        if renderMode == .envelope {
-                            appendWaveformEnvelopeRects(
-                                extrema: uploadExtrema,
-                                color: isFocusedContainer ? trackColors.waveformFocused : trackColors.waveformFill,
-                                origin: fillOrigin,
-                                waveformWidth: waveformWidth,
-                                containerHeight: fillSize.y,
-                                widthScale: 1.14,
-                                into: &rects
-                            )
-
-                            if hasVisibleWaveformCore(rms: uploadRMS) {
-                                let fadedCoreRMS = applyWaveformFadesToRMS(
-                                    uploadRMS,
-                                    waveformWidth: waveformWidth,
-                                    containerWidth: fillSize.x,
-                                    enterFade: cl.enterFade,
-                                    exitFade: cl.exitFade,
-                                    enterFadeWidth: enterFadeWidth,
-                                    exitFadeWidth: exitFadeWidth
-                                )
-                                appendWaveformEnvelopeRects(
-                                    extrema: fadedCoreRMS.map { value in
-                                        let clamped = min(max(value, 0), 1)
-                                        return WaveformExtrema(minimum: -clamped, maximum: clamped)
-                                    },
-                                    color: isFocusedContainer
-                                        ? withAlpha(trackColors.waveformFocused, 0.26)
-                                        : withAlpha(trackColors.waveformFill, 0.18),
-                                    origin: fillOrigin,
-                                    waveformWidth: waveformWidth,
-                                    containerHeight: fillSize.y,
-                                    widthScale: 0.68,
-                                    into: &rects
-                                )
-                            }
-                        } else {
-                            let params = PlaybackGridWaveformParams(
-                                containerOrigin: fillOrigin,
-                                containerSize: SIMD2(waveformWidth, fillSize.y),
-                                fillColor: isFocusedContainer ? trackColors.waveformFocused : trackColors.waveformFill,
-                                peakOffset: 0,
-                                peakCount: UInt32(uploadExtrema.count),
-                                amplitude: isFocusedContainer ? 0.98 : 0.92
-                            )
-
-                            let buffer: MTLBuffer?
-                            if enterFadeWidth <= 0,
-                               exitFadeWidth <= 0,
-                               let recordingID = cl.container.sourceRecordingID,
-                               cl.waveformExtrema != nil,
-                               let cachedLevel,
-                               let cachedBuffer = waveformBufferCache.buffer(
-                                    for: recordingID,
-                                    level: cachedLevel,
-                                    mode: .envelope,
-                                    device: device
-                               ) {
-                                buffer = cachedBuffer
-                            } else {
-                                buffer = makeBuffer(uploadExtrema.map { SIMD2<Float>($0.minimum, $0.maximum) })
-                            }
-
-                            if let buffer {
-                                wfDrawCalls.append(PlaybackGridWaveformDrawCall(
-                                    buffer: buffer,
-                                    params: params
-                                ))
-                            }
+                    } else {
+                        let fallbackExtrema = downsampleWaveformExtrema(extrema, to: maxPeaks)
+                        if let buffer = makeBuffer(fallbackExtrema.map { SIMD2<Float>($0.minimum, $0.maximum) }) {
+                            var params = envelopeParamsBase
+                            params.peakCount = UInt32(fallbackExtrema.count)
+                            wfDrawCalls.append(PlaybackGridWaveformDrawCall(
+                                buffer: buffer,
+                                params: params
+                            ))
                         }
                     }
                 }
@@ -703,7 +621,7 @@ public final class PlaybackGridRenderer {
             }
 
             if scopedBands.isEmpty {
-                let totalHeight = scene.trackLayouts.last.map { Float($0.yOrigin + $0.height) } ?? canvasHeight
+                let totalHeight = scene.trackLayouts.last.map { Float($0.yOrigin + $0.height) } ?? Float(PlaybackGridLayout.trackAreaTop)
                 rects.append(PlaybackGridRectInstance(
                     origin: SIMD2(startX, 0),
                     size: SIMD2(endX - startX, totalHeight),
@@ -766,61 +684,23 @@ public final class PlaybackGridRenderer {
             }
         }
 
-        if snapshot.showRulerAndSections {
-            let rulerBg = SIMD4<Float>(0.13, 0.14, 0.16, 0.95)
-            rects.append(PlaybackGridRectInstance(
-                origin: SIMD2(visibleMinX, visibleMinY),
-                size: SIMD2(visibleMaxX - visibleMinX, rulerHeight),
-                color: rulerBg
-            ))
-            let sectionBg = SIMD4<Float>(0.15, 0.16, 0.18, 0.95)
-            rects.append(PlaybackGridRectInstance(
-                origin: SIMD2(visibleMinX, visibleMinY + rulerHeight),
-                size: SIMD2(visibleMaxX - visibleMinX, sectionLaneHeight),
-                color: sectionBg
-            ))
-
-            lines.append(PlaybackGridLineInstance(
-                start: SIMD2(visibleMinX, visibleMinY + rulerHeight),
-                end: SIMD2(visibleMaxX, visibleMinY + rulerHeight),
-                color: SIMD4(1, 1, 1, 0.24),
-                width: 1
-            ))
-            lines.append(PlaybackGridLineInstance(
-                start: SIMD2(visibleMinX, visibleMinY + trackAreaTop),
-                end: SIMD2(visibleMaxX, visibleMinY + trackAreaTop),
-                color: SIMD4(1, 1, 1, 0.24),
-                width: 1
-            ))
-
-            if let range = snapshot.selectedRange {
-                let rangeStartX = Float(range.lowerBound - 1) * ppb
-                let rangeWidth = Float(range.count) * ppb
-                rects.append(PlaybackGridRectInstance(
-                    origin: SIMD2(rangeStartX, visibleMinY),
-                    size: SIMD2(rangeWidth, rulerHeight),
-                    color: SIMD4(0.25, 0.55, 1.0, 0.25)
-                ))
-            }
-        }
-
-        rectBuffer = makeBuffer(rects)
+        rectBuffer = rectBufferStorage.write(rects, device: device)
         rectCount = rects.count
 
-        lineBuffer = makeBuffer(lines)
+        lineBuffer = lineBufferStorage.write(lines, device: device)
         lineCount = lines.count
 
         waveformDrawCalls = wfDrawCalls
         waveformCoreDrawCalls = wfCoreDrawCalls
 
-        midiBuffer = makeBuffer(midiNotes)
+        midiBuffer = midiBufferStorage.write(midiNotes, device: device)
         midiCount = midiNotes.count
 
-        fadeVertexBuffer = fadeVerts.isEmpty ? nil : makeBuffer(fadeVerts)
+        fadeVertexBuffer = fadeVertexBufferStorage.write(fadeVerts, device: device)
         fadeVertexCount = fadeVerts.count
         fadeDrawCalls = fadeCalls
 
-        borderBuffer = makeBuffer(borders)
+        borderBuffer = borderBufferStorage.write(borders, device: device)
         borderCount = borders.count
 
         debugStats = PlaybackGridDebugStats(
@@ -955,11 +835,11 @@ public final class PlaybackGridRenderer {
             break
         }
 
-        focusRectBuffer = rects.isEmpty ? nil : makeBuffer(rects)
+        focusRectBuffer = focusRectBufferStorage.write(rects, device: device)
         focusRectCount = rects.count
-        focusLineBuffer = lines.isEmpty ? nil : makeBuffer(lines)
+        focusLineBuffer = focusLineBufferStorage.write(lines, device: device)
         focusLineCount = lines.count
-        focusMIDIBuffer = midiNotes.isEmpty ? nil : makeBuffer(midiNotes)
+        focusMIDIBuffer = focusMIDIBufferStorage.write(midiNotes, device: device)
         focusMIDICount = midiNotes.count
     }
 
@@ -970,6 +850,17 @@ public final class PlaybackGridRenderer {
         guard !levels.isEmpty else { return nil }
         guard targetPeakCount > 0 else { return levels[0] }
         return levels.first(where: { $0.extrema.count <= targetPeakCount })
+    }
+
+    private func selectWaveformResidencyLevel(
+        levels: [PlaybackGridWaveformResidencyCache.Level],
+        mode: PlaybackGridWaveformResidencyCache.Mode,
+        targetPeakCount: Int
+    ) -> PlaybackGridWaveformResidencyCache.Level? {
+        let matching = levels.filter { $0.mode == mode }
+        guard !matching.isEmpty else { return nil }
+        guard targetPeakCount > 0 else { return matching[0] }
+        return matching.first(where: { $0.count <= targetPeakCount }) ?? matching.last
     }
 
     private func selectWaveformExtrema(
@@ -1241,7 +1132,7 @@ public final class PlaybackGridRenderer {
             )
         }
 
-        midiOverlayBuffer = output.isEmpty ? nil : makeBuffer(output)
+        midiOverlayBuffer = midiOverlayBufferStorage.write(output, device: device)
         midiOverlayCount = output.count
     }
 
@@ -1351,123 +1242,67 @@ public final class PlaybackGridRenderer {
                 ?? baseLayout?.waveformPeaks.map { symmetricExtrema(from: $0) }
             let waveformRMS = overlay.waveformRMS
                 ?? baseLayout?.waveformRMS
-            let audioDurationBars = overlay.audioDurationBars ?? baseLayout?.audioDurationBars
-            if !useWaveformTileOverlay, let extrema = waveformExtrema, !extrema.isEmpty, fillSize.x >= 4 {
-                let waveformWidth: Float
-                if let audioDurationBars {
-                    let visibleAudioBars = min(
-                        overlay.container.lengthBars,
-                        audioDurationBars - overlay.container.audioStartOffset
-                    )
-                    waveformWidth = Float(max(visibleAudioBars, 0)) * ppb
-                } else {
-                    waveformWidth = fillSize.x
-                }
-
-                let renderMode = waveformRenderMode(
-                    sourceExtremaCount: extrema.count,
-                    waveformWidth: waveformWidth
-                )
+            if let extrema = waveformExtrema, !extrema.isEmpty, fillSize.x >= 4 {
                 let maxPeaks = targetWaveformPeakCount(
                     containerWidthPx: fillSize.x,
-                    detailed: renderMode == .detailedExtrema
+                    detailed: true
                 )
-                let cachedLevels: [PlaybackGridWaveformCache.Level]
+                let visibleAudioBars = max(0.0001, min(
+                    overlay.container.lengthBars,
+                    ((overlay.audioDurationBars ?? baseLayout?.audioDurationBars) ?? overlay.container.lengthBars)
+                        - overlay.container.audioStartOffset
+                ))
+                let paramsBase = PlaybackGridWaveformParams(
+                    containerOrigin: SIMD2(Float(overlay.container.startBar - 1.0), fillOrigin.y),
+                    containerSize: SIMD2(Float(overlay.container.lengthBars), fillSize.y),
+                    fillColor: waveformColor,
+                    peakOffset: 0,
+                    peakCount: 0,
+                    amplitude: overlay.isGhost ? 0.82 : 0.98,
+                    visibleBars: Float(visibleAudioBars),
+                    audioStartOffsetBars: Float(overlay.container.audioStartOffset),
+                    clipLengthBars: Float(overlay.container.lengthBars),
+                    enterFadeBars: Float(overlay.container.enterFade?.duration ?? 0),
+                    exitFadeBars: Float(overlay.container.exitFade?.duration ?? 0),
+                    reserved: .zero
+                )
                 if let recordingID = overlay.container.sourceRecordingID,
-                   overlay.waveformExtrema != nil || baseLayout?.waveformExtrema != nil {
-                    cachedLevels = waveformCache.levels(
+                   (overlay.waveformExtrema != nil || baseLayout?.waveformExtrema != nil),
+                   let residency = waveformResidencyCache.residency(
                         for: recordingID,
                         extrema: extrema,
-                        rms: waveformRMS ?? []
-                    )
-                } else {
-                    cachedLevels = [PlaybackGridWaveformCache.Level(
-                        stride: 1,
-                        extrema: extrema,
-                        rms: waveformRMS ?? Array(repeating: 0, count: extrema.count)
-                    )]
-                }
-                let cachedLevel = selectWaveformLevel(levels: cachedLevels, targetPeakCount: maxPeaks)
-                let levelExtrema = cachedLevel?.extrema ?? selectWaveformExtrema(levels: cachedLevels, targetPeakCount: maxPeaks)
-                let baseExtrema = renderMode == .detailedExtrema
-                    ? levelExtrema
-                    : smoothEnvelope(symmetricEnvelope(from: levelExtrema))
-                let levelRMS = cachedLevel?.rms ?? selectWaveformRMS(levels: cachedLevels, targetPeakCount: maxPeaks)
-                let uploadRMS = renderMode == .detailedExtrema ? levelRMS : smoothRMS(levelRMS)
+                        rms: waveformRMS ?? [],
+                        device: device
+                   ),
+                   let envelopeLevel = selectWaveformResidencyLevel(
+                        levels: residency.levels,
+                        mode: .envelope,
+                        targetPeakCount: maxPeaks
+                   ) {
+                    var params = paramsBase
+                    params.peakOffset = UInt32(envelopeLevel.offset)
+                    params.peakCount = UInt32(envelopeLevel.count)
+                    wfDrawCalls.append(PlaybackGridWaveformDrawCall(buffer: residency.buffer, params: params))
 
-                let enterFadeWidth = overlay.container.enterFade.map { Float($0.duration) * ppb } ?? 0
-                let exitFadeWidth = overlay.container.exitFade.map { Float($0.duration) * ppb } ?? 0
-                let uploadExtrema = applyWaveformFades(
-                    extrema: baseExtrema,
-                    waveformWidth: waveformWidth,
-                    containerWidth: fillSize.x,
-                    enterFade: overlay.container.enterFade,
-                    exitFade: overlay.container.exitFade,
-                    enterFadeWidth: enterFadeWidth,
-                    exitFadeWidth: exitFadeWidth
-                )
-                if renderMode == .envelope {
-                    appendWaveformEnvelopeRects(
-                        extrema: uploadExtrema,
-                        color: waveformColor,
-                        origin: fillOrigin,
-                        waveformWidth: waveformWidth,
-                        containerHeight: fillSize.y,
-                        widthScale: overlay.isGhost ? 1.08 : 1.14,
-                        into: &rects
-                    )
-
-                    if hasVisibleWaveformCore(rms: uploadRMS) {
-                        let fadedCoreRMS = applyWaveformFadesToRMS(
-                            uploadRMS,
-                            waveformWidth: waveformWidth,
-                            containerWidth: fillSize.x,
-                            enterFade: overlay.container.enterFade,
-                            exitFade: overlay.container.exitFade,
-                            enterFadeWidth: enterFadeWidth,
-                            exitFadeWidth: exitFadeWidth
-                        )
-                        appendWaveformEnvelopeRects(
-                            extrema: fadedCoreRMS.map { value in
-                                let clamped = min(max(value, 0), 1)
-                                return WaveformExtrema(minimum: -clamped, maximum: clamped)
-                            },
-                            color: overlay.isGhost
-                                ? withAlpha(trackColors.waveformFill, 0.12)
-                                : withAlpha(trackColors.waveformFocused, 0.20),
-                            origin: fillOrigin,
-                            waveformWidth: waveformWidth,
-                            containerHeight: fillSize.y,
-                            widthScale: overlay.isGhost ? 0.58 : 0.64,
-                            into: &rects
-                        )
+                    if let rmsLevel = selectWaveformResidencyLevel(
+                        levels: residency.levels,
+                        mode: .rms,
+                        targetPeakCount: maxPeaks
+                    ) {
+                        var coreParams = paramsBase
+                        coreParams.fillColor = overlay.isGhost
+                            ? withAlpha(trackColors.waveformFill, 0.12)
+                            : withAlpha(trackColors.waveformFocused, 0.20)
+                        coreParams.peakOffset = UInt32(rmsLevel.offset)
+                        coreParams.peakCount = UInt32(rmsLevel.count)
+                        coreParams.amplitude = overlay.isGhost ? 0.64 : 0.78
+                        wfCoreDrawCalls.append(PlaybackGridWaveformDrawCall(buffer: residency.buffer, params: coreParams))
                     }
                 } else {
-                    let params = PlaybackGridWaveformParams(
-                        containerOrigin: fillOrigin,
-                        containerSize: SIMD2(waveformWidth, fillSize.y),
-                        fillColor: waveformColor,
-                        peakOffset: 0,
-                        peakCount: UInt32(uploadExtrema.count),
-                        amplitude: overlay.isGhost ? 0.82 : 0.98
-                    )
-                    let buffer: MTLBuffer?
-                    if enterFadeWidth <= 0,
-                       exitFadeWidth <= 0,
-                       let recordingID = overlay.container.sourceRecordingID,
-                       overlay.waveformExtrema != nil || baseLayout?.waveformExtrema != nil,
-                       let cachedLevel,
-                       let cachedBuffer = waveformBufferCache.buffer(
-                            for: recordingID,
-                            level: cachedLevel,
-                            mode: .envelope,
-                            device: device
-                       ) {
-                        buffer = cachedBuffer
-                    } else {
-                        buffer = makeBuffer(uploadExtrema.map { SIMD2<Float>($0.minimum, $0.maximum) })
-                    }
-                    if let buffer {
+                    let fallbackExtrema = downsampleWaveformExtrema(extrema, to: maxPeaks)
+                    if let buffer = makeBuffer(fallbackExtrema.map { SIMD2<Float>($0.minimum, $0.maximum) }) {
+                        var params = paramsBase
+                        params.peakCount = UInt32(fallbackExtrema.count)
                         wfDrawCalls.append(PlaybackGridWaveformDrawCall(buffer: buffer, params: params))
                     }
                 }
@@ -1513,18 +1348,18 @@ public final class PlaybackGridRenderer {
             }
         }
 
-        containerOverlayRectBuffer = rects.isEmpty ? nil : makeBuffer(rects)
+        containerOverlayRectBuffer = containerOverlayRectBufferStorage.write(rects, device: device)
         containerOverlayRectCount = rects.count
-        containerOverlayLineBuffer = lines.isEmpty ? nil : makeBuffer(lines)
+        containerOverlayLineBuffer = containerOverlayLineBufferStorage.write(lines, device: device)
         containerOverlayLineCount = lines.count
         containerOverlayWaveformDrawCalls = wfDrawCalls
         containerOverlayWaveformCoreDrawCalls = wfCoreDrawCalls
-        containerOverlayMIDIBuffer = midiNotes.isEmpty ? nil : makeBuffer(midiNotes)
+        containerOverlayMIDIBuffer = containerOverlayMIDIBufferStorage.write(midiNotes, device: device)
         containerOverlayMIDICount = midiNotes.count
-        containerOverlayFadeVertexBuffer = fadeVerts.isEmpty ? nil : makeBuffer(fadeVerts)
+        containerOverlayFadeVertexBuffer = containerOverlayFadeVertexBufferStorage.write(fadeVerts, device: device)
         containerOverlayFadeVertexCount = fadeVerts.count
         containerOverlayFadeDrawCalls = fadeCalls
-        containerOverlayBorderBuffer = borders.isEmpty ? nil : makeBuffer(borders)
+        containerOverlayBorderBuffer = containerOverlayBorderBufferStorage.write(borders, device: device)
         containerOverlayBorderCount = borders.count
     }
 
@@ -1662,9 +1497,9 @@ public final class PlaybackGridRenderer {
             }
         }
 
-        automationOverlayLineBuffer = lines.isEmpty ? nil : makeBuffer(lines)
+        automationOverlayLineBuffer = automationOverlayLineBufferStorage.write(lines, device: device)
         automationOverlayLineCount = lines.count
-        automationOverlayRectBuffer = rects.isEmpty ? nil : makeBuffer(rects)
+        automationOverlayRectBuffer = automationOverlayRectBufferStorage.write(rects, device: device)
         automationOverlayRectCount = rects.count
     }
 
@@ -1750,9 +1585,9 @@ public final class PlaybackGridRenderer {
             }
         }
 
-        automationShapeOverlayLineBuffer = lines.isEmpty ? nil : makeBuffer(lines)
+        automationShapeOverlayLineBuffer = automationShapeOverlayLineBufferStorage.write(lines, device: device)
         automationShapeOverlayLineCount = lines.count
-        automationShapeOverlayRectBuffer = rects.isEmpty ? nil : makeBuffer(rects)
+        automationShapeOverlayRectBuffer = automationShapeOverlayRectBufferStorage.write(rects, device: device)
         automationShapeOverlayRectCount = rects.count
     }
 
@@ -1761,7 +1596,10 @@ public final class PlaybackGridRenderer {
         visibleRect: CGRect,
         canvasHeight: CGFloat,
         viewportSize: MTLSize,
-        pixelsPerBar: CGFloat
+        pixelsPerBar: CGFloat,
+        timeSignature: TimeSignature,
+        showRulerAndSections: Bool,
+        selectedRange: ClosedRange<Int>?
     ) {
         var uniforms = PlaybackGridUniforms(
             projectionMatrix: PlaybackGridUniforms.orthographic(
@@ -1777,6 +1615,25 @@ public final class PlaybackGridRenderer {
         )
 
         encoder.setScissorRect(MTLScissorRect(x: 0, y: 0, width: viewportSize.width, height: viewportSize.height))
+
+        var gridUniforms = PlaybackGridProceduralGridUniforms(
+            visibleMinX: Float(visibleRect.minX),
+            visibleMaxX: Float(visibleRect.maxX),
+            visibleMinY: Float(visibleRect.minY),
+            visibleMaxY: Float(visibleRect.maxY),
+            pixelsPerBar: Float(pixelsPerBar),
+            beatsPerBar: UInt32(timeSignature.beatsPerBar),
+            rulerHeight: Float(PlaybackGridLayout.rulerHeight),
+            sectionLaneHeight: Float(PlaybackGridLayout.sectionLaneHeight),
+            trackAreaTop: Float(PlaybackGridLayout.trackAreaTop),
+            showRulerAndSections: showRulerAndSections ? 1 : 0,
+            selectedRangeStartBar: Int32(selectedRange?.lowerBound ?? 0),
+            selectedRangeLength: Int32(selectedRange?.count ?? 0)
+        )
+        encoder.setRenderPipelineState(proceduralGridPipeline)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<PlaybackGridUniforms>.stride, index: 0)
+        encoder.setFragmentBytes(&gridUniforms, length: MemoryLayout<PlaybackGridProceduralGridUniforms>.stride, index: 1)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
 
         if rectCount > 0, let buf = rectBuffer {
             encoder.setRenderPipelineState(rectPipeline)

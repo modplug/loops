@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 import LoopsCore
 import LoopsEngine
@@ -27,6 +28,18 @@ public enum FocusedField: Hashable {
     case main
 }
 
+extension Notification.Name {
+    static let loopsRequestMainContentFocus = Notification.Name("loops.requestMainContentFocus")
+    static let loopsOpenCommandPalette = Notification.Name("loops.openCommandPalette")
+    static let loopsOpenAddTrackFlow = Notification.Name("loops.openAddTrackFlow")
+    static let loopsOpenUndoHistory = Notification.Name("loops.openUndoHistory")
+    static let loopsOpenMixer = Notification.Name("loops.openMixer")
+    static let loopsOpenSetlists = Notification.Name("loops.openSetlists")
+    static let loopsGoToCurrentSong = Notification.Name("loops.goToCurrentSong")
+    static let loopsOpenSettings = Notification.Name("loops.openSettings")
+    static let loopsToggleSelectedContainerArm = Notification.Name("loops.toggleSelectedContainerArm")
+}
+
 /// Main content area using HSplitView: sidebar + timeline/mixer + inspector.
 public struct MainContentView: View {
     @Bindable var projectViewModel: ProjectViewModel
@@ -39,6 +52,7 @@ public struct MainContentView: View {
     var settingsViewModel: SettingsViewModel?
     var mixerViewModel: MixerViewModel?
     var midiActivityMonitor: MIDIActivityMonitor?
+    var shortcutManager: ShortcutManager
     @Binding var isVirtualKeyboardVisible: Bool
     @State private var contentMode: ContentMode = .timeline
     @State private var trackToDelete: Track?
@@ -54,6 +68,7 @@ public struct MainContentView: View {
     @State private var draggingTrackID: ID<Track>?
     @State private var headerDragStartWidth: CGFloat = 0
     @State private var pendingTrackAutomationLane: PendingEffectSelection?
+    @State private var pendingContainerAutomationLane: PendingEffectSelection?
     @State private var pianoRollEditorState = PianoRollEditorState()
     @State private var liveTrackHeightPreviews: [ID<Track>: CGFloat] = [:]
     @State private var horizontalScrollCoordinator = TimelineHorizontalScrollCoordinator()
@@ -61,6 +76,9 @@ public struct MainContentView: View {
     @State private var ghostDropState = GhostTrackDropState()
     @State private var showTempoImportAlert = false
     @State private var pendingTempoImport: PendingTempoImport?
+    @State private var showSettingsSheet = false
+    @State private var previewState = PreviewState()
+    @State private var commandPaletteViewModel: CommandPaletteViewModel?
     @FocusState private var focusedField: FocusedField?
     @Namespace private var inspectorNamespace
     // isMIDILearning and midiLearnTargetPath are on projectViewModel.midiLearnState
@@ -75,7 +93,16 @@ public struct MainContentView: View {
         pianoRollEditorState.isFocused
     }
 
-    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, selectionState: SelectionState? = nil, clipboardState: ClipboardState? = nil, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil, isVirtualKeyboardVisible: Binding<Bool> = .constant(false)) {
+    private var isCommandPalettePresented: Bool {
+        commandPaletteViewModel?.isPresented == true
+    }
+
+    private var isEditingTextInput: Bool {
+        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else { return false }
+        return textView.isEditable
+    }
+
+    public init(projectViewModel: ProjectViewModel, timelineViewModel: TimelineViewModel, selectionState: SelectionState? = nil, clipboardState: ClipboardState? = nil, transportViewModel: TransportViewModel? = nil, setlistViewModel: SetlistViewModel? = nil, engineManager: AudioEngineManager? = nil, settingsViewModel: SettingsViewModel? = nil, mixerViewModel: MixerViewModel? = nil, midiActivityMonitor: MIDIActivityMonitor? = nil, shortcutManager: ShortcutManager? = nil, isVirtualKeyboardVisible: Binding<Bool> = .constant(false)) {
         self.projectViewModel = projectViewModel
         self.timelineViewModel = timelineViewModel
         self.selectionState = selectionState ?? projectViewModel.selectionState
@@ -86,6 +113,7 @@ public struct MainContentView: View {
         self.settingsViewModel = settingsViewModel
         self.mixerViewModel = mixerViewModel
         self.midiActivityMonitor = midiActivityMonitor
+        self.shortcutManager = shortcutManager ?? ShortcutManager()
         self._isVirtualKeyboardVisible = isVirtualKeyboardVisible
     }
 
@@ -234,11 +262,153 @@ public struct MainContentView: View {
         )
     }
 
+    private func buildCommandPaletteNodes() -> [CommandNode] {
+        let ui = CommandPaletteUIActions(
+            openMixer: {
+                contentMode = .mixer
+            },
+            openSetlists: {
+                isSidebarVisible = true
+                sidebarTab = .setlists
+            },
+            openSongs: {
+                isSidebarVisible = true
+                sidebarTab = .songs
+            },
+            openSettings: {
+                showSettingsSheet = true
+            },
+            focusTimeline: {
+                contentMode = .timeline
+            },
+            revealTarget: { target in
+                makeRevealCoordinator().revealCommitted(target: target)
+            },
+            requestTextInput: { request in
+                promptForTextInput(request)
+            },
+            inspectTrack: { trackID in
+                selectionState.selectedTrackID = trackID
+                selectionState.selectedContainerID = nil
+                inspectorMode = .container
+                contentMode = .timeline
+            },
+            inspectContainer: { containerID in
+                selectionState.selectedContainerID = containerID
+                selectionState.selectedTrackID = nil
+                inspectorMode = .container
+                contentMode = .timeline
+            },
+            openPianoRoll: { containerID in
+                selectionState.selectedContainerID = containerID
+                selectionState.selectedTrackID = nil
+                openPianoRollSheet()
+            },
+            presentTrackAutomationPicker: { pending in
+                pendingTrackAutomationLane = pending
+            },
+            presentContainerAutomationPicker: { pending in
+                pendingContainerAutomationLane = pending
+            }
+        )
+
+        let executor = CommandExecutor(
+            projectViewModel: projectViewModel,
+            timelineViewModel: timelineViewModel,
+            transportViewModel: transportViewModel,
+            ui: ui
+        )
+        let builder = CommandPaletteCatalogBuilder(
+            projectViewModel: projectViewModel,
+            timelineViewModel: timelineViewModel,
+            transportViewModel: transportViewModel,
+            shortcutManager: shortcutManager,
+            executor: executor
+        )
+        return builder.rootNodes()
+    }
+
+    private func makeRevealCoordinator() -> RevealCoordinator {
+        RevealCoordinator(
+            projectViewModel: projectViewModel,
+            timelineViewModel: timelineViewModel,
+            previewState: previewState,
+            currentContentMode: { contentMode },
+            setContentMode: { contentMode = $0 },
+            horizontalOffset: { horizontalScrollCoordinator.scrollView?.contentView.bounds.origin.x ?? 0 },
+            setHorizontalOffset: { horizontalScrollCoordinator.setOffset($0) },
+            verticalOffset: { timelineVerticalScrollView?.contentView.bounds.origin.y ?? 0 },
+            setVerticalOffset: { offset in
+                guard let scrollView = timelineVerticalScrollView else { return }
+                let y = max(0, offset)
+                scrollView.contentView.setBoundsOrigin(NSPoint(x: scrollView.contentView.bounds.origin.x, y: y))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+        )
+    }
+
+    private func requestMainContentFocus() {
+        DispatchQueue.main.async {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            focusedField = .main
+        }
+    }
+
+    private func openCommandPalette(path nodeIDs: [String] = []) {
+        requestMainContentFocus()
+        commandPaletteViewModel?.open(path: nodeIDs)
+    }
+
+    private func toggleSelectedContainerArm() {
+        guard let container = projectViewModel.selectedContainer,
+              let track = projectViewModel.selectedContainerTrack else { return }
+        projectViewModel.toggleContainerRecordArm(trackID: track.id, containerID: container.id)
+    }
+
+    private func promptForTextInput(_ request: CommandPaletteTextInputRequest) -> String? {
+        let alert = NSAlert()
+        alert.messageText = request.title
+        alert.informativeText = request.message
+        alert.alertStyle = .informational
+
+        let textField = NSTextField(string: request.initialValue)
+        textField.placeholderString = request.placeholder
+        textField.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = textField
+        alert.addButton(withTitle: request.actionTitle)
+        alert.addButton(withTitle: "Cancel")
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return nil }
+        return textField.stringValue
+    }
+
+    private func shouldShowCommandPaletteToast(for node: CommandNode) -> Bool {
+        if node.id == "global-undo" || node.id == "global-redo" || node.id.hasPrefix("undo-history-") {
+            return false
+        }
+        return true
+    }
+
     public var body: some View {
         let _ = PlaybackGridPerfLogger.tick("swiftui.mainContentView.body")
-        mainSplitView
+        let baseContent = ZStack {
+            mainSplitView
+            if let commandPaletteViewModel {
+                CommandPaletteView(viewModel: commandPaletteViewModel)
+            }
+        }
+        let presentedContent = baseContent
         .sheet(isPresented: $showContainerDetailEditor) {
             containerDetailEditorSheet
+        }
+        .sheet(isPresented: $showSettingsSheet) {
+            if let settingsViewModel {
+                AudioDeviceView(viewModel: settingsViewModel, shortcutManager: shortcutManager)
+            } else {
+                Text("Settings unavailable")
+                    .frame(minWidth: 420, minHeight: 320)
+            }
         }
         .sheet(item: $pendingTrackAutomationLane) { pending in
             ParameterPickerView(
@@ -255,6 +425,24 @@ public struct MainContentView: View {
                     pendingTrackAutomationLane = nil
                 },
                 onCancel: { pendingTrackAutomationLane = nil }
+            )
+        }
+        .sheet(item: $pendingContainerAutomationLane) { pending in
+            ParameterPickerView(
+                pending: pending,
+                onPick: { path, paramInfo in
+                    var lane = AutomationLane(targetPath: path)
+                    lane.effectName = pending.effectName
+                    lane.parameterName = paramInfo.displayName
+                    lane.parameterMin = paramInfo.minValue
+                    lane.parameterMax = paramInfo.maxValue
+                    lane.parameterUnit = paramInfo.unit
+                    if let containerID = path.containerID {
+                        projectViewModel.addAutomationLane(containerID: containerID, lane: lane)
+                    }
+                    pendingContainerAutomationLane = nil
+                },
+                onCancel: { pendingContainerAutomationLane = nil }
             )
         }
         .alert("Import Tempo", isPresented: $showTempoImportAlert) {
@@ -332,7 +520,62 @@ public struct MainContentView: View {
         .focusable()
         .focusEffectDisabled()
         .focused($focusedField, equals: .main)
-        .onAppear { focusedField = .main }
+        let lifecycleContent = presentedContent
+        .onAppear {
+            requestMainContentFocus()
+            if commandPaletteViewModel == nil {
+                let vm = CommandPaletteViewModel(rootProvider: { buildCommandPaletteNodes() })
+                vm.onPreviewNode = { node in
+                    makeRevealCoordinator().preview(node: node)
+                }
+                vm.onExecuteNode = { node in
+                    guard shouldShowCommandPaletteToast(for: node) else { return }
+                    projectViewModel.undoState.showToast(node.title)
+                }
+                vm.onClose = { committed in
+                    makeRevealCoordinator().clear(committed: committed)
+                }
+                commandPaletteViewModel = vm
+            }
+        }
+        .onChange(of: projectViewModel.currentSongID) { _, _ in
+            requestMainContentFocus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsRequestMainContentFocus)) { _ in
+            requestMainContentFocus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsOpenCommandPalette)) { _ in
+            openCommandPalette()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsOpenAddTrackFlow)) { _ in
+            openCommandPalette(path: ["global-add-track"])
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsOpenUndoHistory)) { _ in
+            openCommandPalette(path: ["global-undo-history"])
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsOpenMixer)) { _ in
+            contentMode = .mixer
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsOpenSetlists)) { _ in
+            isSidebarVisible = true
+            sidebarTab = .setlists
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsGoToCurrentSong)) { _ in
+            isSidebarVisible = true
+            sidebarTab = .songs
+            if let songID = projectViewModel.currentSongID {
+                projectViewModel.selectSong(id: songID)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsOpenSettings)) { _ in
+            showSettingsSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsToggleSelectedContainerArm)) { _ in
+            toggleSelectedContainerArm()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .loopsCommandPaletteParametersDidChange)) { _ in
+            commandPaletteViewModel?.refresh()
+        }
         .inlineMIDIInputMonitor(
             shouldHandle: {
                 pianoRollEditorState.isExpanded
@@ -355,12 +598,57 @@ public struct MainContentView: View {
                 )
             }
         )
+        return lifecycleContent
+        .globalShortcutMonitor(shortcutManager: shortcutManager) { action in
+            switch action {
+            case .addSong:
+                projectViewModel.addSong()
+            case .addTrack:
+                openCommandPalette(path: ["global-add-track"])
+            case .undo:
+                projectViewModel.undoManager?.undo()
+            case .redo:
+                projectViewModel.undoManager?.redo()
+            case .undoHistory:
+                openCommandPalette(path: ["global-undo-history"])
+            case .findEverything:
+                openCommandPalette()
+            case .openMixer:
+                contentMode = .mixer
+            case .openSetlists:
+                isSidebarVisible = true
+                sidebarTab = .setlists
+            case .goToCurrentSong:
+                isSidebarVisible = true
+                sidebarTab = .songs
+                if let songID = projectViewModel.currentSongID {
+                    projectViewModel.selectSong(id: songID)
+                }
+            case .toggleContainerArm:
+                toggleSelectedContainerArm()
+            case .openSettings:
+                showSettingsSheet = true
+            default:
+                break
+            }
+        } shouldHandle: { action in
+            switch action {
+            case .undo, .redo:
+                return !isEditingTextInput
+            case .newProject, .openProject, .saveProject, .saveProjectAs, .exportAudio:
+                return false
+            default:
+                return true
+            }
+        }
         .onKeyPress(.space) {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             transportViewModel?.togglePlayPause()
             return .handled
         }
         .onKeyPress(.return) {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             if projectViewModel.selectedContainer != nil {
                 openContainerEditor()
@@ -370,12 +658,14 @@ public struct MainContentView: View {
         }
         // Cmd+Return: open piano roll in pop-out sheet window
         .onKeyPress(.return, phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             openPianoRollSheet()
             return .handled
         }
         .onKeyPress("+") {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             if pianoRollEditorState.isExpanded, let trackID = pianoRollEditorState.trackID {
                 adjustInlineMIDIRowHeight(for: trackID, delta: 1.5)
@@ -385,6 +675,7 @@ public struct MainContentView: View {
             return .handled
         }
         .onKeyPress("=") {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             if pianoRollEditorState.isExpanded, let trackID = pianoRollEditorState.trackID {
                 adjustInlineMIDIRowHeight(for: trackID, delta: 1.5)
@@ -394,6 +685,7 @@ public struct MainContentView: View {
             return .handled
         }
         .onKeyPress("-") {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             if pianoRollEditorState.isExpanded, let trackID = pianoRollEditorState.trackID {
                 adjustInlineMIDIRowHeight(for: trackID, delta: -1.5)
@@ -403,17 +695,20 @@ public struct MainContentView: View {
             return .handled
         }
         .onKeyPress("c", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             handleCopy()
             return .handled
         }
         .onKeyPress("v", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             handlePaste()
             return .handled
         }
         // R: toggle record arm on selected track
         .onKeyPress("r") {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             guard let trackID = selectionState.selectedTrackID else { return .ignored }
             if let track = currentSong?.tracks.first(where: { $0.id == trackID }) {
@@ -424,12 +719,14 @@ public struct MainContentView: View {
         }
         // M: toggle metronome
         .onKeyPress("m") {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             transportViewModel?.toggleMetronome()
             return .handled
         }
         // Left arrow: nudge playhead -1 bar (defers to piano roll when focused)
         .onKeyPress(.leftArrow) {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused, !isPianoRollFocused else { return .ignored }
             guard let tv = transportViewModel else { return .ignored }
             tv.setPlayheadPosition(max(tv.playheadBar - 1.0, 1.0))
@@ -437,6 +734,7 @@ public struct MainContentView: View {
         }
         // Right arrow: nudge playhead +1 bar (defers to piano roll when focused)
         .onKeyPress(.rightArrow) {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused, !isPianoRollFocused else { return .ignored }
             guard let tv = transportViewModel else { return .ignored }
             tv.setPlayheadPosition(tv.playheadBar + 1.0)
@@ -444,12 +742,14 @@ public struct MainContentView: View {
         }
         // Home (Fn+Left): jump to bar 1
         .onKeyPress(.home) {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             transportViewModel?.setPlayheadPosition(1.0)
             return .handled
         }
         // End (Fn+Right): jump to last bar with content
         .onKeyPress(.end) {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             let lastBar = Double(projectViewModel.lastBarWithContent)
             transportViewModel?.setPlayheadPosition(lastBar)
@@ -467,12 +767,14 @@ public struct MainContentView: View {
         .onKeyPress("9") { selectTrackByKeyIndex(8) }
         // Cmd+E: split selected container at playhead
         .onKeyPress("e", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             handleSplitAtPlayhead()
             return .handled
         }
         // Cmd+Shift+X: split selected container at range selection boundaries
         .onKeyPress("x", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command),
                   keyPress.modifiers.contains(.shift) else { return .ignored }
             handleSplitAtRange()
@@ -480,24 +782,28 @@ public struct MainContentView: View {
         }
         // Cmd+J: glue selected containers
         .onKeyPress("j", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             projectViewModel.glueContainers(containerIDs: projectViewModel.selectedContainerIDs)
             return .handled
         }
         // Cmd+D: duplicate selected container (or track if no container selected)
         .onKeyPress("d", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             handleDuplicate()
             return .handled
         }
         // Cmd+A: select all containers
         .onKeyPress("a", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) else { return .ignored }
             projectViewModel.selectAllContainers()
             return .handled
         }
         // Escape: unfocus piano roll → deselect all + restore focus to main area
         .onKeyPress(.escape) {
+            guard !isCommandPalettePresented else { return .ignored }
             if isTextFieldFocused {
                 focusedField = .main
                 return .handled
@@ -513,18 +819,21 @@ public struct MainContentView: View {
         }
         // Tab: cycle inspector mode
         .onKeyPress(.tab) {
+            guard !isCommandPalettePresented else { return .ignored }
             guard !isTextFieldFocused else { return .ignored }
             cycleInspectorMode()
             return .handled
         }
         // Cmd+Shift+M: toggle mixer view
         .onKeyPress("m", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) && keyPress.modifiers.contains(.shift) else { return .ignored }
             contentMode = contentMode == .timeline ? .mixer : .timeline
             return .handled
         }
         // Cmd+Shift+L: toggle MIDI log window
         .onKeyPress("l", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) && keyPress.modifiers.contains(.shift) else { return .ignored }
             if let monitor = midiActivityMonitor {
                 MIDILogWindowManager.shared.toggle(monitor: monitor)
@@ -533,6 +842,7 @@ public struct MainContentView: View {
         }
         // Cmd+Shift+K: toggle virtual MIDI keyboard
         .onKeyPress("k", phases: .down) { keyPress in
+            guard !isCommandPalettePresented else { return .ignored }
             guard keyPress.modifiers.contains(.command) && keyPress.modifiers.contains(.shift) else { return .ignored }
             isVirtualKeyboardVisible.toggle()
             return .handled
@@ -648,6 +958,7 @@ public struct MainContentView: View {
                     engineManager: engineManager,
                     settingsViewModel: settingsViewModel,
                     midiActivityMonitor: midiActivityMonitor,
+                    previewState: previewState,
                     showContainerDetailEditor: $showContainerDetailEditor
                 )
             case .storyline:
@@ -685,6 +996,10 @@ public struct MainContentView: View {
                 gridMode: timelineViewModel.gridMode,
                 selectedAutomationTool: timelineViewModel.selectedAutomationTool,
                 selectedContainerIDs: selectionState.effectiveSelectedContainerIDs,
+                previewedTrackID: previewState.previewedTrackID,
+                previewedContainerID: previewState.previewedContainerID,
+                previewedAutomationLaneID: previewState.previewedAutomationLaneID,
+                previewedAutomationPath: previewState.previewedAutomationPath,
                 selectedSectionID: selectionState.selectedSectionID,
                 selectedRange: timelineViewModel.selectedRange,
                 rangeSelection: selectionState.rangeSelection,
@@ -1516,6 +1831,7 @@ public struct MainContentView: View {
     }
 
     private func selectTrackByKeyIndex(_ index: Int) -> KeyPress.Result {
+        guard !isCommandPalettePresented else { return .ignored }
         guard !isTextFieldFocused else { return .ignored }
         projectViewModel.selectTrackByIndex(index)
         return .handled
@@ -1873,7 +2189,8 @@ public struct MainContentView: View {
     }
 
     private func focusedAutomationLaneLabel(for track: Track, laneLabels: [String]) -> String? {
-        guard let focusedPath = projectViewModel.lastTouchedAutomationPath,
+        let focusedPath = previewState.previewedAutomationPath ?? projectViewModel.lastTouchedAutomationPath
+        guard let focusedPath,
               focusedPath.trackID == track.id else { return nil }
         let label = automationPathLabel(focusedPath)
         return laneLabels.contains(label) ? label : nil
@@ -1937,7 +2254,7 @@ public struct MainContentView: View {
                 midiChannelLabel: midiChannelLabel(for: track.midiInputChannel),
                 isAutomationExpanded: isExpanded,
                 automationLaneLabels: laneLabels,
-                isTrackSelected: selectionState.selectedTrackID == track.id,
+                isTrackSelected: selectionState.selectedTrackID == track.id || previewState.previewedTrackID == track.id,
                 isMIDIActive: midiActivityMonitor?.isTrackActive(track.id) ?? false,
                 headerWidth: timelineViewModel.trackHeaderWidth,
                 availableInputPorts: settingsViewModel?.inputPorts ?? [],
@@ -2207,6 +2524,7 @@ struct SelectionBasedInspectorView: View {
     var engineManager: AudioEngineManager?
     var settingsViewModel: SettingsViewModel?
     var midiActivityMonitor: MIDIActivityMonitor?
+    var previewState: PreviewState
     @Binding var showContainerDetailEditor: Bool
 
     var body: some View {
@@ -2331,7 +2649,9 @@ struct SelectionBasedInspectorView: View {
                 guard let track = projectViewModel.selectedContainerTrack else { return false }
                 return midiActivityMonitor?.isTrackActive(track.id) ?? false
             }(),
-            transportViewModel: transportViewModel
+            transportViewModel: transportViewModel,
+            previewedEffectID: containerPreviewedEffectID(containerID: container.id),
+            previewedAutomationPath: containerPreviewedAutomationPath(containerID: container.id)
         )
     }
 
@@ -2417,6 +2737,8 @@ struct SelectionBasedInspectorView: View {
             },
             midiParameterMappings: projectViewModel.project.midiParameterMappings,
             isMIDILearning: projectViewModel.midiLearnState.isMIDIParameterLearning,
+            previewedEffectID: trackPreviewedEffectID(trackID: track.id),
+            previewedAutomationPath: trackPreviewedAutomationPath(trackID: track.id),
             availableInputPorts: settingsViewModel?.inputPorts ?? [],
             availableOutputPorts: settingsViewModel?.outputPorts ?? [],
             availableMIDIDevices: engineManager?.midiManager.availableInputDevices() ?? [],
@@ -2426,6 +2748,42 @@ struct SelectionBasedInspectorView: View {
                 transportViewModel?.liveTrackEffectUnit(trackID: track.id, effectIndex: index)
             }
         )
+    }
+
+    private func trackPreviewedEffectID(trackID: ID<Track>) -> ID<InsertEffect>? {
+        guard let ref = previewState.previewedPluginInstance,
+              ref.trackID == trackID,
+              ref.containerID == nil,
+              ref.host == .trackEffect else {
+            return nil
+        }
+        return ref.insertEffectID
+    }
+
+    private func trackPreviewedAutomationPath(trackID: ID<Track>) -> EffectPath? {
+        guard let path = previewState.previewedAutomationPath,
+              path.trackID == trackID,
+              path.containerID == nil else {
+            return nil
+        }
+        return path
+    }
+
+    private func containerPreviewedEffectID(containerID: ID<Container>) -> ID<InsertEffect>? {
+        guard let ref = previewState.previewedPluginInstance,
+              ref.containerID == containerID,
+              ref.host == .containerEffect else {
+            return nil
+        }
+        return ref.insertEffectID
+    }
+
+    private func containerPreviewedAutomationPath(containerID: ID<Container>) -> EffectPath? {
+        guard let path = previewState.previewedAutomationPath,
+              path.containerID == containerID else {
+            return nil
+        }
+        return path
     }
 }
 
@@ -2538,6 +2896,50 @@ private struct InlineMIDIInputMonitorModifier: ViewModifier {
                 if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
                 if let magnifyMonitor { NSEvent.removeMonitor(magnifyMonitor) }
             }
+    }
+}
+
+private struct GlobalShortcutMonitorModifier: ViewModifier {
+    let shortcutManager: ShortcutManager
+    let onAction: (AppShortcutAction) -> Void
+    let shouldHandle: (AppShortcutAction) -> Bool
+
+    @State private var keyMonitor: AnyObject?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    guard let shortcut = AppKeyboardShortcut(event: event) else { return event }
+                    guard let action = AppShortcutAction.allCases.first(where: { shortcutManager.shortcut(for: $0) == shortcut }) else {
+                        return event
+                    }
+                    guard shouldHandle(action) else { return event }
+                    onAction(action)
+                    return nil
+                } as AnyObject
+            }
+            .onDisappear {
+                if let keyMonitor {
+                    NSEvent.removeMonitor(keyMonitor)
+                }
+            }
+    }
+}
+
+private extension View {
+    func globalShortcutMonitor(
+        shortcutManager: ShortcutManager,
+        onAction: @escaping (AppShortcutAction) -> Void,
+        shouldHandle: @escaping (AppShortcutAction) -> Bool
+    ) -> some View {
+        modifier(
+            GlobalShortcutMonitorModifier(
+                shortcutManager: shortcutManager,
+                onAction: onAction,
+                shouldHandle: shouldHandle
+            )
+        )
     }
 }
 

@@ -8,12 +8,8 @@ public final class PlaybackGridNSView: NSView {
 
     private var renderer: PlaybackGridRenderer?
     private let metalLayer: CAMetalLayer
-    private let waveformOverlayLayer = CALayer()
     private let textOverlayLayer = TimelineTextOverlayLayer()
     private let midiMarqueeLayer = CAShapeLayer()
-    private let waveformTileCache = WaveformTileCache()
-    private var waveformTileLayers: [ID<Container>: CALayer] = [:]
-    private var waveformTileHashes: [ID<Container>: Int] = [:]
 
     private let sceneBuilder = PlaybackGridSceneBuilder()
     private let pickingRenderer = PlaybackGridPickingRenderer()
@@ -27,7 +23,11 @@ public final class PlaybackGridNSView: NSView {
     private var contextMenuTargetPoint: CGPoint?
 
     private var snapshot: PlaybackGridSnapshot?
+    private var modelState: PlaybackGridModelState?
+    private var viewportState = PlaybackGridViewportState(pixelsPerBar: 120, totalBars: 64)
+    private var overlayState: PlaybackGridOverlayState?
     private var scene = PlaybackGridScene(trackLayouts: [], sectionLayouts: [], contentHeight: PlaybackGridLayout.bottomPadding)
+    private var invalidationDomains: PlaybackGridInvalidationDomains = [.model, .viewport, .overlay]
 
     private var needsBufferRebuild = true
     private var configureWillRedraw = false
@@ -93,6 +93,9 @@ public final class PlaybackGridNSView: NSView {
 
     public private(set) var configureSkipCount = 0
     public private(set) var configureHitCount = 0
+    public private(set) var modelInvalidationCount = 0
+    public private(set) var viewportInvalidationCount = 0
+    public private(set) var overlayInvalidationCount = 0
     public private(set) var lastDrawDuration: CFTimeInterval = 0
     private var lastDebugLogTime: CFTimeInterval = 0
     private static let debugLogsEnabled: Bool = {
@@ -104,16 +107,7 @@ public final class PlaybackGridNSView: NSView {
         && !UserDefaults.standard.bool(forKey: "PlaybackGridDisableCursorPublish")
     }()
     private static let cursorPublishInterval: CFTimeInterval = 1.0 / 60.0
-    private static let waveformTilesEnabled: Bool = {
-        ProcessInfo.processInfo.environment["LOOPS_GRID_WAVEFORM_TILES"] == "1"
-        || UserDefaults.standard.bool(forKey: "PlaybackGridWaveformTiles")
-    }()
     private var lastCursorPublishTime: CFTimeInterval = 0
-
-    private struct WaveformTileData {
-        let extrema: [WaveformExtrema]
-        let rms: [Float]
-    }
 
     private static func makeMetalLayer() -> CAMetalLayer {
         let layer = CAMetalLayer()
@@ -149,16 +143,10 @@ public final class PlaybackGridNSView: NSView {
 
         if let device = metalLayer.device {
             renderer = try? PlaybackGridRenderer(device: device)
-            renderer?.useWaveformTileOverlay = Self.waveformTilesEnabled
         }
 
         metalLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
         backingLayer.addSublayer(metalLayer)
-
-        waveformOverlayLayer.zPosition = 0.5
-        waveformOverlayLayer.contentsScale = metalLayer.contentsScale
-        waveformOverlayLayer.masksToBounds = true
-        backingLayer.addSublayer(waveformOverlayLayer)
 
         textOverlayLayer.zPosition = 1
         textOverlayLayer.contentsScale = metalLayer.contentsScale
@@ -224,7 +212,6 @@ public final class PlaybackGridNSView: NSView {
         if let window {
             let scale = window.backingScaleFactor
             metalLayer.contentsScale = scale
-            waveformOverlayLayer.contentsScale = scale
             textOverlayLayer.contentsScale = scale
             midiMarqueeLayer.contentsScale = scale
         }
@@ -234,7 +221,6 @@ public final class PlaybackGridNSView: NSView {
         super.viewDidChangeBackingProperties()
         let scale = window?.backingScaleFactor ?? 2.0
         metalLayer.contentsScale = scale
-        waveformOverlayLayer.contentsScale = scale
         textOverlayLayer.contentsScale = scale
         midiMarqueeLayer.contentsScale = scale
         needsDisplay = true
@@ -246,7 +232,6 @@ public final class PlaybackGridNSView: NSView {
     }
 
     @objc private func invalidateAndRedraw() {
-        waveformTileCache.invalidateAll()
         needsBufferRebuild = true
         needsDisplay = true
     }
@@ -503,8 +488,13 @@ public final class PlaybackGridNSView: NSView {
         menu.addItem(NSMenuItem(title: "Split at Playhead", action: #selector(contextSplitContainer(_:)), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Edit…", action: #selector(contextEditContainer(_:)), keyEquivalent: ""))
 
-        let armTitle = container?.isRecordArmed == true ? "Disarm" : "Arm"
-        menu.addItem(NSMenuItem(title: armTitle, action: #selector(contextToggleArm(_:)), keyEquivalent: ""))
+        let armItem = NSMenuItem(
+            title: container?.isRecordArmed == true ? "Disarm Container" : "Arm Container",
+            action: #selector(contextToggleArm(_:)),
+            keyEquivalent: ""
+        )
+        configureShortcut(for: armItem, action: .toggleContainerArm)
+        menu.addItem(armItem)
 
         if !crossfades.isEmpty {
             let crossfadeMenu = NSMenu(title: "Crossfade Curve")
@@ -546,6 +536,18 @@ public final class PlaybackGridNSView: NSView {
         let menu = NSMenu(title: "MIDI Note")
         menu.addItem(NSMenuItem(title: "Delete Note", action: #selector(contextDeleteMIDINote(_:)), keyEquivalent: ""))
         return menu
+    }
+
+    private func configureShortcut(for item: NSMenuItem, action: AppShortcutAction) {
+        let shortcutManager = ShortcutManager()
+        guard let shortcut = shortcutManager.shortcut(for: action) else { return }
+        item.keyEquivalent = shortcut.key
+        var modifiers: NSEvent.ModifierFlags = []
+        if shortcut.modifiers.contains(.command) { modifiers.insert(.command) }
+        if shortcut.modifiers.contains(.shift) { modifiers.insert(.shift) }
+        if shortcut.modifiers.contains(.option) { modifiers.insert(.option) }
+        if shortcut.modifiers.contains(.control) { modifiers.insert(.control) }
+        item.keyEquivalentModifierMask = modifiers
     }
 
     private func buildMIDILaneContextMenu() -> NSMenu {
@@ -804,30 +806,61 @@ public final class PlaybackGridNSView: NSView {
 
     public func configure(snapshot newSnapshot: PlaybackGridSnapshot, prebuiltScene: PlaybackGridScene? = nil) {
         PlaybackGridPerfLogger.bump("grid.configure.calls")
-        if let oldSnapshot = snapshot {
-            let compareStart = PlaybackGridPerfLogger.begin()
-            let isEqual = staticSnapshotEqual(oldSnapshot, newSnapshot)
-            PlaybackGridPerfLogger.end("grid.configure.staticEqual.ms", compareStart)
-            if isEqual {
-                PlaybackGridPerfLogger.bump("grid.configure.skip")
-                configureSkipCount += 1
-                snapshot = newSnapshot
-                updateOverlayLayers(using: newSnapshot)
-                return
-            }
+        let newModelState = PlaybackGridModelState(snapshot: newSnapshot)
+        let newViewportState = PlaybackGridViewportState(
+            snapshot: newSnapshot,
+            visibleRect: viewportState.visibleRect,
+            canvasSize: bounds.size
+        )
+        let newOverlayState = PlaybackGridOverlayState(snapshot: newSnapshot)
+
+        var domains: PlaybackGridInvalidationDomains = []
+        if modelState != newModelState {
+            domains.insert(.model)
+        }
+        if viewportState.pixelsPerBar != newViewportState.pixelsPerBar
+            || viewportState.totalBars != newViewportState.totalBars {
+            domains.insert(.viewport)
+        }
+        if overlayState != newOverlayState {
+            domains.insert(.overlay)
+        }
+
+        if domains.isEmpty, snapshot != nil {
+            PlaybackGridPerfLogger.bump("grid.configure.skip")
+            configureSkipCount += 1
+            snapshot = newSnapshot
+            overlayState = newOverlayState
+            updateOverlayLayers(using: newSnapshot)
+            return
         }
 
         PlaybackGridPerfLogger.bump("grid.configure.hit")
         configureHitCount += 1
+        invalidationDomains = domains
+        if domains.contains(.model) { modelInvalidationCount += 1 }
+        if domains.contains(.viewport) { viewportInvalidationCount += 1 }
+        if domains.contains(.overlay) { overlayInvalidationCount += 1 }
+
         let oldSnapshot = snapshot
         let oldScene = scene
         snapshot = newSnapshot
-        let buildStart = PlaybackGridPerfLogger.begin()
-        scene = prebuiltScene ?? sceneBuilder.build(snapshot: newSnapshot)
-        PlaybackGridPerfLogger.end("grid.configure.sceneBuild.ms", buildStart)
-        needsBufferRebuild = true
-        configureWillRedraw = true
-        if let oldSnapshot {
+        modelState = newModelState
+        viewportState = newViewportState
+        overlayState = newOverlayState
+
+        if domains.contains(.model) || domains.contains(.viewport) {
+            let buildStart = PlaybackGridPerfLogger.begin()
+            scene = prebuiltScene ?? sceneBuilder.build(snapshot: newSnapshot)
+            PlaybackGridPerfLogger.end("grid.configure.sceneBuild.ms", buildStart)
+        }
+
+        if domains.contains(.model) || domains.contains(.viewport) {
+            needsBufferRebuild = true
+        }
+        configureWillRedraw = domains.contains(.model) || domains.contains(.viewport)
+
+        if let oldSnapshot, domains.contains(.model) || domains.contains(.viewport) {
             let dirtyRect = dirtyRectForSnapshotChange(
                 oldSnapshot: oldSnapshot,
                 oldScene: oldScene,
@@ -918,6 +951,11 @@ public final class PlaybackGridNSView: NSView {
         }
         let exposedRect = exposedRect(from: lastObservedVisibleRect, to: currentVisible)
         lastObservedVisibleRect = currentVisible
+        if viewportState.visibleRect != currentVisible {
+            viewportState.visibleRect = currentVisible
+            invalidationDomains.insert(.viewport)
+            viewportInvalidationCount += 1
+        }
         needsBufferRebuild = true
         if !exposedRect.isNull {
             setNeedsDisplay(exposedRect)
@@ -929,9 +967,12 @@ public final class PlaybackGridNSView: NSView {
     public override func setFrameSize(_ newSize: NSSize) {
         let old = frame.size
         super.setFrameSize(newSize)
+        viewportState.canvasSize = newSize
 
         if old != newSize && !configureWillRedraw {
             PlaybackGridPerfLogger.bump("grid.frameSize.changed")
+            invalidationDomains.insert(.viewport)
+            viewportInvalidationCount += 1
             needsBufferRebuild = true
             needsDisplay = true
         }
@@ -1174,7 +1215,8 @@ public final class PlaybackGridNSView: NSView {
         let rawVisible = visibleRect
         let visible = rawVisible.intersection(bounds)
         guard visible.width > 0, visible.height > 0 else { return }
-        let useWaveformTiles = Self.waveformTilesEnabled && snapshot.pixelsPerBar < 48
+        viewportState.visibleRect = visible
+        viewportState.canvasSize = bounds.size
 
         let scale = metalLayer.contentsScale
 
@@ -1182,18 +1224,9 @@ public final class PlaybackGridNSView: NSView {
         CATransaction.setDisableActions(true)
         metalLayer.frame = visible
         metalLayer.drawableSize = CGSize(width: visible.width * scale, height: visible.height * scale)
-        waveformOverlayLayer.frame = visible
-        waveformOverlayLayer.isHidden = !useWaveformTiles
         textOverlayLayer.frame = visible
         midiMarqueeLayer.frame = visible
         CATransaction.commit()
-
-        renderer.useWaveformTileOverlay = useWaveformTiles
-        if useWaveformTiles {
-            updateWaveformTileOverlay(visibleRect: visible, snapshot: snapshot)
-        } else {
-            hideWaveformTileOverlay()
-        }
 
         let drawableStart = PlaybackGridPerfLogger.begin()
         guard let drawable = metalLayer.nextDrawable() else {
@@ -1352,7 +1385,10 @@ public final class PlaybackGridNSView: NSView {
             visibleRect: visible,
             canvasHeight: bounds.height,
             viewportSize: MTLSize(width: texW, height: texH, depth: 1),
-            pixelsPerBar: snapshot.pixelsPerBar
+            pixelsPerBar: snapshot.pixelsPerBar,
+            timeSignature: snapshot.timeSignature,
+            showRulerAndSections: snapshot.showRulerAndSections,
+            selectedRange: snapshot.selectedRange
         )
         PlaybackGridPerfLogger.end("grid.updateLayer.encode.ms", encodeStart)
 
@@ -1387,188 +1423,6 @@ public final class PlaybackGridNSView: NSView {
 
         let width = CGFloat(snapshot.totalBars) * snapshot.pixelsPerBar
         return NSSize(width: width, height: scene.contentHeight)
-    }
-
-    private func updateWaveformTileOverlay(visibleRect: CGRect, snapshot: PlaybackGridSnapshot) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-
-        var visibleContainerIDs = Set<ID<Container>>()
-        let tilePixelsPerBar = quantizedWaveformPixelsPerBar(for: snapshot.pixelsPerBar)
-
-        for trackLayout in scene.trackLayouts {
-            for containerLayout in trackLayout.containers {
-                guard containerLayout.rect.intersects(visibleRect),
-                      let waveformData = tileWaveformData(for: containerLayout),
-                      !waveformData.extrema.isEmpty else {
-                    continue
-                }
-
-                let waveformRect = waveformRectForTile(
-                    containerLayout: containerLayout,
-                    pixelsPerBar: snapshot.pixelsPerBar
-                )
-                guard waveformRect.width >= 2,
-                      waveformRect.height >= 2,
-                      waveformRect.intersects(visibleRect) else {
-                    continue
-                }
-
-                visibleContainerIDs.insert(containerLayout.container.id)
-
-                let tileHash = hashWaveformTile(
-                    waveformData: waveformData,
-                    containerLayout: containerLayout,
-                    waveformHeight: waveformRect.height
-                )
-                if waveformTileHashes[containerLayout.container.id] != tileHash {
-                    waveformTileCache.invalidate(containerID: containerLayout.container.id)
-                    waveformTileHashes[containerLayout.container.id] = tileHash
-                }
-
-                let containerLengthBars = max(0.0001, Double(waveformRect.width / snapshot.pixelsPerBar))
-                let tile = waveformTileCache.tile(
-                    forContainerID: containerLayout.container.id,
-                    pixelsPerBar: tilePixelsPerBar
-                ) ?? waveformTileCache.generateTile(
-                    containerID: containerLayout.container.id,
-                    extrema: waveformData.extrema,
-                    rms: waveformData.rms,
-                    containerLengthBars: containerLengthBars,
-                    pixelsPerBar: tilePixelsPerBar,
-                    height: waveformRect.height,
-                    color: .white,
-                    contentsScale: waveformOverlayLayer.contentsScale
-                )
-
-                guard let tile else { continue }
-
-                let layer = waveformTileLayers[containerLayout.container.id] ?? {
-                    let layer = CALayer()
-                    layer.actions = [
-                        "position": NSNull(),
-                        "bounds": NSNull(),
-                        "frame": NSNull(),
-                        "hidden": NSNull(),
-                        "contents": NSNull()
-                    ]
-                    layer.contentsGravity = .resize
-                    layer.masksToBounds = true
-                    layer.cornerRadius = 3
-                    layer.minificationFilter = .linear
-                    layer.magnificationFilter = .linear
-                    layer.contentsScale = waveformOverlayLayer.contentsScale
-                    waveformOverlayLayer.addSublayer(layer)
-                    waveformTileLayers[containerLayout.container.id] = layer
-                    return layer
-                }()
-
-                layer.contentsScale = waveformOverlayLayer.contentsScale
-                layer.contents = tile.image
-                layer.frame = waveformRect.offsetBy(dx: -visibleRect.minX, dy: -visibleRect.minY)
-                layer.isHidden = false
-            }
-        }
-
-        for (containerID, layer) in waveformTileLayers where !visibleContainerIDs.contains(containerID) {
-            layer.isHidden = true
-        }
-
-        CATransaction.commit()
-    }
-
-    private func hideWaveformTileOverlay() {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for layer in waveformTileLayers.values {
-            layer.isHidden = true
-        }
-        CATransaction.commit()
-    }
-
-    private func waveformRectForTile(
-        containerLayout: PlaybackGridContainerLayout,
-        pixelsPerBar: CGFloat
-    ) -> CGRect {
-        var rect = containerLayout.rect
-        rect.origin.y += 1
-        rect.size.height = max(0, rect.height - 2)
-
-        if let audioDurationBars = containerLayout.audioDurationBars {
-            let availableBars = max(0, audioDurationBars - containerLayout.container.audioStartOffset)
-            let visibleBars = min(containerLayout.container.lengthBars, availableBars)
-            if visibleBars > 0 {
-                rect.size.width = CGFloat(visibleBars) * pixelsPerBar
-            }
-        }
-
-        return rect
-    }
-
-    private func quantizedWaveformPixelsPerBar(for pixelsPerBar: CGFloat) -> CGFloat {
-        let standard = WaveformTileCache.standardZoomLevels
-        guard let nearest = standard.min(by: { abs($0 - pixelsPerBar) < abs($1 - pixelsPerBar) }) else {
-            return pixelsPerBar
-        }
-        let ratio = pixelsPerBar / nearest
-        if ratio >= 0.75 && ratio <= 1.5 {
-            return nearest
-        }
-        return pixelsPerBar
-    }
-
-    private func tileWaveformData(for containerLayout: PlaybackGridContainerLayout) -> WaveformTileData? {
-        if let extrema = containerLayout.waveformExtrema, !extrema.isEmpty {
-            let rms = containerLayout.waveformRMS ?? extrema.map { max(abs($0.minimum), abs($0.maximum)) * 0.65 }
-            return WaveformTileData(extrema: extrema, rms: rms)
-        }
-        if let peaks = containerLayout.waveformPeaks, !peaks.isEmpty {
-            return WaveformTileData(
-                extrema: peaks.map { WaveformExtrema(minimum: -$0, maximum: $0) },
-                rms: containerLayout.waveformRMS ?? peaks
-            )
-        }
-        return nil
-    }
-
-    private func hashWaveformTile(
-        waveformData: WaveformTileData,
-        containerLayout: PlaybackGridContainerLayout,
-        waveformHeight: CGFloat
-    ) -> Int {
-        var hasher = Hasher()
-        hasher.combine(waveformData.extrema.count)
-        hasher.combine(waveformData.rms.count)
-        hasher.combine(Int(waveformHeight.rounded(.toNearestOrAwayFromZero)))
-        hasher.combine(containerLayout.container.lengthBars.bitPattern)
-        hasher.combine(containerLayout.container.audioStartOffset.bitPattern)
-        hasher.combine(containerLayout.audioDurationBars?.bitPattern)
-
-        let sampleCount = min(16, waveformData.extrema.count)
-        let stride = max(1, waveformData.extrema.count / sampleCount)
-        var index = 0
-        while index < waveformData.extrema.count {
-            let value = waveformData.extrema[index]
-            hasher.combine(value.minimum.bitPattern)
-            hasher.combine(value.maximum.bitPattern)
-            index += stride
-        }
-        if let last = waveformData.extrema.last {
-            hasher.combine(last.minimum.bitPattern)
-            hasher.combine(last.maximum.bitPattern)
-        }
-
-        let rmsSampleCount = min(8, waveformData.rms.count)
-        if rmsSampleCount > 0 {
-            let rmsStride = max(1, waveformData.rms.count / rmsSampleCount)
-            var rmsIndex = 0
-            while rmsIndex < waveformData.rms.count {
-                hasher.combine(waveformData.rms[rmsIndex].bitPattern)
-                rmsIndex += rmsStride
-            }
-        }
-
-        return hasher.finalize()
     }
 
     private func staticSnapshotEqual(_ lhs: PlaybackGridSnapshot, _ rhs: PlaybackGridSnapshot) -> Bool {

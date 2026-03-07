@@ -17,22 +17,26 @@ public final class PlaybackGridSceneBuilder {
         for track in snapshot.tracks {
             let baseHeight = snapshot.trackHeights[track.id] ?? snapshot.defaultTrackHeight
             let midiExtraHeight = snapshot.inlineMIDILaneHeights[track.id] ?? 0
-            let lanePaths = automationLanePaths(for: track)
+            let lanes = automationLanes(for: track)
+            let lanePaths = lanes.map(\.targetPath)
             let automationExpanded = snapshot.automationExpandedTrackIDs.contains(track.id) && !lanePaths.isEmpty
             let toolbarHeight = automationExpanded ? snapshot.automationToolbarHeight : 0
             let automationLaneLayouts: [PlaybackGridAutomationLaneLayout]
             if automationExpanded {
                 let laneOriginY = yOffset + baseHeight + toolbarHeight
-                automationLaneLayouts = lanePaths.enumerated().map { index, targetPath in
+                automationLaneLayouts = lanes.enumerated().map { index, lane in
                     let laneY = laneOriginY + (CGFloat(index) * snapshot.automationSubLaneHeight)
                     return PlaybackGridAutomationLaneLayout(
-                        targetPath: targetPath,
+                        laneID: lane.id,
+                        targetPath: lane.targetPath,
                         rect: CGRect(
                             x: 0,
                             y: laneY,
                             width: CGFloat(snapshot.totalBars) * snapshot.pixelsPerBar,
                             height: snapshot.automationSubLaneHeight
-                        )
+                        ),
+                        isPreviewed: snapshot.previewedAutomationLaneID == lane.id
+                            || snapshot.previewedAutomationPath == lane.targetPath
                     )
                 }
             } else {
@@ -61,6 +65,7 @@ public final class PlaybackGridSceneBuilder {
                     waveformExtrema: extrema,
                     waveformRMS: rms,
                     isSelected: snapshot.selectedContainerIDs.contains(container.id),
+                    isPreviewed: snapshot.previewedContainerID == container.id,
                     resolvedMIDINotes: notes,
                     enterFade: container.enterFade,
                     exitFade: container.exitFade,
@@ -75,6 +80,7 @@ public final class PlaybackGridSceneBuilder {
                 automationToolbarHeight: toolbarHeight,
                 automationLaneLayouts: automationLaneLayouts,
                 height: totalTrackHeight,
+                isPreviewed: snapshot.previewedTrackID == track.id,
                 containers: containerLayouts
             ))
 
@@ -105,18 +111,18 @@ public final class PlaybackGridSceneBuilder {
         )
     }
 
-    private func automationLanePaths(for track: Track) -> [EffectPath] {
+    private func automationLanes(for track: Track) -> [AutomationLane] {
         var seen = Set<EffectPath>()
-        var ordered: [EffectPath] = []
+        var ordered: [AutomationLane] = []
         for lane in track.trackAutomationLanes {
             if seen.insert(lane.targetPath).inserted {
-                ordered.append(lane.targetPath)
+                ordered.append(lane)
             }
         }
         for container in track.containers {
             for lane in container.automationLanes {
                 if seen.insert(lane.targetPath).inserted {
-                    ordered.append(lane.targetPath)
+                    ordered.append(lane)
                 }
             }
         }

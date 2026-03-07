@@ -60,5 +60,9 @@ public final class UndoState {
         undoHistoryCursor = -1
     }
 
+    public func showToast(_ text: String) {
+        undoToastMessage = UndoToastMessage(text: text)
+    }
+
     nonisolated public init() {}
 }

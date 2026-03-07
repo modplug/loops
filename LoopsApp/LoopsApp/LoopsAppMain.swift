@@ -10,6 +10,7 @@ struct LoopsMainApp: App {
     @State private var transportManager = TransportManager()
     @State private var transportViewModel: TransportViewModel?
     @State private var settingsViewModel: SettingsViewModel?
+    @State private var shortcutManager = ShortcutManager()
 
     init() {
         // SPM executables don't have a proper .app bundle, so macOS
@@ -22,7 +23,13 @@ struct LoopsMainApp: App {
     var body: some Scene {
         WindowGroup {
             if let transportVM = transportViewModel {
-                LoopsRootView(viewModel: viewModel, transportViewModel: transportVM, engineManager: engineManager, settingsViewModel: settingsViewModel)
+                LoopsRootView(
+                    viewModel: viewModel,
+                    transportViewModel: transportVM,
+                    shortcutManager: shortcutManager,
+                    engineManager: engineManager,
+                    settingsViewModel: settingsViewModel
+                )
             } else {
                 Text("Loading...")
                     .frame(minWidth: 800, minHeight: 500)
@@ -31,13 +38,17 @@ struct LoopsMainApp: App {
         }
         .defaultSize(width: 1200, height: 700)
         .commands {
-            ProjectCommands(viewModel: viewModel)
-            EditCommands(viewModel: viewModel)
+            ProjectCommands(viewModel: viewModel, shortcutManager: shortcutManager)
+            CreateCommands(viewModel: viewModel, shortcutManager: shortcutManager)
+            EditCommands(viewModel: viewModel, shortcutManager: shortcutManager)
+            NavigationCommands(shortcutManager: shortcutManager)
+            ViewCommands(shortcutManager: shortcutManager)
+            AppPreferencesCommands(shortcutManager: shortcutManager)
         }
 
         Settings {
             if let settingsVM = settingsViewModel {
-                AudioDeviceView(viewModel: settingsVM)
+                AudioDeviceView(viewModel: settingsVM, shortcutManager: shortcutManager)
             } else {
                 Text("Loading settings...")
                     .frame(width: 400, height: 300)

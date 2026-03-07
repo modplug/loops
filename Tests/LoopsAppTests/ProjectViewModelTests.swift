@@ -370,6 +370,21 @@ struct ProjectViewModelTests {
         #expect(vm.hasUnsavedChanges)
     }
 
+    @Test("Add song fires onSongChanged callback")
+    @MainActor
+    func addSongFiresSongChanged() {
+        let vm = ProjectViewModel()
+        vm.newProject()
+
+        var callbackCount = 0
+        vm.onSongChanged = { callbackCount += 1 }
+
+        vm.addSong()
+
+        #expect(callbackCount == 1)
+        #expect(vm.currentSongID == vm.project.songs[1].id)
+    }
+
     @Test("Select song by ID")
     @MainActor
     func selectSong() {

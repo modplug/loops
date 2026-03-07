@@ -39,6 +39,8 @@ public struct ContainerInspector: View {
     let parentContainer: Container?
     var isMIDIActive: Bool
     var transportViewModel: TransportViewModel?
+    var previewedEffectID: ID<InsertEffect>? = nil
+    var previewedAutomationPath: EffectPath? = nil
 
     @Binding var showDetailEditor: Bool
 
@@ -105,6 +107,9 @@ public struct ContainerInspector: View {
         parentContainer: Container? = nil,
         isMIDIActive: Bool = false,
         transportViewModel: TransportViewModel? = nil
+        ,
+        previewedEffectID: ID<InsertEffect>? = nil,
+        previewedAutomationPath: EffectPath? = nil
     ) {
         self.container = container
         self.trackKind = trackKind
@@ -140,6 +145,8 @@ public struct ContainerInspector: View {
         self.parentContainer = parentContainer
         self.isMIDIActive = isMIDIActive
         self.transportViewModel = transportViewModel
+        self.previewedEffectID = previewedEffectID
+        self.previewedAutomationPath = previewedAutomationPath
     }
 
     public var body: some View {
@@ -437,6 +444,10 @@ public struct ContainerInspector: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(previewHighlight(isActive: previewedEffectID == effect.id))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                     .draggable(effect.id.rawValue.uuidString)
                     .dropDestination(for: String.self) { items, _ in
                         guard let draggedID = items.first.flatMap(UUID.init).map({ ID<InsertEffect>(rawValue: $0) }),
@@ -918,6 +929,10 @@ public struct ContainerInspector: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(previewHighlight(isActive: previewedAutomationPath == lane.targetPath))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
@@ -1039,6 +1054,20 @@ public struct ContainerInspector: View {
             onSetExitFade?(FadeSettings(duration: exitFadeDuration, curve: exitFadeCurve))
         } else {
             onSetExitFade?(nil)
+        }
+    }
+
+    @ViewBuilder
+    private func previewHighlight(isActive: Bool) -> some View {
+        if isActive {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.accentColor.opacity(0.14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
+                )
+        } else {
+            Color.clear
         }
     }
 }

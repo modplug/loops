@@ -453,6 +453,10 @@ public struct PlaybackGridSnapshot: Equatable {
     public var gridMode: GridMode
     public var selectedAutomationTool: AutomationTool
     public var selectedContainerIDs: Set<ID<Container>>
+    public var previewedTrackID: ID<Track>?
+    public var previewedContainerID: ID<Container>?
+    public var previewedAutomationLaneID: ID<AutomationLane>?
+    public var previewedAutomationPath: EffectPath?
     public var selectedMIDINoteIDs: Set<ID<MIDINoteEvent>>
     public var selectedSectionID: ID<SectionRegion>?
     public var selectedRange: ClosedRange<Int>?
@@ -480,6 +484,10 @@ public struct PlaybackGridSnapshot: Equatable {
         gridMode: GridMode,
         selectedAutomationTool: AutomationTool = .pointer,
         selectedContainerIDs: Set<ID<Container>>,
+        previewedTrackID: ID<Track>? = nil,
+        previewedContainerID: ID<Container>? = nil,
+        previewedAutomationLaneID: ID<AutomationLane>? = nil,
+        previewedAutomationPath: EffectPath? = nil,
         selectedMIDINoteIDs: Set<ID<MIDINoteEvent>> = [],
         selectedSectionID: ID<SectionRegion>?,
         selectedRange: ClosedRange<Int>?,
@@ -506,6 +514,10 @@ public struct PlaybackGridSnapshot: Equatable {
         self.gridMode = gridMode
         self.selectedAutomationTool = selectedAutomationTool
         self.selectedContainerIDs = selectedContainerIDs
+        self.previewedTrackID = previewedTrackID
+        self.previewedContainerID = previewedContainerID
+        self.previewedAutomationLaneID = previewedAutomationLaneID
+        self.previewedAutomationPath = previewedAutomationPath
         self.selectedMIDINoteIDs = selectedMIDINoteIDs
         self.selectedSectionID = selectedSectionID
         self.selectedRange = selectedRange
@@ -566,6 +578,7 @@ public struct PlaybackGridContainerLayout: Equatable {
     public var waveformExtrema: [WaveformExtrema]?
     public var waveformRMS: [Float]?
     public var isSelected: Bool
+    public var isPreviewed: Bool
     public var resolvedMIDINotes: [MIDINoteEvent]?
     public var enterFade: FadeSettings?
     public var exitFade: FadeSettings?
@@ -579,12 +592,15 @@ public struct PlaybackGridTrackLayout: Equatable {
     public var automationToolbarHeight: CGFloat
     public var automationLaneLayouts: [PlaybackGridAutomationLaneLayout]
     public var height: CGFloat
+    public var isPreviewed: Bool
     public var containers: [PlaybackGridContainerLayout]
 }
 
 public struct PlaybackGridAutomationLaneLayout: Equatable {
+    public var laneID: ID<AutomationLane>?
     public var targetPath: EffectPath
     public var rect: CGRect
+    public var isPreviewed: Bool
 }
 
 public struct PlaybackGridSectionLayout: Equatable {
@@ -629,6 +645,55 @@ public struct PlaybackGridWaveformParams {
     public var peakOffset: UInt32
     public var peakCount: UInt32
     public var amplitude: Float
+    public var visibleBars: Float
+    public var audioStartOffsetBars: Float
+    public var clipLengthBars: Float
+    public var enterFadeBars: Float
+    public var exitFadeBars: Float
+    public var reserved: SIMD3<Float>
+}
+
+public struct PlaybackGridProceduralGridUniforms {
+    public var visibleMinX: Float
+    public var visibleMaxX: Float
+    public var visibleMinY: Float
+    public var visibleMaxY: Float
+    public var pixelsPerBar: Float
+    public var beatsPerBar: UInt32
+    public var rulerHeight: Float
+    public var sectionLaneHeight: Float
+    public var trackAreaTop: Float
+    public var showRulerAndSections: UInt32
+    public var selectedRangeStartBar: Int32
+    public var selectedRangeLength: Int32
+
+    public init(
+        visibleMinX: Float,
+        visibleMaxX: Float,
+        visibleMinY: Float,
+        visibleMaxY: Float,
+        pixelsPerBar: Float,
+        beatsPerBar: UInt32,
+        rulerHeight: Float,
+        sectionLaneHeight: Float,
+        trackAreaTop: Float,
+        showRulerAndSections: UInt32,
+        selectedRangeStartBar: Int32,
+        selectedRangeLength: Int32
+    ) {
+        self.visibleMinX = visibleMinX
+        self.visibleMaxX = visibleMaxX
+        self.visibleMinY = visibleMinY
+        self.visibleMaxY = visibleMaxY
+        self.pixelsPerBar = pixelsPerBar
+        self.beatsPerBar = beatsPerBar
+        self.rulerHeight = rulerHeight
+        self.sectionLaneHeight = sectionLaneHeight
+        self.trackAreaTop = trackAreaTop
+        self.showRulerAndSections = showRulerAndSections
+        self.selectedRangeStartBar = selectedRangeStartBar
+        self.selectedRangeLength = selectedRangeLength
+    }
 }
 
 public struct PlaybackGridMIDINoteInstance {

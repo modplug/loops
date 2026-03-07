@@ -3,14 +3,28 @@ import LoopsCore
 import LoopsEngine
 
 /// Pending effect selection awaiting parameter pick.
-struct PendingEffectSelection: Equatable, Identifiable {
-    let trackID: ID<Track>
-    let containerID: ID<Container>?
-    let effectIndex: Int
-    let component: AudioComponentInfo
-    let effectName: String
+public struct PendingEffectSelection: Equatable, Identifiable {
+    public let trackID: ID<Track>
+    public let containerID: ID<Container>?
+    public let effectIndex: Int
+    public let component: AudioComponentInfo
+    public let effectName: String
 
-    var id: String {
+    public init(
+        trackID: ID<Track>,
+        containerID: ID<Container>?,
+        effectIndex: Int,
+        component: AudioComponentInfo,
+        effectName: String
+    ) {
+        self.trackID = trackID
+        self.containerID = containerID
+        self.effectIndex = effectIndex
+        self.component = component
+        self.effectName = effectName
+    }
+
+    public var id: String {
         "\(trackID.rawValue)-\(containerID?.rawValue.uuidString ?? "track")-\(effectIndex)"
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import LoopsCore
 import LoopsEngine
 
@@ -6,9 +7,11 @@ import LoopsEngine
 /// Accessible via Cmd+, (Settings menu).
 public struct AudioDeviceView: View {
     @Bindable var viewModel: SettingsViewModel
+    @Bindable var shortcutManager: ShortcutManager
 
-    public init(viewModel: SettingsViewModel) {
+    public init(viewModel: SettingsViewModel, shortcutManager: ShortcutManager) {
         self.viewModel = viewModel
+        self.shortcutManager = shortcutManager
     }
 
     public var body: some View {
@@ -104,9 +107,26 @@ public struct AudioDeviceView: View {
                         .foregroundStyle(viewModel.isEngineRunning ? .green : .red)
                 }
             }
+
+            ForEach(AppShortcutCategory.allCases) { category in
+                Section(category.title + " Shortcuts") {
+                    ForEach(shortcutManager.actions(in: category)) { action in
+                        ShortcutSettingsRow(
+                            action: action,
+                            shortcut: shortcutManager.shortcut(for: action),
+                            onRecord: { shortcut in
+                                _ = shortcutManager.setShortcut(shortcut, for: action)
+                            },
+                            onReset: {
+                                shortcutManager.reset(action)
+                            }
+                        )
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 600)
+        .frame(width: 640, height: 720)
     }
 }
 
@@ -221,6 +241,96 @@ private struct PortCell<Direction: Sendable>: View {
         }
         .onAppear {
             editedName = port.customName ?? ""
+        }
+    }
+}
+
+private struct ShortcutSettingsRow: View {
+    let action: AppShortcutAction
+    let shortcut: AppKeyboardShortcut?
+    let onRecord: (AppKeyboardShortcut?) -> Void
+    let onReset: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(action.title)
+                if let defaultShortcut = action.defaultShortcut?.displayString {
+                    Text("Default: \(defaultShortcut)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("No default shortcut")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            ShortcutRecorderButton(shortcut: shortcut, onChange: onRecord)
+            Button("Reset", action: onReset)
+                .disabled(shortcut == action.defaultShortcut)
+        }
+    }
+}
+
+private struct ShortcutRecorderButton: View {
+    let shortcut: AppKeyboardShortcut?
+    let onChange: (AppKeyboardShortcut?) -> Void
+
+    @State private var isRecording = false
+    @State private var monitor: Any?
+
+    var body: some View {
+        Button(isRecording ? "Type Shortcut…" : (shortcut?.displayString ?? "Record Shortcut")) {
+            toggleRecording()
+        }
+        .buttonStyle(.bordered)
+        .foregroundStyle(isRecording ? Color.accentColor : Color.primary)
+        .help("Press a shortcut. Esc cancels. Delete clears.")
+        .onDisappear {
+            stopRecording()
+        }
+    }
+
+    private func toggleRecording() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startRecording()
+        }
+    }
+
+    private func startRecording() {
+        isRecording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 {
+                stopRecording()
+                return nil
+            }
+
+            if event.keyCode == 51 || event.keyCode == 117 {
+                onChange(nil)
+                stopRecording()
+                return nil
+            }
+
+            guard let shortcut = AppKeyboardShortcut(event: event) else {
+                return nil
+            }
+
+            onChange(shortcut)
+            stopRecording()
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        isRecording = false
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
         }
     }
 }

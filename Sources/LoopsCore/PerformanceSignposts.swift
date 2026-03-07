@@ -30,12 +30,16 @@ public enum Signposts {
     /// Playback scheduling and MIDI dispatch
     public static let playback = OSSignposter(subsystem: subsystem, category: "Playback")
 
+    /// Playback-grid rendering, residency, and interaction invalidation
+    public static let playbackGrid = OSSignposter(subsystem: subsystem, category: "PlaybackGrid")
+
     // MARK: - Loggers (for log stream / Console.app)
 
     public static let viewsLog = Logger(subsystem: subsystem, category: "Views")
     public static let engineLog = Logger(subsystem: subsystem, category: "AudioEngine")
     public static let fileIOLog = Logger(subsystem: subsystem, category: "FileIO")
     public static let playbackLog = Logger(subsystem: subsystem, category: "Playback")
+    public static let playbackGridLog = Logger(subsystem: subsystem, category: "PlaybackGrid")
 
     private static let subsystem = "com.loops.performance"
 }
